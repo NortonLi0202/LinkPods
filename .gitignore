@@ -4,6 +4,7 @@
 !/.gitattributes
 !/*.md
 !/project.json
+!/.coderabbit.yaml
 !/.github/
 !/apps/
 /apps/*
