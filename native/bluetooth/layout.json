@@ -1,0 +1,17 @@
+{
+  "module_name": "libbluetooth_jni.so",
+  "module_path": "/apex/com.android.bt/lib64/libbluetooth_jni.so",
+  "functions": {
+    "l2cap": 9861472,
+    "sdp": 4388156
+  },
+  "offsets": {
+    "ccb_lcb": 64,
+    "ccb_rcb": 88,
+    "rcb_wire_psm": 4,
+    "rcb_preferred_mode": 120,
+    "lcb_address": 56
+  },
+  "aacp_psm": 4097,
+  "ertm_mode": 3
+}

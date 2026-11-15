@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "origins": [
+    {
+      "component": "dfroot",
+      "repository": "https://github.com/diabl0w/DFRoot.git",
+      "commit": "49e992ef3c9f7ec03c8efea6e3cf552f7ec6a347"
+    },
+    {
+      "component": "librepods",
+      "repository": "https://github.com/librepods-org/librepods.git",
+      "commit": "89356c08cea3db0b6b54792d9329d09a87cc85fa"
+    },
+    {
+      "component": "kernelsu",
+      "repository": "https://github.com/diabl0w/KernelSU.git",
+      "commit": "b38f4096f33632ad5871dc3fff0ec426e23c9358"
+    }
+  ],
+  "files": {
+    "dfroot/daemon_commands.h": {
+      "sha256": "3d3e2b1f49a95c7832804e794ff97b0180839c58329e3eda6a10df2888a60d4c",
+      "bytes": 817
+    },
+    "dfroot/diagnostic_android.c": {
+      "sha256": "e6ea08de8a25739946a9135fa564788065dea04671be04e5f634642af070e269",
+      "bytes": 15430
+    },
+    "dfroot/diagnostic_android.h": {
+      "sha256": "6196db6c664a3dddb83597c9daa0fad7a2abfd93f589c81cbdd8156f29789403",
+      "bytes": 284
+    },
+    "dfroot/diagnostic_flow.c": {
+      "sha256": "ccbf33514ab24380570942041f96a8f364f256d8ec53eb8d346e2ef6cb627df5",
+      "bytes": 789
+    },
+    "dfroot/diagnostic_flow.h": {
+      "sha256": "4e9413ceb5a692752111d8150e1666191f9b67b77da1c330722d140353a275d9",
+      "bytes": 340
+    },
+    "dfroot/LICENSE": {
+      "sha256": "2dffc2201fcb4bb4aa151857fcb1115f79b7a3a75714cac59d7cc73ea21049f5",
+      "bytes": 18320
+    },
+    "kernelsu/changes.patch": {
+      "sha256": "27841e3a14af8b59fc656cd74ed55095cd4e89cb03a4fd11139c0970e2d10b6e",
+      "bytes": 8356
+    },
+    "kernelsu/LICENSE": {
+      "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809",
+      "bytes": 35823
+    },
+    "librepods/agent.js": {
+      "sha256": "15d7d1a8efceb77aa5e8dbdd11962489dcc428ff221371db681d87c9eda05b57",
+      "bytes": 16819
+    },
+    "librepods/LICENSE": {
+      "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809",
+      "bytes": 35823
+    }
+  }
+}

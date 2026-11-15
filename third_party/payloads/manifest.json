@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "inputs": {
+    "original_apk": {
+      "file": "DFRoot_4.7.apk",
+      "sha256": "9e193ffdaada8577e14a04fb19403256b3fa4991fae1331c7956e083c098a7b1",
+      "origin": "DFRoot v4.7 upstream APK"
+    },
+    "loader": {
+      "file": "libksud.so",
+      "sha256": "488355921cee4fae484f0c9f145784d9717f32b0aceafc8c9ea939c5938a47ab",
+      "origin": "KernelSU_samsung-v2.2_32687-release.apk / lib/arm64-v8a/libksud.so"
+    },
+    "module": {
+      "file": "diagnostic.ko",
+      "sha256": "56f88770e2111e1fc5de07252c977f8a3b7313751518164d95a75712bc6a53d8",
+      "origin": "explicit diagnostic candidate from 2026-11-14 research"
+    },
+    "frida": {
+      "file": "frida-inject",
+      "sha256": "041b02ef56795b048dc8948499625ade60d1e653d728287e7d9c6ab8195a2192",
+      "origin": "Frida 17.26.3 Android ARM64 official inject binary",
+      "source": "https://github.com/frida/frida/releases/download/17.26.3/frida-inject-17.26.3-android-arm64.xz",
+      "compressed_sha256": "872438dbef2a3a1dbfa9d048c2fd2f3769276210045eb2b469a66abffcaa99c7"
+    }
+  }
+}

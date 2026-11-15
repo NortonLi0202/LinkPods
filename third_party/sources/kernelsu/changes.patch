@@ -1,0 +1,176 @@
+diff --git a/kernel/hook/tp_marker.c b/kernel/hook/tp_marker.c
+index 5374d58..d0a6fe5 100644
+--- a/kernel/hook/tp_marker.c
++++ b/kernel/hook/tp_marker.c
+@@ -81,6 +81,7 @@ void ksu_unmark_all_process(void)
+ void ksu_mark_running_process_locked(void)
+ {
+     struct task_struct *p, *t;
++    unsigned int marked = 0, unmarked = 0;
+     read_lock(&tasklist_lock);
+     for_each_process_thread (p, t) {
+         if (t->pid != 1 && !t->mm) {
+@@ -96,14 +97,17 @@ void ksu_mark_running_process_locked(void)
+         bool is_init = t->pid == 1;
+         if (ksu_root_process || is_zygote_process || is_shell || is_init || ksu_is_allow_uid(uid)) {
+             ksu_set_task_tracepoint_flag(t);
+-            pr_info("tp_marker: mark process: pid:%d, uid: %d, comm:%s\n", t->pid, uid, t->comm);
++            marked++;
++            pr_debug("tp_marker: mark process: pid:%d, uid: %d, comm:%s\n", t->pid, uid, t->comm);
+         } else {
+             ksu_clear_task_tracepoint_flag(t);
+-            pr_info("tp_marker: unmark process: pid:%d, uid: %d, comm:%s\n", t->pid, uid, t->comm);
++            unmarked++;
++            pr_debug("tp_marker: unmark process: pid:%d, uid: %d, comm:%s\n", t->pid, uid, t->comm);
+         }
+         ksu_put_cred(cred);
+     }
+     read_unlock(&tasklist_lock);
++    pr_info("tp_marker: process scan done: marked=%u unmarked=%u\n", marked, unmarked);
+ }
+ 
+ void ksu_mark_running_process(void)
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 768b9a2..9ace975 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -46,6 +46,11 @@ void apply_kernelsu_rules()
+ {
+     struct selinux_policy *pol, *old_pol;
+     struct policydb *db;
++    bool ret_type;
++    bool ret_attr;
++    bool ret_permissive;
++    bool cand_domain, cand_file;
++    struct selinux_policy *live_pol;
+ 
+     if (!getenforce()) {
+         pr_info("SELinux permissive or disabled, apply rules!\n");
+@@ -54,11 +59,16 @@ void apply_kernelsu_rules()
+     mutex_lock(&selinux_state.policy_mutex);
+ 
+     old_pol = rcu_dereference_protected(selinux_state.policy, lockdep_is_held(&selinux_state.policy_mutex));
++    pr_info("ksudbg: old policy len=%zu types=%u classes=%u vers=%u\n", old_pol->policydb.len,
++            old_pol->policydb.p_types.nprim, old_pol->policydb.p_classes.nprim, old_pol->policydb.policyvers);
+     backup_sepolicy = ksu_dup_sepolicy(old_pol);
+     if (IS_ERR(backup_sepolicy)) {
+         pr_err("failed to create backup sepolicy: %ld\n", PTR_ERR(backup_sepolicy));
++        pr_err("ksudbg: backup dup failed err=%ld\n", PTR_ERR(backup_sepolicy));
+         backup_sepolicy = NULL;
+     } else {
++        pr_info("ksudbg: backup dup ok len=%zu types=%u\n", backup_sepolicy->policydb.len,
++                backup_sepolicy->policydb.p_types.nprim);
+         backup_sepolicy->sidtab = kzalloc(sizeof(*backup_sepolicy->sidtab), GFP_KERNEL);
+         if (!backup_sepolicy->sidtab) {
+             pr_err("failed to alloc backup sidtab\n");
+@@ -79,20 +89,29 @@ void apply_kernelsu_rules()
+     pol = ksu_dup_sepolicy(old_pol);
+     if (IS_ERR(pol)) {
+         pr_err("failed to dup selinux_policy: %ld\n", PTR_ERR(pol));
++        pr_err("ksudbg: work dup failed err=%ld\n", PTR_ERR(pol));
+         goto out_unlock;
+     }
++    pr_info("ksudbg: work dup ok len=%zu types=%u\n", pol->policydb.len, pol->policydb.p_types.nprim);
+ 
+     db = &pol->policydb;
+ 
+-    ksu_type(db, KERNEL_SU_DOMAIN, "domain");
+-    ksu_permissive(db, KERNEL_SU_DOMAIN);
+-    ksu_typeattribute(db, KERNEL_SU_DOMAIN, "mlstrustedsubject");
+-    ksu_typeattribute(db, KERNEL_SU_DOMAIN, "netdomain");
+-    ksu_typeattribute(db, KERNEL_SU_DOMAIN, "bluetoothdomain");
++    ret_type = ksu_type(db, KERNEL_SU_DOMAIN, "domain");
++    pr_info("ksudbg: ksu_type domain ret=%d\n", ret_type);
++    ret_permissive = ksu_permissive(db, KERNEL_SU_DOMAIN);
++    pr_info("ksudbg: ksu_permissive domain ret=%d\n", ret_permissive);
++    ret_attr = ksu_typeattribute(db, KERNEL_SU_DOMAIN, "mlstrustedsubject");
++    pr_info("ksudbg: ksu_typeattribute domain mlstrustedsubject ret=%d\n", ret_attr);
++    ret_attr = ksu_typeattribute(db, KERNEL_SU_DOMAIN, "netdomain");
++    pr_info("ksudbg: ksu_typeattribute domain netdomain ret=%d\n", ret_attr);
++    ret_attr = ksu_typeattribute(db, KERNEL_SU_DOMAIN, "bluetoothdomain");
++    pr_info("ksudbg: ksu_typeattribute domain bluetoothdomain ret=%d\n", ret_attr);
+ 
+     // Create unconstrained file type
+-    ksu_type(db, KERNEL_SU_FILE, "file_type");
+-    ksu_typeattribute(db, KERNEL_SU_FILE, "mlstrustedobject");
++    ret_type = ksu_type(db, KERNEL_SU_FILE, "file_type");
++    pr_info("ksudbg: ksu_type file ret=%d\n", ret_type);
++    ret_attr = ksu_typeattribute(db, KERNEL_SU_FILE, "mlstrustedobject");
++    pr_info("ksudbg: ksu_typeattribute file mlstrustedobject ret=%d\n", ret_attr);
+     ksu_allow(db, "domain", KERNEL_SU_FILE, ALL, ALL);
+ 
+     // allow all!
+@@ -156,10 +175,19 @@ void apply_kernelsu_rules()
+     ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "getpgid");
+     ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "sigkill");
+ 
++    cand_domain = ksu_exists(db, KERNEL_SU_DOMAIN);
++    cand_file = ksu_exists(db, KERNEL_SU_FILE);
++    pr_info("ksudbg: candidate len=%zu types=%u has_domain=%d has_file=%d\n", db->len, db->p_types.nprim, cand_domain,
++            cand_file);
++
+     rcu_assign_pointer(selinux_state.policy, pol);
+     synchronize_rcu();
+     ksu_destroy_sepolicy(old_pol);
+ 
++    live_pol = rcu_dereference_protected(selinux_state.policy, lockdep_is_held(&selinux_state.policy_mutex));
++    pr_info("ksudbg: published same=%d has_domain=%d has_file=%d\n", live_pol == pol,
++            ksu_exists(&live_pol->policydb, KERNEL_SU_DOMAIN), ksu_exists(&live_pol->policydb, KERNEL_SU_FILE));
++
+     reset_avc_cache();
+ out_unlock:
+     mutex_unlock(&selinux_state.policy_mutex);
+diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+index b00e517..10e74c6 100644
+--- a/kernel/selinux/sepolicy.c
++++ b/kernel/selinux/sepolicy.c
+@@ -913,10 +913,13 @@ struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
+     // policydb_read() adds each type to its own attribute map, so old_pol->policydb.len may be smaller
+     // preserve one ebitmap entry for this condition to avoid trigger -EINVAL
+     len = old_pol->policydb.len + (size_t)old_pol->policydb.p_types.nprim * (sizeof(u32) + sizeof(u64));
++    pr_info("ksudbg: dup start src_len=%zu types=%u classes=%u cap=%zu\n", old_pol->policydb.len,
++            old_pol->policydb.p_types.nprim, old_pol->policydb.p_classes.nprim, len);
+ 
+     data = vmalloc(len);
+     if (!data) {
+         pr_err("alloc policy buffer len %zu\n", len);
++        pr_err("ksudbg: dup alloc failed cap=%zu\n", len);
+         ret = -ENOMEM;
+         goto out_free_data;
+     }
+@@ -925,11 +928,13 @@ struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
+     fp.len = len;
+ 
+     ret = policydb_write(&old_pol->policydb, &fp);
++    pr_info("ksudbg: policydb_write ret=%d cap=%zu remain=%zu\n", ret, len, fp.len);
+     if (ret) {
+         pr_err("sepolicy: policydb_write: %d\n", ret);
+         goto out_free_data;
+     }
+     len -= fp.len;
++    pr_info("ksudbg: written bytes=%zu\n", len);
+     // https://android.googlesource.com/kernel/common/+/35a7845718734ae638b85b420534cb859498dab6%5E%21
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+     // https://android-review.googlesource.com/c/kernel/common/+/3009995/11/security/selinux/ss/policydb.c
+@@ -954,6 +959,7 @@ struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
+     if (!new_pol) {
+         ret = -ENOMEM;
+         pr_err("sepolicy: dup old pol\n");
++        pr_err("ksudbg: kmemdup old pol failed\n");
+         goto out_free_data;
+     }
+     memset(&new_pol->policydb, 0, sizeof(new_pol->policydb));
+@@ -963,11 +969,13 @@ struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
+     fp.len = len;
+ 
+     ret = policydb_read(&new_pol->policydb, &fp);
++    pr_info("ksudbg: policydb_read ret=%d\n", ret);
+     if (ret) {
+         pr_err("sepolicy: policydb_read: %d\n", ret);
+         goto out_free_policydb;
+     }
+     new_pol->policydb.len = len;
++    pr_info("ksudbg: dup done len=%zu types=%u\n", new_pol->policydb.len, new_pol->policydb.p_types.nprim);
+     kvfree(data);
+ 
+     return new_pol;

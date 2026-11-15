@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "dependencies": {
+    "hiddenapibypass": {
+      "path": "apps/android/lib/hiddenapibypass-6.2.jar",
+      "sha256": "72ac984da7629f68e396c6fe54956cf71a05aa0834467cd592deeca72b2d6d8f",
+      "version": "6.2",
+      "source": "https://repo.maven.apache.org/maven2/org/lsposed/hiddenapibypass/hiddenapibypass/6.2/hiddenapibypass-6.2.aar",
+      "source_sha256": "dcdbd6fc8f70d722b06700cbe30888ded5d329bc3088d3ad92deddbdc8895db3",
+      "extract": "classes.jar",
+      "license": "Apache-2.0"
+    }
+  }
+}

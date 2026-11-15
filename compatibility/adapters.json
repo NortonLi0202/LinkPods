@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "profiles": [{
+    "id": "sm-x810-bt-1adfcc05",
+    "sha256": "4dc06d067a9a237f3a882ba3a6daabe469a8c0deb06731579d254c37a10cefa8",
+    "build_id": "1adfcc05e2ec05a7a4f61eed16f36456",
+    "module_path": "/apex/com.android.bt/lib64/libbluetooth_jni.so",
+    "profile": "native/bluetooth/profile.json",
+    "status": "historical_device_trial_not_stable"
+  }]
+}

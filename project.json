@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "name": "LinkPods",
+  "product": {
+    "version": "1.0",
+    "version_code": 101,
+    "package": "lp.pods",
+    "source": "apps/android",
+    "artifact": "apps/android/build/release/LinkPods-v1.0.apk"
+  },
+  "release_state": "v1_source_snapshot",
+  "public_release": false,
+  "goal_complete": false,
+  "device_validation": "not_complete",
+  "device_actions_authorized_by_this_workflow": false,
+  "release_notes": "docs/release/v1.0.md",
+  "issues": "docs/issues/README.md"
+}
