@@ -39,10 +39,9 @@ final class BridgeAdapterRegistry {
         for(Adapter adapter:adapters) {
             String[] identity=reader.read(adapter);
             if(identity==null)continue;
-            Adapter match=match(adapter.modulePath,identity[0],identity[1]);
-            if(match!=null) {
+            if(adapter.sha256.equals(identity[0]) && adapter.buildId.equals(identity[1])) {
                 if(found!=null)throw new IllegalArgumentException("Ambiguous installed bridge adapters");
-                found=match;
+                found=adapter;
             }
         }
         return found;

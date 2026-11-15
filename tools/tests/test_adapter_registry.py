@@ -47,3 +47,15 @@ class AdapterRegistryTests(unittest.TestCase):
             self.entries[0][field] = original
         self.entries.append(dict(self.entries[0], id='duplicate-identity'))
         with self.assertRaisesRegex(ValueError, 'ambiguous'): self.load()
+
+    def test_two_firmware_profiles_share_one_module_path(self):
+        module=self.entries[0]['module_path']
+        self.entries[1].update(module_path=module,build_id='cd'*16)
+        path=self.root/self.entries[1]['profile']
+        profile=json.loads(path.read_text())
+        profile.update(module_path=module,build_id={'hex':'cd'*16,'offset':48})
+        path.write_text(json.dumps(profile))
+        adapters=self.load()
+        self.assertEqual(adapters[0]['module_path'],adapters[1]['module_path'])
+        self.assertNotEqual(adapters[0]['sha256'],adapters[1]['sha256'])
+        self.assertNotEqual(adapters[0]['build_id'],adapters[1]['build_id'])

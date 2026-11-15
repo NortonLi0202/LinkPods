@@ -6,6 +6,8 @@ import json
 import hashlib
 import zipfile
 import tempfile
+from unittest.mock import patch
+import shutil
 
 spec=importlib.util.spec_from_file_location('standalone_payload',Path(__file__).parents[1]/'standalone_payload.py')
 payload=importlib.util.module_from_spec(spec)
@@ -18,11 +20,11 @@ class RelocationTests(unittest.TestCase):
             root=Path(temporary); (root/'compatibility').mkdir(); (root/'profiles').mkdir()
             entries=[]
             for index in range(2):
-                profile={'module_path':'/apex/test/lib%d.so'%index,'file_sha256':str(index)*64,
-                         'build_id':{'hex':'ab'*16,'offset':32}}
+                profile={'module_path':'/apex/test/lib.so','file_sha256':str(index)*64,
+                         'build_id':{'hex':('ab' if index==0 else 'cd')*16,'offset':32+index*16}}
                 path='profiles/%d.json'%index; (root/path).write_text(json.dumps(profile))
                 entries.append({'id':'synthetic-%d'%index,'module_path':profile['module_path'],
-                                'sha256':profile['file_sha256'],'build_id':'ab'*16,'profile':path})
+                                'sha256':profile['file_sha256'],'build_id':profile['build_id']['hex'],'profile':path})
             (root/'compatibility/adapters.json').write_text(json.dumps({'schema':1,'profiles':entries}))
             binary=root/'binary';binary.write_bytes(b'synthetic binary')
             agent=root/'agent.js';agent.write_text('// synthetic source')
@@ -34,6 +36,41 @@ class RelocationTests(unittest.TestCase):
                 self.assertIn(adapter['profile_sha256'],script)
                 self.assertIn('__LINKPODS_TARGET_ADDRESS__',script)
                 self.assertTrue((assets/adapter['profile']).is_file())
+
+    def test_prepare_synthetic_pinned_inputs_produces_verified_schema2_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/'repository';root.mkdir()
+            for directory in ['native/bluetooth','third_party/payloads','third_party/sources/dfroot',
+                              'third_party/sources/librepods','apps/android/native','compatibility']:
+                (root/directory).mkdir(parents=True,exist_ok=True)
+            for name in ['prepare-runtime-bundle.py','sdp-runtime.js','resident-runtime.js','profile.json']:
+                shutil.copyfile(payload.ROOT/'native/bluetooth'/name,root/'native/bluetooth'/name)
+            shutil.copyfile(payload.ROOT/'compatibility/adapters.json',root/'compatibility/adapters.json')
+            shutil.copyfile(payload.ROOT/'compatibility/targets.json',root/'compatibility/targets.json')
+            (root/'third_party/sources/librepods/agent.js').write_text('// synthetic source')
+            (root/'third_party/sources/dfroot/diagnostic_android.c').write_text(
+                'static void preclean_link(int fd) {}\nstatic int start_late_load(void *opaque) {}\nstatic int capture_finish(void *opaque) {return 0;}')
+            (root/'apps/android/native/DFRoot-LICENSE.txt').write_text('Synthetic test license fixture')
+            inputs=root/'third_party/payloads'
+            with zipfile.ZipFile(inputs/'original_apk','w') as archive:
+                archive.writestr('lib/arm64-v8a/libdfroot.so',payload.ORIGINAL_PATH*8)
+            for key in ['loader','module','frida']:(inputs/key).write_bytes(('synthetic '+key).encode())
+            records={key:{'file':key} for key in ['original_apk','loader','module','frida']}
+            pins={key:hashlib.sha256((inputs/key).read_bytes()).hexdigest() for key in records}
+            output=Path(temporary)/'output'
+            with patch.multiple(payload,ROOT=root,PAYLOADS=inputs,INPUTS=records,PINS=pins):payload.prepare(output)
+            manifest=json.loads((output/'assets/root/manifest.json').read_text())
+            self.assertEqual(manifest['schema'],2)
+            self.assertEqual(len(manifest['adapters']),1)
+            archive=io.BytesIO()
+            with zipfile.ZipFile(archive,'w') as packaged:
+                for file in (output/'assets/root').rglob('*'):
+                    if file.is_file():packaged.writestr(file.relative_to(output).as_posix(),file.read_bytes())
+                packaged.writestr('lib/arm64-v8a/libdfroot.so',(output/'native/libdfroot.so').read_bytes())
+                packaged.writestr('lib/arm64-v8a/liblpbootstrap.so',b'synthetic bootstrap')
+                packaged.writestr('classes.dex',b'RootBrokerMain StandaloneRootProvider')
+            archive.seek(0)
+            payload.verify_apk(archive,pins)
 
     def test_standalone_diagnostic_skips_manager_and_module_lifecycle(self):
         source='HEAD\nstatic void preclean_link(int fd) {delete_old_files();}\nstatic int start_late_load(void *opaque) { run_late_load_and_restart_manager(); }\nstatic int capture_finish(void *opaque) {return 0;}\nTAIL'

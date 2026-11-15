@@ -16,6 +16,12 @@ public final class BridgeAdapterRegistryTest {
         if(registry.match(b.modulePath,HASH,BUILD)!=b)throw new AssertionError("second adapter not selected");
         if(registry.select(a1->a1==b?new String[]{HASH,BUILD}:null)!=b)throw new AssertionError("installed second adapter not selected");
         if(registry.select(a1->null)!=null)throw new AssertionError("unknown installed identity selected");
+        var nextFirmware=new BridgeAdapterRegistry.Adapter("synthetic-next",a.modulePath,"c".repeat(64),"cd".repeat(16),48,"d".repeat(64));
+        var firmwareRegistry=new BridgeAdapterRegistry(Arrays.asList(a,nextFirmware));
+        if(firmwareRegistry.select(a1->new String[]{nextFirmware.sha256,nextFirmware.buildId})!=nextFirmware)
+            throw new AssertionError("same module path firmware identity must select once");
+        if(firmwareRegistry.select(a1->new String[]{a.sha256,a.buildId})!=a)
+            throw new AssertionError("original firmware identity must still select once");
         try {registry.select(a1->new String[]{HASH,BUILD});throw new AssertionError("ambiguous installed adapters accepted");}
         catch(IllegalArgumentException expected) {}
         if(registry.match("/unknown.so",HASH,BUILD)!=null || registry.match(a.modulePath,"c".repeat(64),BUILD)!=null || registry.match(a.modulePath,HASH,"cd".repeat(16))!=null)
