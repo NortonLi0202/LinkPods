@@ -44,11 +44,18 @@ New-Item -ItemType Directory -Path $probeResources | Out-Null
 Invoke-ProbeTool (Join-Path $probeTools 'aapt2.exe') @('compile','--dir',(Join-Path $probeRoot 'res'),'-o',$probeResources)
 $probeResourceFiles = @(Get-ChildItem -LiteralPath $probeResources -Filter '*.flat' -File | Sort-Object Name | Select-Object -ExpandProperty FullName)
 if (!$probeResourceFiles.Count) { throw 'No compiled Android resources' }
-Invoke-ProbeTool (Join-Path $probeTools 'aapt2.exe') (@('link','-I',$probeAndroid,'--manifest',$probeManifest,'-o',$probeUnsigned,'-A',(Join-Path $probePayload 'assets')) + $probeResourceFiles)
+Invoke-ProbeTool (Join-Path $probeTools 'aapt2.exe') (@('link','-I',$probeAndroid,'--manifest',$probeManifest,'-o',$probeUnsigned) + $probeResourceFiles)
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $probeZip = [System.IO.Compression.ZipFile]::Open($probeUnsigned, [System.IO.Compression.ZipArchiveMode]::Update)
 try {
+    # Windows aapt2 -A emits backslashes inside nested asset entry names.
+    # Android looks up literal forward-slash ZIP paths; add these explicitly.
+    $probeAssetRoot=Join-Path $probePayload 'assets'
+    foreach($probeAsset in @(Get-ChildItem -LiteralPath $probeAssetRoot -File -Recurse)) {
+        $probeAssetName='assets/'+[IO.Path]::GetRelativePath($probeAssetRoot,$probeAsset.FullName).Replace('\','/')
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,$probeAsset.FullName,$probeAssetName) | Out-Null
+    }
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeDex 'classes.dex'),'classes.dex') | Out-Null
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeRoot 'lib\hiddenapibypass-LICENSE.txt'),'assets/licenses/hiddenapibypass-Apache-2.0.txt') | Out-Null
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeRoot 'LICENSE'),'assets/licenses/LinkPods-GPL-3.0.txt') | Out-Null

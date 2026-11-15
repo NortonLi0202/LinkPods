@@ -132,8 +132,8 @@ final class LinkPodsUi {
         session=text("耳机控制：尚未读取",12,muted);session.setGravity(Gravity.CENTER);session.setPadding(dp(8),0,dp(8),dp(18));body.addView(session);
     }
     private void home(){hero();LinearLayout name=group();deviceNameValue=navigation(name,"名称",actions.deviceName(),"名称");noiseGroup();
-        caption("按住 AirPods");LinearLayout press=group();navigation(press,"左耳","尚未读取","左耳长按");navigation(press,"右耳","尚未读取","右耳长按");
-        commonSwitches();volumeGroup();LinearLayout extras=group();navigation(extras,"自动设备切换","前往设置",CONNECTION);navigation(extras,"麦克风","尚未读取","麦克风");navigation(extras,"辅助功能","","辅助功能");
+        caption("按住 AirPods");LinearLayout press=group();navigation(press,"左耳","暂未接入","左耳长按");navigation(press,"右耳","暂未接入","右耳长按");
+        commonSwitches();volumeGroup();LinearLayout extras=group();navigation(extras,"自动设备切换","前往设置",CONNECTION);navigation(extras,"麦克风","暂未接入","麦克风");navigation(extras,"辅助功能","","辅助功能");
         LinearLayout app=group();navigation(app,"LinkPods 设置","",SETTINGS);feedback=text("",12,muted);feedback.setPadding(dp(16),0,dp(16),dp(12));body.addView(feedback);
     }
     private void noiseGroup(){caption("噪声控制");noise=new PodControls.NoiseSelector(activity,dark,value->submit(EarbudCommands.LISTENING_MODE,value));body.addView(noise,new LinearLayout.LayoutParams(-1,dp(94)));
@@ -146,8 +146,8 @@ final class LinkPodsUi {
         LinearLayout sliderRow=new LinearLayout(activity);sliderRow.setGravity(Gravity.CENTER_VERTICAL);TextView quiet=text("−",20,muted);quiet.setGravity(Gravity.CENTER);sliderRow.addView(quiet,new LinearLayout.LayoutParams(dp(22),dp(48)));
         volume=new PodControls.VolumeSlider(activity,dark,value->{if(audio!=null){try{audio.setStreamVolume(AudioManager.STREAM_MUSIC,value,0);updateLocalVolume();}catch(SecurityException e){message("系统未允许调节媒体音量");}}});sliderRow.addView(volume,new LinearLayout.LayoutParams(0,dp(48),1));TextView loud=text("+",20,muted);loud.setGravity(Gravity.CENTER);sliderRow.addView(loud,new LinearLayout.LayoutParams(dp(22),dp(48)));g.addView(sliderRow);
         TextView local=text("此 Android 设备的音量",11,muted);local.setPadding(0,0,0,dp(3));g.addView(local);}
-    private void audioPage(){pageTitle(AUDIO);noiseGroup();volumeGroup();commonSwitches();LinearLayout g=group();setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"麦克风","尚未读取","麦克风");}
-    private void pressPage(){pageTitle(PRESS);LinearLayout g=group();navigation(g,"左耳长按","尚未读取","左耳长按");navigation(g,"右耳长按","尚未读取","右耳长按");navigation(g,"按压速度","尚未读取","按压速度");help("按压设置当前暂不可用。");}
+    private void audioPage(){pageTitle(AUDIO);noiseGroup();volumeGroup();commonSwitches();LinearLayout g=group();setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"麦克风","暂未接入","麦克风");}
+    private void pressPage(){pageTitle(PRESS);LinearLayout g=group();navigation(g,"左耳长按","暂未接入","左耳长按");navigation(g,"右耳长按","暂未接入","右耳长按");navigation(g,"按压速度","暂未接入","按压速度");help("按压设置当前暂不可用。");}
     private void connectionPage(){pageTitle("自动设备切换");help("启用后，LinkPods 根据此设备的播放状态协调耳机交接。请先在应用设置中选择耳机，并允许读取媒体播放状态。");
         LinearLayout g=group();action(g,"启用自动交接",actions::enableHandoff);action(g,"停止自动交接",actions::stopHandoff);navigation(g,"设备与权限","",SETTINGS);attachStatus();help("启用前会检查运行环境；临时 Root 另有确认。音频连接和控制通道就绪分别显示，实际声音与双向切换仍需确认。");}
     private void appSettings(){pageTitle(SETTINGS);caption("设备");LinearLayout device=group();detach(picker);picker.setContentDescription("选择已配对的耳机");device.addView(picker,new LinearLayout.LayoutParams(-1,dp(56)));action(device,"允许附近设备权限",actions::requestNearby);action(device,"配对或管理耳机",actions::openBluetooth);action(device,"刷新设备与连接状态",actions::refreshDevices);
@@ -156,8 +156,8 @@ final class LinkPodsUi {
         caption("运行记录");LinearLayout logs=group();detach(logOutput);logOutput.setPadding(dp(16),dp(12),dp(16),dp(12));logs.addView(logOutput,new LinearLayout.LayoutParams(-1,-2));help("LinkPods 1.0 · 耳机控制与交接的设备验收仍在进行。");}
     private void attachStatus(){LinearLayout g=group();detach(environmentStatus);environmentStatus.setPadding(dp(20),dp(14),dp(20),dp(14));g.addView(environmentStatus,new LinearLayout.LayoutParams(-1,-2));}
     private void advanced(String name){pageTitle(name);LinearLayout g=group();if(name.equals("名称")){info(g,"蓝牙设备名称",actions.deviceName());action(g,"在系统蓝牙设置中管理",actions::openBluetooth);help("名称由系统蓝牙设备信息读取。");}
-        else if(name.equals("辅助功能")){setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"按压速度","尚未读取","按压速度");help("仅可更改已由耳机回报且当前可用的选项。");}
-        else{info(g,"当前设置","尚未读取");help("此选项当前暂不可用。");}}
+        else if(name.equals("辅助功能")){setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"按压速度","暂未接入","按压速度");help("仅可更改已由耳机回报且当前可用的选项。");}
+        else{info(g,"当前设置","暂未接入");help("此选项尚未接入耳机设置协议，当前无法修改。");}}
     private void submit(int id,int value){boolean accepted=actions.setSetting(id,value);message(accepted?"已提交，等待耳机确认":"当前无法更改，请检查耳机控制通道");}
     private void message(String value){if(feedback!=null)feedback.setText(value);Toast.makeText(activity,value,Toast.LENGTH_SHORT).show();}
     void bind(EarbudSnapshot state,String address){

@@ -97,6 +97,10 @@ def prepare(output):
 def verify_apk(path,pins=None):
     pins=PINS if pins is None else pins
     with zipfile.ZipFile(path) as archive:
+        for entry in archive.infolist():
+            # ZipInfo.filename silently normalizes Windows separators; Android does not.
+            if '\\' in entry.orig_filename:
+                raise ValueError('noncanonical APK entry: '+entry.orig_filename)
         manifest=json.loads(archive.read('assets/root/manifest.json'))
         if manifest.get('package')!='lp.pods':raise ValueError('standalone payload package mismatch')
         for name,expected in manifest['files'].items():

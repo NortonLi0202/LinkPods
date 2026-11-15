@@ -3,7 +3,7 @@ package local.airpods.handoffprobe;
 /** Root acquisition policy. Providers must prove UID 0, not just locate su. */
 public final class RootAccess {
     public enum Probe { GRANTED, ABSENT, DENIED, UNKNOWN }
-    public enum Status { EXISTING_ROOT, TEMPORARY_ROOT, DENIED, UNKNOWN, UNSUPPORTED, FAILED }
+    public enum Status { EXISTING_ROOT, TEMPORARY_ROOT, DENIED, UNKNOWN, UNSUPPORTED, FAILED, PREPARATION_FAILED }
     public interface Provider {
         Probe probe();
         boolean supported();

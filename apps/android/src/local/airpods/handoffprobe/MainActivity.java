@@ -255,7 +255,8 @@ public class MainActivity extends Activity {
     private void confirmTemporaryRoot() {
         new android.app.AlertDialog.Builder(this).setTitle("运行临时 Root")
             .setMessage("将先复用已有 Root；没有时，仅在系统精确匹配适配方案后运行漏洞。临时 Root 重启后失效。请选择耳机后继续。")
-            .setPositiveButton("继续",(dialog,which)->prepareEnvironment(true,true)).setNegativeButton("取消",null).show();
+            .setPositiveButton("继续",(dialog,which)->prepareEnvironment(true,true))
+            .setNegativeButton("仅连接耳机",(dialog,which)->startAutomaticPrepared()).show();
     }
     private void prepareEnvironment(boolean enable) { prepareEnvironment(enable,false); }
 
@@ -285,7 +286,10 @@ public class MainActivity extends Activity {
                     case DENIED: environmentStatus="Root 授权未通过，不尝试绕过授权"; break;
                     case UNKNOWN: environmentStatus="Root 检测未完成，可重新检查"; break;
                     case UNSUPPORTED: environmentStatus="未获得 Root；当前系统或此操作没有可用临时 Root 方案"; break;
-                    default: environmentStatus="临时 Root 未通过 UID 0 验证";
+                    case PREPARATION_FAILED: environmentStatus=prepared.temporaryAttempted
+                        ?"Root 准备流程异常，尚未确认 UID 0；请查看运行记录"
+                        :"Root 运行环境准备失败，请查看运行记录；未执行临时 Root"; break;
+                    default: environmentStatus="临时 Root 流程未完成，尚未确认 UID 0；请查看运行记录";
                 }
                 log(environmentStatus);
                 if(!prepared.diagnostic.isEmpty())log(prepared.diagnostic);
