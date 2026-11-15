@@ -82,12 +82,27 @@ public final class HandoffService extends Service {
         if(packet==null) return false;
         boolean queued=service.handler.post(() -> {
             if(current!=service || service.stopped || generation!=service.earbudSessionGeneration || active!=service.session) return;
-            boolean sent=active.sendPacket(packet);
-            if(!sent) service.earbudState.failed(id);
-            service.log("EARBUD_SETTING id="+id+" sent="+sent+" confirmed=false");
+            active.sendPacketAsync(packet,sent -> service.handler.post(() -> {
+                if(current!=service || service.stopped || generation!=service.earbudSessionGeneration || active!=service.session)return;
+                if(!sent) service.earbudState.failed(id);
+                else active.requestState();
+                service.log("EARBUD_SETTING id="+id+" sent="+sent+" confirmed=false");
+            }));
         });
         if(!queued && generation==service.earbudSessionGeneration) service.earbudState.failed(id);
         return queued;
+    }
+
+    public static boolean refreshEarbudState(String targetAddress) {
+        HandoffService service=current;
+        if(service==null || service.stopped || !service.earbudState.snapshot(targetAddress,SystemClock.elapsedRealtime()).ready)return false;
+        final long generation=service.earbudSessionGeneration;
+        final AapProbe active=service.session;
+        if(active==null)return false;
+        return service.handler.post(() -> {
+            if(current==service && !service.stopped && generation==service.earbudSessionGeneration && active==service.session)
+                active.requestState();
+        });
     }
     private final BroadcastReceiver audioStateReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -248,7 +263,11 @@ public final class HandoffService extends Service {
 
     private void receive(byte[] data) {
         if (stopped) return;
-        earbudState.receive(data);
+        boolean accepted=earbudState.receive(data);
+        byte[] statePacket=AapPackets.normalize(data);
+        if(statePacket.length>=6 && statePacket[0]==4 && statePacket[1]==0 && statePacket[2]==4
+                && statePacket[3]==0 && statePacket[5]==0 && (statePacket[4]==4 || statePacket[4]==9))
+            log("EARBUD_STATE opcode="+(statePacket[4]&255)+" len="+statePacket.length+" accepted="+accepted);
         Boolean owns = RoutingPackets.ownershipEvent(data, data.length);
         if (owns != null) {
             Boolean previous = this.owns;
@@ -291,7 +310,13 @@ public final class HandoffService extends Service {
     }
 
     private void send(byte[] data, String label) {
-        log("SEND " + label + " ok=" + (session != null && session.sendPacket(data)));
+        final AapProbe active=session;
+        final long generation=earbudSessionGeneration;
+        if(active==null){log("SEND " + label + " ok=false");return;}
+        active.sendPacketAsync(data,sent -> handler.post(() -> {
+            if(!stopped && active==session && generation==earbudSessionGeneration)
+                log("SEND " + label + " ok=" + sent);
+        }));
     }
 
     private void take(String reason) {

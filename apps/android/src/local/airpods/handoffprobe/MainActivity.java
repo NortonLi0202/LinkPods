@@ -96,7 +96,13 @@ public class MainActivity extends Activity {
                     requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
                 else android.widget.Toast.makeText(MainActivity.this, "服务通知权限已允许", android.widget.Toast.LENGTH_SHORT).show();
             }
-            @Override public void refreshDevices() { initialize(); refreshStatus(); refreshControls(); }
+            @Override public void refreshDevices() {
+                initialize(); refreshStatus();
+                BluetoothDevice target=hasPermission()?selected():null;
+                boolean requested=target!=null && HandoffService.refreshEarbudState(target.getAddress());
+                log(requested?"已请求刷新耳机设置与电量，等待耳机回报。":"控制通道未就绪，无法刷新耳机设置与电量。");
+                refreshControls();
+            }
             @Override public void enableHandoff() { startAutomatic(); }
             @Override public void stopHandoff() {
                 cancelEnvironment(); nativeBackendReady=false;
