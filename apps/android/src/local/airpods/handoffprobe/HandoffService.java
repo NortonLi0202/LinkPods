@@ -184,7 +184,24 @@ public final class HandoffService extends Service {
         selfMac = deviceConfig.local;
         if (peerMac.isEmpty()) peerMac = deviceConfig.peer;
         target = adapter.getRemoteDevice(deviceConfig.target);
-        if (session == null) applyConnection(connection.start(deviceConfig.target,preparedBridge));
+        ConnectionPolicy.Action next=connection.start(deviceConfig.target,preparedBridge);
+        if (next==ConnectionPolicy.Action.CONNECT_DIRECT || next==ConnectionPolicy.Action.CONNECT_BRIDGE) {
+            // An explicitly prepared bridge can replace a working direct socket. The policy
+            // generation already invalidated callbacks before the old socket is closed.
+            if (preparedBridge) {
+                if (bridgePreparation!=null) { bridgePreparation.cancel(true); bridgePreparation=null; }
+                // The explicit preparation now owns this runtime, including a reused lease.
+                ownedBridge.set(null);
+            }
+            final AapProbe previous=session;
+            if (previous!=null) {
+                ++earbudSessionGeneration;
+                session=null;ready=false;
+                earbudState.disconnected();
+                previous.stop();
+            }
+            applyConnection(next);
+        }
         if (intent.getBooleanExtra("yield_audio",false)) release("transport-baseline",true);
         return START_NOT_STICKY;
     }

@@ -66,6 +66,21 @@ public final class ConnectionPolicyTest {
             p.bridgePrepared(g,TARGET,false,"",reason,"");
             expect(!p.snapshot(TARGET).description.contains(reason),"UI explains capability failure in Chinese");
         }
+        p=new ConnectionPolicy();p.start(TARGET,false);long beforeUpgrade=p.generation();p.ready(beforeUpgrade,TARGET);
+        action(p.start(TARGET,true),ConnectionPolicy.Action.CONNECT_BRIDGE);
+        expect(p.generation()!=beforeUpgrade,"explicit bridge upgrade invalidates direct session callbacks");
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_CONNECTING,"prepared bridge upgrades active direct session");
+        action(p.ready(beforeUpgrade,TARGET),ConnectionPolicy.Action.NONE);
+        action(p.ended(beforeUpgrade,TARGET,true),ConnectionPolicy.Action.NONE);
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_CONNECTING,"old direct callbacks cannot affect bridge upgrade");
+        p.ready(p.generation(),TARGET);
+        action(p.start(TARGET,false),ConnectionPolicy.Action.NONE);
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_READY,"normal start never downgrades explicit bridge");
+        expect(!p.fallbackUsed(),"explicit upgrade does not request service Root fallback");
+        p=new ConnectionPolicy();p.start(TARGET,false);long preparing=p.generation();p.ended(preparing,TARGET,true);
+        action(p.start(TARGET,true),ConnectionPolicy.Action.CONNECT_BRIDGE);
+        action(p.bridgePrepared(preparing,TARGET,true,"old","",""),ConnectionPolicy.Action.NONE);
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_CONNECTING,"explicit upgrade invalidates pending automatic preparation");
         System.out.println("PASS: direct-first, bounded bridge fallback, reconnect, failures and stale completion");
     }
 }
