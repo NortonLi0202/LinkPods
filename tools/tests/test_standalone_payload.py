@@ -5,6 +5,7 @@ import io
 import json
 import hashlib
 import zipfile
+import tempfile
 
 spec=importlib.util.spec_from_file_location('standalone_payload',Path(__file__).parents[1]/'standalone_payload.py')
 payload=importlib.util.module_from_spec(spec)
@@ -12,6 +13,28 @@ spec.loader.exec_module(payload)
 
 
 class RelocationTests(unittest.TestCase):
+    def test_registry_packages_both_synthetic_profiles_without_private_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); (root/'compatibility').mkdir(); (root/'profiles').mkdir()
+            entries=[]
+            for index in range(2):
+                profile={'module_path':'/apex/test/lib%d.so'%index,'file_sha256':str(index)*64,
+                         'build_id':{'hex':'ab'*16,'offset':32}}
+                path='profiles/%d.json'%index; (root/path).write_text(json.dumps(profile))
+                entries.append({'id':'synthetic-%d'%index,'module_path':profile['module_path'],
+                                'sha256':profile['file_sha256'],'build_id':'ab'*16,'profile':path})
+            (root/'compatibility/adapters.json').write_text(json.dumps({'schema':1,'profiles':entries}))
+            binary=root/'binary';binary.write_bytes(b'synthetic binary')
+            agent=root/'agent.js';agent.write_text('// synthetic source')
+            assets=root/'assets';assets.mkdir()
+            adapters=payload.prepare_bridge_assets(assets,root,binary,hashlib.sha256(binary.read_bytes()).hexdigest(),agent)
+            self.assertEqual(len(adapters),2)
+            for adapter in adapters:
+                script=(assets/adapter['agent']).read_text()
+                self.assertIn(adapter['profile_sha256'],script)
+                self.assertIn('__LINKPODS_TARGET_ADDRESS__',script)
+                self.assertTrue((assets/adapter['profile']).is_file())
+
     def test_standalone_diagnostic_skips_manager_and_module_lifecycle(self):
         source='HEAD\nstatic void preclean_link(int fd) {delete_old_files();}\nstatic int start_late_load(void *opaque) { run_late_load_and_restart_manager(); }\nstatic int capture_finish(void *opaque) {return 0;}\nTAIL'
         result=payload.standalone_diagnostic(source)
@@ -44,12 +67,20 @@ class RelocationTests(unittest.TestCase):
         self.assertFalse(payload.target_matches(dict(known,kernel='other'),known))
 
     def archive(self,changes=None):
+        profile={'module_path':'/apex/test/lib.so','file_sha256':'a'*64,'build_id':{'hex':'ab'*16,'offset':32}}
+        profile_bytes=json.dumps(profile,sort_keys=True,separators=(',',':')).encode()
+        profile_hash=hashlib.sha256(profile_bytes).hexdigest()
+        base='adapters/synthetic/'
         files={'libksud.so':b'loader','diagnostic.ko':b'module','frida-inject':b'frida',
-               'inject.template.sh':b'#!/system/bin/sh\nset -eu\n', 'agent.template.js':b'// agent'}
+               base+'inject.template.sh':b'#!/system/bin/sh\n# '+profile_hash.encode()+b'\n',
+               base+'agent.template.js':b'// '+profile_hash.encode(),base+'profile.json':profile_bytes}
         original=dict(files)
         for name,value in (changes or {}).items():
             if name.startswith('assets/root/') and name!='assets/root/manifest.json':files[name.removeprefix('assets/root/')]=value
-        manifest={'package':'lp.pods','files':{name:hashlib.sha256(data).hexdigest() for name,data in files.items()}}
+        manifest={'schema':2,'package':'lp.pods','adapters':[{'id':'synthetic','module_path':profile['module_path'],
+            'sha256':'a'*64,'build_id':'ab'*16,'build_id_offset':32,'profile_sha256':profile_hash,
+            'profile':base+'profile.json','agent':base+'agent.template.js','launcher':base+'inject.template.sh'}],
+            'files':{name:hashlib.sha256(data).hexdigest() for name,data in files.items()}}
         contents={'assets/root/'+name:data for name,data in files.items()}
         contents['assets/root/manifest.json']=json.dumps(manifest).encode()
         contents['lib/arm64-v8a/libdfroot.so']=payload.STANDALONE_PATH*8
@@ -68,8 +99,8 @@ class RelocationTests(unittest.TestCase):
         archive,pins=self.archive()
         payload.verify_apk(archive,pins)
         for changes in [{'assets/root/frida-inject':b'changed'},
-                        {'assets/root/inject.template.sh':b'#!/system/bin/sh\r\n'},
-                        {'assets/root/inject.template.sh':b'am start-foreground-service service\n'}]:
+                        {'assets/root/adapters/synthetic/inject.template.sh':b'#!/system/bin/sh\r\n'},
+                        {'assets/root/adapters/synthetic/inject.template.sh':b'am start-foreground-service service\n'}]:
             archive,pins=self.archive(changes)
             with self.subTest(changes=list(changes)),self.assertRaises(ValueError):payload.verify_apk(archive,pins)
 
@@ -80,6 +111,25 @@ class RelocationTests(unittest.TestCase):
         malformed=io.BytesIO(archive.getvalue().replace(b'assets/root/',b'assets/root\\'))
         with self.assertRaisesRegex(ValueError,'noncanonical APK entry'):
             payload.verify_apk(malformed,pins)
+
+    def test_registry_archive_rejects_ambiguous_identity_profile_and_asset_paths(self):
+        for mutate in [
+            lambda manifest: manifest['adapters'].append(dict(manifest['adapters'][0],id='other')),
+            lambda manifest: manifest['adapters'][0].update(profile='../profile.json'),
+            lambda manifest: manifest['adapters'][0].update(profile_sha256='c'*64),
+            lambda manifest: manifest['adapters'][0].update(build_id='cd'*16),
+            lambda manifest: manifest['files'].update({'../escape':'a'*64}),
+        ]:
+            original,pins=self.archive()
+            with zipfile.ZipFile(original) as source:
+                files={name:source.read(name) for name in source.namelist()}
+            manifest=json.loads(files['assets/root/manifest.json']);mutate(manifest)
+            files['assets/root/manifest.json']=json.dumps(manifest).encode()
+            changed=io.BytesIO()
+            with zipfile.ZipFile(changed,'w') as archive:
+                for name,data in files.items():archive.writestr(name,data)
+            changed.seek(0)
+            with self.assertRaises((ValueError,KeyError)):payload.verify_apk(changed,pins)
 
 
 if __name__=='__main__': unittest.main()
