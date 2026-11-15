@@ -36,7 +36,7 @@ def build_bundle(profile_path, target_address, output, agent_source, binary, exp
     if not re.fullmatch(r'(?:[0-9A-F]{2}:){5}[0-9A-F]{2}', target) or target in ('00:00:00:00:00:00', '02:00:00:00:00:00'):
         raise ValueError('an explicit, valid target Bluetooth address is required')
     output = Path(output).resolve()
-    for protected in (HERE / 'runtime-bundle', ROOT / 'archive/runtime-bundle', ROOT / 'releases'):
+    for protected in (HERE / 'runtime-bundle', ROOT / 'releases'):
         if output == protected.resolve() or output.is_relative_to(protected.resolve()):
             raise ValueError('cannot overwrite archived or existing runtime bundle paths')
     if output.exists():
