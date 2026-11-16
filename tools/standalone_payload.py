@@ -16,6 +16,7 @@ payload_catalog=importlib.util.module_from_spec(_catalog_spec);_catalog_spec.loa
 ROOT=Path(__file__).resolve().parents[1]
 ORIGINAL_PATH=b'/data/user_de/0/df.root/bootstrap'
 STANDALONE_PATH=b'/data/user_de/0/lp.pods/bootstrap'
+ARTIFACT_NAMES={'exploit':'libdfroot.so','module':'diagnostic.ko','loader':'libksud.so','bootstrap':'liblpbootstrap.so'}
 PAYLOADS=ROOT/'third_party/payloads'
 INPUTS=json.loads((PAYLOADS/'manifest.json').read_text(encoding='utf-8-sig'))['inputs']
 PINS={name:record['sha256'] for name,record in INPUTS.items()}
@@ -111,8 +112,12 @@ def prepare(output):
     if len(targets)!=1:raise ValueError('exactly one temporary Root target is required')
     target=targets[0]
     catalog=payload_catalog.load(ROOT/'compatibility/payloads.json')
-    if len(catalog)!=1:raise ValueError('exactly one packaged Root payload is supported')
-    if catalog[0]['target']!=target:raise ValueError('payload target must match temporary Root target')
+    if len(catalog)!=1:
+        raise ValueError('exactly one packaged Root payload is supported')
+    if catalog[0]['target']!=target:
+        raise ValueError('payload target must match temporary Root target')
+    if any(catalog[0]['artifacts'].get(key)!=value for key,value in ARTIFACT_NAMES.items()):
+        raise ValueError('payload artifacts must match the packaged executor')
     (output/'assets/root/payloads.json').write_bytes(
         android_text(json.dumps({'schema':1,'payloads':catalog},sort_keys=True,separators=(',',':'))))
     paths={a['module_path'] for a in adapters if a.get('sha256')==target['bluetooth_sha256']}
@@ -146,13 +151,14 @@ def verify_apk(path,pins=None):
         for key,name in [('loader','libksud.so'),('module','diagnostic.ko'),('frida','frida-inject')]:
             if manifest['files'].get(name)!=pins[key]:raise ValueError('APK pinned binary mismatch: '+name)
         if manifest.get('schema')!=2:raise ValueError('unsupported Root payload manifest schema')
-        catalog=json.loads(archive.read('assets/root/payloads.json'))
-        if (catalog.get('schema')!=1 or not isinstance(catalog.get('payloads'),list) or len(catalog['payloads'])!=1
-                or (manifest.get('target') is not None and catalog['payloads'][0].get('target')!=manifest.get('target'))):
+        catalog=payload_catalog.validate(json.loads(archive.read('assets/root/payloads.json')))
+        if len(catalog)!=1:
+            raise ValueError('exactly one packaged Root payload is supported')
+        if manifest.get('target') is not None and catalog[0]['target']!=manifest.get('target'):
             raise ValueError('APK payload catalog mismatch')
-        catalog_artifacts=catalog['payloads'][0].get('artifacts')
-        if (not isinstance(catalog_artifacts,dict) or catalog_artifacts.get('module') not in manifest['files']
-                or catalog_artifacts.get('loader') not in manifest['files']):
+        if any(catalog[0]['artifacts'].get(key)!=value for key,value in ARTIFACT_NAMES.items()):
+            raise ValueError('APK payload artifacts do not match the executor')
+        if catalog[0]['artifacts']['module'] not in manifest['files'] or catalog[0]['artifacts']['loader'] not in manifest['files']:
             raise ValueError('APK payload artifact missing')
         adapters=manifest.get('adapters',[])
         ids=set();identities=set();prologue_paths=set()

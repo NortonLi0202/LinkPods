@@ -15,9 +15,7 @@ def _artifact(value):
     return value
 
 
-def load(path=None):
-    path = Path(path) if path is not None else ROOT / 'compatibility/payloads.json'
-    document = json.loads(path.read_text(encoding='utf-8-sig'))
+def validate(document):
     if document.get('schema') != 1 or not isinstance(document.get('payloads'), list) or not document['payloads']:
         raise ValueError('invalid payload catalog schema')
     result, ids, identities = [], set(), set()
@@ -51,3 +49,8 @@ def load(path=None):
         ids.add(identifier)
         result.append(dict(entry))
     return result
+
+
+def load(path=None):
+    path = Path(path) if path is not None else ROOT / 'compatibility/payloads.json'
+    return validate(json.loads(path.read_text(encoding='utf-8-sig')))

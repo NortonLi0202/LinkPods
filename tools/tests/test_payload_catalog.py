@@ -63,3 +63,9 @@ class PayloadCatalogTests(unittest.TestCase):
     def test_empty_catalog_is_refused(self):
         with self.assertRaisesRegex(ValueError, 'schema'):
             self.load([])
+
+    def test_invalid_payload_id_is_refused(self):
+        broken = json.loads(json.dumps(self.entry))
+        broken['id'] = 'INVALID'
+        with self.assertRaisesRegex(ValueError, 'payload id'):
+            self.load([broken])

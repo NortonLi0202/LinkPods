@@ -159,7 +159,8 @@ final class RootEnvironment {
             if(!prepared.access.ready()) {
                 prepared.missing=prepared.access.status==RootAccess.Status.DENIED?"root_permission_denied"
                     :prepared.access.status==RootAccess.Status.UNKNOWN?"root_status_unknown":"root_not_available";
-                String diagnostic=allowTemporary?temporary.diagnostic():"仅检测已有 Root，没有运行临时 Root";
+                String diagnostic=(!prepared.temporarySupported||allowTemporary)
+                    ?temporary.diagnostic():"仅检测已有 Root，没有运行临时 Root";
                 if(prepared.access.status==RootAccess.Status.UNSUPPORTED && diagnostic.matches("[a-z_]+"))
                     prepared.missing=diagnostic;
                 prepared.diagnostic=diagnostic;
