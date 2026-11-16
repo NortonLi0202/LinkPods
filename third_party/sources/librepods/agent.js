@@ -194,6 +194,19 @@ function checkProfileShape(profile) {
     }
   }
 
+  var fingerprint = profile.layout_fingerprint;
+  if (fingerprint !== undefined) {
+    if (fingerprint === null || typeof fingerprint !== 'object') {
+      return 'layout_fingerprint must be an object';
+    }
+    if (!isSafeNonNegativeInt(fingerprint.length) || fingerprint.length < 1 || fingerprint.length > 4096) {
+      return 'layout_fingerprint.length must be between 1 and 4096';
+    }
+    if (!isHexString(fingerprint.hex) || fingerprint.hex.length !== fingerprint.length * 2) {
+      return 'layout_fingerprint.hex must match layout_fingerprint.length';
+    }
+  }
+
   var offsets = profile.offsets;
   if (offsets === null || typeof offsets !== 'object') {
     return 'offsets must be an object';
@@ -287,6 +300,9 @@ function probe(profile) {
   var reason = checkProfileShape(profile);
   if (reason !== null) {
     return fail(reason);
+  }
+  if (agent.state !== 'disabled') {
+    return fail('probe rejected: state is ' + agent.state);
   }
   // DI capability must be known before any reference-layout read. Reset first so a
   // failed or non-exact probe cannot inherit an earlier exact session's permission.
@@ -406,6 +422,23 @@ function probe(profile) {
       offsets[scanName] = scanned.offset;
       details.checks['functions.' + scanName + '.prologue'] = true;
     }
+  }
+
+  if (profile.layout_fingerprint !== undefined) {
+    var layoutFingerprint = profile.layout_fingerprint;
+    if (offsets.l2cap + layoutFingerprint.length > size) {
+      return fail('layout_fingerprint range outside module');
+    }
+    var fingerprintBytes;
+    try {
+      fingerprintBytes = base.add(offsets.l2cap).readByteArray(layoutFingerprint.length);
+    } catch (fingerprintError) {
+      return fail('layout_fingerprint read failed: ' + String(fingerprintError));
+    }
+    if (!bytesEqualHex(fingerprintBytes, layoutFingerprint.hex)) {
+      return fail('l2cap layout fingerprint mismatch');
+    }
+    details.layout_fingerprint = true;
   }
 
   agent.resolvedOffsets = offsets;

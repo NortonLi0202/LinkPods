@@ -59,6 +59,7 @@ rpc.exports.appleidentity=function(profile){
   if(diDisabled())return {handle:0,vendor:0,source:0,disabled:true};
   if(diSaved)throw new Error('DI identity already enabled');
   const d=currentDiFields(profile);
+  if(diDisabled())return {handle:0,vendor:0,source:0,disabled:true};
   diProfile=profile;
   diSaved={handle:d.primary,vendor:d.fields[0x201],source:d.fields[0x205],
     oldVendor:diRead(d.fields[0x201]),oldSource:diRead(d.fields[0x205])};

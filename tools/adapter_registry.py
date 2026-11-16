@@ -80,13 +80,19 @@ def load_registry(root=ROOT, registry_path=None):
                     or resolution.get('mode') != 'prologue_scan'):
                 raise ValueError('prologue adapter requires a prologue_scan profile')
             sha, build = entry.get('sha256', ''), entry.get('build_id', '')
+            if not isinstance(sha, str) or (sha and not re.fullmatch(r'[0-9a-f]{64}', sha)):
+                raise ValueError('invalid adapter SHA-256')
+            if not isinstance(build, str) or (build and not re.fullmatch(r'(?:[0-9a-f]{2}){1,64}', build)):
+                raise ValueError('invalid adapter BuildID')
+            note = profile.get('build_id')
+            if not isinstance(note, dict):
+                raise ValueError('profile build_id must be an object')
             if sha and sha != profile.get('file_sha256'):
                 raise ValueError('adapter SHA-256 differs from profile')
-            if build and build != profile.get('build_id', {}).get('hex'):
+            if build and build != note.get('hex'):
                 raise ValueError('adapter BuildID differs from profile')
             if module in prologue_paths: raise ValueError('ambiguous prologue adapter for module path')
             prologue_paths.add(module)
-            note = profile.get('build_id', {})
             offset = note.get('offset', 0)
             if type(offset) is not int or offset < 0 or offset > 2**31-1: raise ValueError('invalid BuildID offset')
         ids.add(identifier)
