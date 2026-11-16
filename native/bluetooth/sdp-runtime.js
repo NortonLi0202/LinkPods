@@ -26,6 +26,7 @@ function diConfiguration(profile) {
 rpc.exports.prepareidentity=function(profile){diConfiguration(profile);return {ok:true};};
 function currentDiFields(profile) {
   const config=diConfiguration(profile),l=config.layout,at=config.at;
+  if(diDisabled())throw new Error('DI disabled');
   const primary=at(l.primary_handle_offset,4).readU32(),count=at(l.record_count_offset,2).readU16();
   if(count>l.max_records || primary===0)throw new Error('Invalid local SDP table');
   const fields={};
@@ -50,16 +51,29 @@ function currentDiFields(profile) {
 function diRead(p){return (p.readU8()<<8)|p.add(1).readU8();}
 function diWrite(p,value){p.writeByteArray([(value>>>8)&255,value&255]);}
 function diDisabled(){try{return rpc.exports.status().di_identity!==true;}catch(error){return true;}}
+function diDisabledResult(){return {handle:0,vendor:0,source:0,disabled:true};}
 rpc.exports.diidentity=function(){
-  if(diDisabled())return {handle:0,vendor:0,source:0,disabled:true};
-  const d=currentDiFields(diProfile);
+  if(diDisabled())return diDisabledResult();
+  let d;
+  try {
+    d=currentDiFields(diProfile);
+  } catch(error) {
+    if(diDisabled())return diDisabledResult();
+    throw error;
+  }
   return {handle:d.primary,vendor:diRead(d.fields[0x201]),source:diRead(d.fields[0x205])};
 };
 rpc.exports.appleidentity=function(profile){
-  if(diDisabled())return {handle:0,vendor:0,source:0,disabled:true};
+  if(diDisabled())return diDisabledResult();
   if(diSaved)throw new Error('DI identity already enabled');
-  const d=currentDiFields(profile);
-  if(diDisabled())return {handle:0,vendor:0,source:0,disabled:true};
+  let d;
+  try {
+    d=currentDiFields(profile);
+  } catch(error) {
+    if(diDisabled())return diDisabledResult();
+    throw error;
+  }
+  if(diDisabled())return diDisabledResult();
   diProfile=profile;
   diSaved={handle:d.primary,vendor:d.fields[0x201],source:d.fields[0x205],
     oldVendor:diRead(d.fields[0x201]),oldSource:diRead(d.fields[0x205])};
