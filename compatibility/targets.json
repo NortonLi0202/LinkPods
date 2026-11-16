@@ -5,7 +5,7 @@
       "model": "SM-X810",
       "android_sdk": 36,
       "firmware": "X810ZCS6EZH3",
-      "kernel": "5.15.189-android13-8-3251856",
+      "kernel": "5.15.189-android13-8-3251856-abX810ZCS6EZH3",
       "bluetooth_sha256": "4dc06d067a9a237f3a882ba3a6daabe469a8c0deb06731579d254c37a10cefa8"
     }
   ],
