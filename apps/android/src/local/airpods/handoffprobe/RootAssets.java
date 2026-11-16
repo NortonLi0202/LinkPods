@@ -15,6 +15,9 @@ final class RootAssets {
     private final Context context;
     final JSONObject manifest;
     private final BridgeAdapterRegistry registry;
+    private final JSONArray payloads;
+    private String payloadProblem="";
+    private String payloadId="";
     RootAssets(Context source) throws Exception {
         context=source.createDeviceProtectedStorageContext();
         if(!RootSessionConfig.PACKAGE.equals(context.getPackageName()) || context.getApplicationInfo().uid/100000!=0)
@@ -41,6 +44,30 @@ final class RootAssets {
             adapters.add(adapter);
         }
         registry=new BridgeAdapterRegistry(adapters);
+        JSONArray catalog=null;
+        if(assets.has("payloads.json")) {
+            JSONObject document=new JSONObject(text("payloads.json"));
+            if(document.getInt("schema")!=1)throw new IOException("Unsupported payload catalog schema");
+            catalog=document.getJSONArray("payloads");
+            for(int index=0;index<catalog.length();index++) {
+                JSONObject entry=catalog.getJSONObject(index);
+                if(!entry.getString("id").matches("[a-z0-9][a-z0-9-]{0,79}"))throw new IOException("Invalid payload id");
+                JSONObject target=entry.getJSONObject("target");
+                for(String key:new String[]{"model","firmware","kernel","bluetooth_sha256"})
+                    if(target.getString(key).isEmpty())throw new IOException("Incomplete payload target");
+                if(target.getInt("android_sdk")<=0)throw new IOException("Invalid payload SDK");
+                JSONObject artifacts=entry.getJSONObject("artifacts");
+                for(String key:new String[]{"exploit","module","loader","bootstrap"})
+                    if(!artifacts.getString(key).matches("[A-Za-z0-9_.-]+"))throw new IOException("Invalid payload artifact name");
+                if(!assets.has(artifacts.getString("module")) || !assets.has(artifacts.getString("loader")))
+                    throw new IOException("Payload asset missing");
+                File nativeDirectory=new File(context.getApplicationInfo().nativeLibraryDir);
+                if(!new File(nativeDirectory,artifacts.getString("exploit")).isFile() ||
+                   !new File(nativeDirectory,artifacts.getString("bootstrap")).isFile())
+                    throw new IOException("Payload native artifact missing");
+            }
+        }
+        payloads=catalog;
         File log=new File(context.getFilesDir(),"root-bootstrap.log");
         if(!log.exists()&&!log.createNewFile())throw new IOException("Cannot prepare Root log");
         Os.chmod(log.getPath(),0600);
@@ -152,17 +179,44 @@ final class RootAssets {
         Files.write(new File(directory,"manifest.json").toPath(),files.toString().getBytes(StandardCharsets.UTF_8));
         Os.chmod(new File(directory,"manifest.json").getPath(),0600);
     }
+    String payloadProblem() {return payloadProblem;}
+    String payloadId() {return payloadId;}
     boolean targetMatches() {
+        payloadProblem="";
         try {
-            JSONObject target=manifest.getJSONObject("target");
-            Map<String,String> expected=new HashMap<>(),observed=new HashMap<>();
-            for(String key:new String[]{"model","android_sdk","firmware","kernel","bluetooth_sha256"})expected.put(key,target.getString(key));
-            observed.put("model",android.os.Build.MODEL);observed.put("android_sdk",String.valueOf(android.os.Build.VERSION.SDK_INT));
-            observed.put("firmware",android.os.Build.VERSION.INCREMENTAL);observed.put("kernel",System.getProperty("os.version",""));
+            Map<String,String> observed=new HashMap<>();
+            observed.put("model",android.os.Build.MODEL);
+            observed.put("android_sdk",String.valueOf(android.os.Build.VERSION.SDK_INT));
+            observed.put("firmware",android.os.Build.VERSION.INCREMENTAL);
+            observed.put("kernel",System.getProperty("os.version",""));
             String modulePath=manifest.getString("temporary_root_module_path");
             BridgeAdapterRegistry.validateModulePath(modulePath);
-            observed.put("bluetooth_sha256",sha256(new File(modulePath)));
-            return RootTarget.matches(observed,expected) && !new File("/dev/df").exists();
-        } catch(Exception error) {return false;}
+            File module=new File(modulePath);
+            if(!module.isFile()) {payloadProblem="root_module_missing";return false;}
+            observed.put("bluetooth_sha256",sha256(module));
+            if(payloads!=null) {
+                JSONObject selected=null;
+                for(int index=0;index<payloads.length();index++) {
+                    JSONObject target=payloads.getJSONObject(index).getJSONObject("target");
+                    Map<String,String> expected=new HashMap<>();
+                    for(String key:new String[]{"model","android_sdk","firmware","kernel","bluetooth_sha256"})
+                        expected.put(key,target.getString(key));
+                    if(RootTarget.matches(observed,expected)) {
+                        if(selected!=null) {payloadProblem="ambiguous_root_payload";return false;}
+                        selected=payloads.getJSONObject(index);
+                    }
+                }
+                if(selected==null) {payloadProblem="no_exact_root_payload";return false;}
+                payloadId=selected.getString("id");
+            } else {
+                JSONObject target=manifest.getJSONObject("target");
+                Map<String,String> expected=new HashMap<>();
+                for(String key:new String[]{"model","android_sdk","firmware","kernel","bluetooth_sha256"})
+                    expected.put(key,target.getString(key));
+                if(!RootTarget.matches(observed,expected)) {payloadProblem="no_exact_root_payload";return false;}
+            }
+            if(new File("/dev/df").exists()) {payloadProblem="exploit_already_loaded";return false;}
+            return true;
+        } catch(Exception error) {payloadProblem="payload_probe_failed";return false;}
     }
 }
