@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "zh-CN"
+
+reviews:
+  profile: "chill"
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    # Include stacked PRs targeting another development branch.
+    base_branches:
+      - '.*'
+  path_filters:
+    - "!**/build/**"
+    - "!**/__pycache__/**"
+    - "!.local/**"
+    - "!.worktrees/**"
+    - "!releases/**"
+  path_instructions:
+    - path: "apps/android/**"
+      instructions: |
+        按 AGENTS.md、README.md 和 docs/release/v1.0.md 的项目约定审查。
+        重点检查 Android 生命周期、服务与回调清理、线程切换和 Root 会话隔离。
+        耳机状态必须区分未知、待确认、已回报和超时；检查重连后的旧状态与异步回调串线。
+        协议解析需检查长度、边界和异常数据；写入耳机设置须保留白名单与目标检查。
+        本项目使用 build.ps1 构建，不以缺少 Gradle 工程本身作为缺陷。
+    - path: "native/bluetooth/**"
+      instructions: |
+        重点检查蓝牙适配布局、指针与偏移、缓冲区边界、资源释放和异步会话生命周期。
+        已有 Root、桥接准备成功、蓝牙已连接和实际音频有声是不同状态。
+        原生适配必须精确匹配支持配置，不根据 Android 版本或品牌推断兼容。
+    - path: "compatibility/**"
+      instructions: |
+        检查设备、固件与适配条件是否保持精确匹配，以及未知配置是否正确报告不可用。
+        minSdk32、ARM64 和 UID 0 均不能单独证明蓝牙适配可用或双向交接成功。
+    - path: "tools/**"
+      instructions: |
+        重点检查路径边界、归档不覆盖、清理范围及私钥和签名身份保护。
+        保留本地构建输入的固定来源与哈希校验；缺少私有二进制不应被伪装成完整构建成功。
+        源码检查入口为 python tools/project.py check；相关主机测试入口为 python tools/project.py test。
+    - path: "third_party/**"
+      instructions: |
+        结合 THIRD_PARTY.md 和来源清单审查第三方源码、补丁、许可与固定哈希的一致性。
+        第三方源码可能直接参与产品构建，应审查本次变更的实际影响。
+    - path: "docs/**"
+      instructions: |
+        区分源码实现、主机测试、APK 构建、设备部署和实际耳机听感验证。
+        不把未验收的耳机控制、双向交接或跨设备支持描述为稳定能力。
+
+chat:
+  auto_reply: true

@@ -44,3 +44,4 @@
 *.key
 *.private.*
 local.settings.json
+!/.coderabbit.yaml
