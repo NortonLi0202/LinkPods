@@ -61,3 +61,26 @@ class AdapterRegistryTests(unittest.TestCase):
         self.assertEqual(adapters[0]['module_path'],adapters[1]['module_path'])
         self.assertNotEqual(adapters[0]['sha256'],adapters[1]['sha256'])
         self.assertNotEqual(adapters[0]['build_id'],adapters[1]['build_id'])
+
+    def test_prologue_adapter_is_explicit_unique_and_requires_resolution(self):
+        profile={'sdp_identity': dict(SDP_LAYOUT), 'module_path':'/apex/test/lib64/prologue.so',
+                 'file_sha256':'c'*64, 'build_id':{'hex':'ab'*16,'offset':32},
+                 'resolution':{'schema':1,'mode':'prologue_scan'}}
+        path='profiles/prologue.json'; (self.root/path).write_text(json.dumps(profile))
+        self.entries.append({'id':'synthetic-prologue','match':'prologue',
+                             'module_path':profile['module_path'],'profile':path})
+        adapters=self.load()
+        prologue=[a for a in adapters if a['id']=='synthetic-prologue'][0]
+        self.assertEqual(prologue['match'],'prologue')
+        self.assertNotIn('sha256',prologue)
+        self.assertNotIn('build_id',prologue)
+        self.entries.append({'id':'synthetic-prologue-two','match':'prologue',
+                             'module_path':profile['module_path'],'profile':path})
+        with self.assertRaisesRegex(ValueError,'ambiguous prologue'): self.load()
+        self.entries.pop()
+        broken=dict(profile); broken.pop('resolution')
+        broken['module_path']='/apex/test/lib64/broken.so'
+        broken_path='profiles/broken.json'; (self.root/broken_path).write_text(json.dumps(broken))
+        self.entries.append({'id':'synthetic-broken','match':'prologue',
+                             'module_path':broken['module_path'],'profile':broken_path})
+        with self.assertRaisesRegex(ValueError,'prologue_scan'): self.load()

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "resolution": {
+    "schema": 1,
+    "mode": "prologue_scan"
+  },
+  "module_name": "libbluetooth_jni.so",
+  "module_path": "/apex/com.android.bt/lib64/libbluetooth_jni.so",
+  "file_sha256": "4dc06d067a9a237f3a882ba3a6daabe469a8c0deb06731579d254c37a10cefa8",
+  "build_id": {
+    "offset": 856,
+    "hex": "1adfcc05e2ec05a7a4f61eed16f36456"
+  },
+  "functions": {
+    "l2cap": {
+      "offset": 9861472,
+      "prologue": "5f2403d55e8600f83f2303d5ff4301d1fd7b03a9f32300f9fdc30091f30300aa400200b588c78052"
+    },
+    "sdp": {
+      "offset": 4388156,
+      "prologue": "5f2403d55e8600f83f2303d5fd7bbda9f50b00f9f44f02a9fd030091534a0090"
+    }
+  },
+  "offsets": {
+    "ccb_lcb": 64,
+    "ccb_rcb": 88,
+    "rcb_wire_psm": 4,
+    "rcb_preferred_mode": 120,
+    "lcb_address": 56
+  },
+  "aacp_psm": 4097,
+  "ertm_mode": 3,
+  "provenance": {
+    "input_elf": "libbluetooth_jni.so (local input, not distributed)",
+    "input_size": 14415432,
+    "generated_at_utc": "2026-11-14T07:01:03Z",
+    "scope": "reference build; only function addresses are re-resolved by prologue scan when the module build differs; sdp_identity offsets and DI identity writes stay exact-profile-only"
+  },
+  "sdp_identity": {
+    "max_records": 64,
+    "attribute_count_offset": 8,
+    "attributes_offset": 16,
+    "records_offset": 14620272,
+    "record_handle_offset": 0,
+    "record_stride": 1216,
+    "record_count_offset": 14620268,
+    "attribute_type_offset": 18,
+    "max_attributes": 50,
+    "attribute_id_offset": 16,
+    "attribute_length_offset": 0,
+    "attribute_value_pointer_offset": 8,
+    "primary_handle_offset": 14620264,
+    "attribute_stride": 24
+  }
+}

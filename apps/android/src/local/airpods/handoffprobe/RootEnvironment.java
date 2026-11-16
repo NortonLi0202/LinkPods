@@ -196,11 +196,15 @@ final class RootEnvironment {
                 }
                 if(Thread.currentThread().isInterrupted())throw new InterruptedException();
                 long age=System.currentTimeMillis()-status.getLong("updated_at_ms");
+                // Prologue-resolved bridges intentionally do not write SDP DI identity;
+                // require the reference identity only when the agent kept DI enabled.
+                boolean diIdentity=status.optBoolean("di_identity",true);
+                boolean identityReady=identity.getInt("vendor")==0x4c && identity.getInt("source")==1;
                 boolean nativeReady=status.getInt("pid")>0 && age>=0 && age<=15000
                     && status.getJSONObject("state").getString("state").equals("enabled")
                     && configuration.getString("target_address").equals(DeviceConfig.address(target,true))
                     && configuration.getString("profile_sha256").equals(adapter.profileHash)
-                    && identity.getInt("vendor")==0x4c && identity.getInt("source")==1;
+                    && (identityReady || !diIdentity);
                 if(!nativeReady || !activateBridge(prepared))throw new IOException("Bridge runtime is invalid or already stopping");
             }
         }catch(InterruptedException error){

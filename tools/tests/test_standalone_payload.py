@@ -47,7 +47,7 @@ class RelocationTests(unittest.TestCase):
             for directory in ['native/bluetooth','third_party/payloads','third_party/sources/dfroot',
                               'third_party/sources/librepods','apps/android/native','compatibility']:
                 (root/directory).mkdir(parents=True,exist_ok=True)
-            for name in ['prepare-runtime-bundle.py','sdp-runtime.js','resident-runtime.js','profile.json']:
+            for name in ['prepare-runtime-bundle.py','sdp-runtime.js','resident-runtime.js','profile.json','profile-prologue.json']:
                 shutil.copyfile(payload.ROOT/'native/bluetooth'/name,root/'native/bluetooth'/name)
             shutil.copyfile(payload.ROOT/'compatibility/adapters.json',root/'compatibility/adapters.json')
             shutil.copyfile(payload.ROOT/'compatibility/targets.json',root/'compatibility/targets.json')
@@ -65,7 +65,7 @@ class RelocationTests(unittest.TestCase):
             with patch.multiple(payload,ROOT=root,PAYLOADS=inputs,INPUTS=records,PINS=pins):payload.prepare(output)
             manifest=json.loads((output/'assets/root/manifest.json').read_text())
             self.assertEqual(manifest['schema'],2)
-            self.assertEqual(len(manifest['adapters']),1)
+            self.assertEqual(len(manifest['adapters']),2)
             archive=io.BytesIO()
             with zipfile.ZipFile(archive,'w') as packaged:
                 for file in (output/'assets/root').rglob('*'):

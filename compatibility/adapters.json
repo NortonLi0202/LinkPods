@@ -7,5 +7,11 @@
     "module_path": "/apex/com.android.bt/lib64/libbluetooth_jni.so",
     "profile": "native/bluetooth/profile.json",
     "status": "historical_device_trial_not_stable"
+  }, {
+    "id": "sm-x810-bt-prologue",
+    "match": "prologue",
+    "module_path": "/apex/com.android.bt/lib64/libbluetooth_jni.so",
+    "profile": "native/bluetooth/profile-prologue.json",
+    "status": "experimental_dynamic_resolution"
   }]
 }
