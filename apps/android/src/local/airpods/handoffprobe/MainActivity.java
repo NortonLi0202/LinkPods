@@ -305,9 +305,21 @@ public class MainActivity extends Activity {
                     case TEMPORARY_ROOT: environmentStatus="已验证临时 Root"; break;
                     case DENIED: environmentStatus="Root 授权未通过，不尝试绕过授权"; break;
                     case UNKNOWN: environmentStatus="Root 检测未完成，可重新检查"; break;
-                    case UNSUPPORTED: environmentStatus=prepared.missing.equals("matching_bridge_adapter_missing")
-                        ?"缺少匹配的系统桥接适配，未请求 Root"
-                        :"未取得应用 Root 控制权限；本次没有可用的 Root 路线"; break;
+                    case UNSUPPORTED: {
+                        String missing=prepared.missing;
+                        if(missing.equals("matching_bridge_adapter_missing"))
+                            environmentStatus="缺少匹配的系统桥接适配，未请求 Root";
+                        else if(missing.equals("no_exact_root_payload"))
+                            environmentStatus="没有与当前机型/固件精确匹配的临时 Root payload；未执行漏洞";
+                        else if(missing.equals("ambiguous_root_payload"))
+                            environmentStatus="payload 目录存在多个匹配项；已拒绝选择";
+                        else if(missing.equals("root_module_missing"))
+                            environmentStatus="蓝牙模块不可读，无法核对临时 Root payload";
+                        else if(missing.equals("exploit_already_loaded"))
+                            environmentStatus="本机已加载临时 Root 模块，未重复执行漏洞";
+                        else environmentStatus="未取得应用 Root 控制权限；本次没有可用的 Root 路线";
+                        break;
+                    }
                     case PREPARATION_FAILED: environmentStatus=prepared.temporaryAttempted
                         ?"Root 准备流程异常，尚未确认 UID 0；请查看运行记录"
                         :"Root 运行环境准备失败，请查看运行记录；未执行临时 Root"; break;

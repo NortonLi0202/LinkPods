@@ -45,4 +45,10 @@ prologue 长度必须在真实模块上验证唯一性：本机 `libbluetooth_jn
 
 临时 Root 的机型/固件精确白名单仍单独位于 `compatibility/targets.json`；增加 Bluetooth 适配不会增加漏洞适用范围。
 
+## 临时 Root payload 目录
+
+`compatibility/payloads.json` 是临时 Root 的精确目录，每项包含 `id`、`status`、`target`（机型、SDK、固件、内核、蓝牙模块 SHA-256）和 `artifacts`（exploit/module/loader/bootstrap）。运行时先读取设备身份，只有唯一命中才执行；无命中、多个命中或已加载过模块时拒绝，不套用其他固件。
+
+当前构建只打包一套 payload；新增 payload 需要把对应构件加入构建输入，并扩展打包/执行支持。仅修改 `payloads.json` 不会让另一个固件的漏洞路线变得可用。
+
 当前注册表只有一套真实 SM-X810 配置。主机测试中的第二套配置为模拟数据，用于证明扩展、选择与拒绝逻辑；不能计为支持设备。跨设备和干净重启环境的设备验收仍待进行。

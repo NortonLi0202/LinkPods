@@ -61,5 +61,5 @@ final class StandaloneRootProvider implements RootAccess.Provider {
         catch(Exception error){diagnostic=error.getClass().getSimpleName()+": "+error.getMessage();return false;}
         finally {if(process!=null)process.destroy();reader.shutdownNow();}
     }
-    String diagnostic(){return diagnostic;}
+    String diagnostic(){return diagnostic.isEmpty()?assets.payloadProblem():diagnostic;}
 }
