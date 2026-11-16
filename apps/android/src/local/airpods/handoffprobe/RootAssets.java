@@ -32,7 +32,8 @@ final class RootAssets {
         for(int index=0;index<records.length();index++) {
             JSONObject entry=records.getJSONObject(index);
             BridgeAdapterRegistry.Adapter adapter=new BridgeAdapterRegistry.Adapter(entry.getString("id"),entry.getString("module_path"),
-                entry.getString("sha256"),entry.getString("build_id"),entry.getInt("build_id_offset"),entry.getString("profile_sha256"));
+                entry.optString("match","exact"),entry.optString("sha256",""),entry.optString("build_id",""),
+                entry.optInt("build_id_offset",0),entry.getString("profile_sha256"));
             for(String[] item:new String[][]{{"profile","profile.json"},{"agent","agent.template.js"},{"launcher","inject.template.sh"}})
                 if(!entry.getString(item[0]).equals(adapter.asset(item[1])) || !assets.has(adapter.asset(item[1])))throw new IOException("Invalid adapter asset reference");
             // Packaged profiles use the same canonical bytes as the native runtime hash.
@@ -89,20 +90,45 @@ final class RootAssets {
     BridgeAdapterRegistry.Adapter matchBridge() throws Exception {
         for(BridgeAdapterRegistry.Adapter adapter:registry.adapters) {
             JSONObject profile=new JSONObject(verifiedText(adapter.asset("profile.json")));
-            JSONObject build=profile.getJSONObject("build_id");
-            if(!adapter.modulePath.equals(profile.getString("module_path")) || !adapter.sha256.equals(profile.getString("file_sha256")) ||
-               !adapter.buildId.equals(build.getString("hex")) || adapter.buildIdOffset!=build.getInt("offset"))throw new IOException("Invalid adapter profile identity");
+            if(!adapter.modulePath.equals(profile.getString("module_path")))throw new IOException("Invalid adapter profile identity");
+            if(adapter.exact()) {
+                JSONObject build=profile.getJSONObject("build_id");
+                if(!adapter.sha256.equals(profile.getString("file_sha256")) ||
+                   !adapter.buildId.equals(build.getString("hex")) || adapter.buildIdOffset!=build.getInt("offset"))throw new IOException("Invalid adapter profile identity");
+            } else {
+                JSONObject resolution=profile.optJSONObject("resolution");
+                if(resolution==null || resolution.optInt("schema",0)!=1 || !"prologue_scan".equals(resolution.optString("mode")))
+                    throw new IOException("Invalid prologue adapter profile");
+                JSONObject functions=profile.getJSONObject("functions");
+                for(String name:new String[]{"l2cap","sdp"}) {
+                    JSONObject function=functions.getJSONObject(name);
+                    if(!function.getString("prologue").matches("(?:[0-9a-f]{2}){8,}"))throw new IOException("Invalid prologue");
+                }
+            }
         }
-        return registry.select(adapter->{
+        BridgeAdapterRegistry.Adapter exact=null;
+        for(BridgeAdapterRegistry.Adapter adapter:registry.adapters) {
+            if(!adapter.exact())continue;
             File file=new File(adapter.modulePath);
-            if(!file.isFile())return null;
+            if(!file.isFile())continue;
             String hash=sha256(file);
-            if(!hash.equals(adapter.sha256))return null;
+            if(!hash.equals(adapter.sha256))continue;
             byte[] bytes=new byte[adapter.buildId.length()/2];
             try(RandomAccessFile input=new RandomAccessFile(file,"r")) {input.seek(adapter.buildIdOffset);input.readFully(bytes);}
             StringBuilder hex=new StringBuilder();for(byte value:bytes)hex.append(String.format(Locale.ROOT,"%02x",value&255));
-            return new String[]{hash,hex.toString()};
-        });
+            if(!hex.toString().equals(adapter.buildId))continue;
+            if(exact!=null)throw new IOException("Ambiguous installed bridge adapters");
+            exact=adapter;
+        }
+        if(exact!=null)return exact;
+        BridgeAdapterRegistry.Adapter resolved=null;
+        for(BridgeAdapterRegistry.Adapter adapter:registry.adapters) {
+            if(adapter.exact() || !new File(adapter.modulePath).isFile())continue;
+            if(resolved!=null)throw new IOException("Ambiguous prologue bridge adapters");
+            resolved=adapter;
+        }
+        if(resolved!=null)android.util.Log.i("LinkPods","prologue resolution adapter selected: "+resolved.id);
+        return resolved;
     }
     void stageBridge(String targetAddress,BridgeAdapterRegistry.Adapter adapter,String instanceId) throws Exception {
         if(adapter==null || !registry.adapters.contains(adapter))throw new IOException("Bridge adapter was not selected from this registry");

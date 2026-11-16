@@ -24,6 +24,24 @@
 4. 运行时读取模块实际 SHA-256 及 profile 指定位置的 BuildID。未知模块返回无适配，不采用第一项或按 Android 大版本推测。
 5. Root 准备只消费选中的适配。启用后的状态必须再次吻合目标耳机、profile 哈希和实际运行状态；APK 资产文件名使用标准正斜杠并验证原始 ZIP 条目。
 
+## 动态解析适配器（实验性）
+
+精确 SHA-256/BuildID 之外的同一模块可以有且只有一个 `"match": "prologue"` 配置。该配置不写 SHA-256/BuildID，profile 增加：
+
+```json
+"resolution": {"schema": 1, "mode": "prologue_scan"}
+```
+
+并给 `functions.l2cap/sdp` 提供在该模块中唯一的 prologue 字节。运行时先匹配精确配置；没有精确命中时才考虑 prologue 配置，且同一模块只能有一个。launcher 对这类配置不强制文件哈希，agent 在进程内扫描 prologue：
+
+- 每个函数必须恰好一处命中，零处或多处都失败，不写内存、不安装 hook；
+- 命中后仍校验函数入口字节；hook 触发的 PSM、目标 MAC、preferred mode 校验保持原样，任一不符不重写；
+- 结构偏移（`offsets`、`sdp_identity`）仍来自 profile，不从代码猜测，版本差异必须另行验证。
+
+prologue 长度必须在真实模块上验证唯一性：本机 `libbluetooth_jni.so` 的 32 字节 l2cap 前缀有 44 处重复，扩到 40 字节才唯一；sdp 的 32 字节前缀唯一。新增模块时先做离线唯一性检查，再上机验证。
+
+这是实验性扩展，不等于支持范围：它只覆盖“函数代码未变、地址或 BuildID 变了”的同源模块。结构布局不同的模块仍需一套精确 profile。
+
 临时 Root 的机型/固件精确白名单仍单独位于 `compatibility/targets.json`；增加 Bluetooth 适配不会增加漏洞适用范围。
 
 当前注册表只有一套真实 SM-X810 配置。主机测试中的第二套配置为模拟数据，用于证明扩展、选择与拒绝逻辑；不能计为支持设备。跨设备和干净重启环境的设备验收仍待进行。
