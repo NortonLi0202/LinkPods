@@ -64,6 +64,7 @@ public final class EarbudCommands {
             status="控制通道已断开，电量为上次读数";
         }
         synchronized boolean receive(byte[] packet) {
+            packet=AapPackets.normalize(packet);
             if(!ready || packet==null || packet.length<6 || packet[0]!=4 || packet[1]!=0
                 || packet[2]!=4 || packet[3]!=0 || packet[5]!=0) return false;
             if(packet[4]==9) {

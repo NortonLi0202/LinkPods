@@ -12,6 +12,7 @@ final class RootEnvironment {
         String local="",diagnostic="";
         boolean nativeReady;
         boolean temporarySupported;
+        boolean temporaryAttempted;
     }
     static Prepared prepare(Context context,String target,boolean enable,boolean allowTemporary) {
         Prepared prepared=new Prepared();
@@ -41,7 +42,12 @@ final class RootEnvironment {
                 public boolean supported(){return true;}
                 public boolean acquire(){return false;}
             };
-            prepared.access=RootAccess.prepare(existing,allowTemporary?temporary:RootAccess.unavailableTemporaryProvider());
+            RootAccess.Provider allowedTemporary=new RootAccess.Provider() {
+                public RootAccess.Probe probe(){return temporary.probe();}
+                public boolean supported(){return temporary.supported();}
+                public boolean acquire(){prepared.temporaryAttempted=true;return temporary.acquire();}
+            };
+            prepared.access=RootAccess.prepare(existing,allowTemporary?allowedTemporary:RootAccess.unavailableTemporaryProvider());
             if(!prepared.access.ready()) {
                 prepared.diagnostic=allowTemporary?temporary.diagnostic():"仅检测已有 Root，没有运行临时 Root";
                 return prepared;
@@ -68,7 +74,7 @@ final class RootEnvironment {
             Thread.currentThread().interrupt();prepared.diagnostic="已取消，未启动交接服务";
         }
         catch(Exception error){prepared.diagnostic=error.getClass().getSimpleName()+": "+error.getMessage();}
-        if(prepared.access==null)prepared.access=new RootAccess.Result(RootAccess.Status.FAILED);
+        if(prepared.access==null)prepared.access=new RootAccess.Result(RootAccess.Status.PREPARATION_FAILED);
         return prepared;
     }
     static boolean stopBridge() {

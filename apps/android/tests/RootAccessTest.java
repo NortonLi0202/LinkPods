@@ -10,6 +10,7 @@ public final class RootAccessTest {
         public boolean acquire() { acquisitions++; if (success) state=RootAccess.Probe.GRANTED; return success; }
     }
     public static void main(String[] args) {
+        expect(!new RootAccess.Result(RootAccess.Status.PREPARATION_FAILED).ready(),"asset/preparation failure cannot claim a Root result");
         Fake existing = new Fake(RootAccess.Probe.GRANTED,true,false), temporary = new Fake(RootAccess.Probe.ABSENT,true,true);
         Thread.currentThread().interrupt();
         try {

@@ -73,5 +73,13 @@ class RelocationTests(unittest.TestCase):
             archive,pins=self.archive(changes)
             with self.subTest(changes=list(changes)),self.assertRaises(ValueError):payload.verify_apk(archive,pins)
 
+    def test_android_rejects_windows_zip_asset_separators(self):
+        archive,pins=self.archive()
+        # Both central and local names are malformed; Windows ZipInfo normalizes
+        # filename, so inspecting that property alone misses the Android failure.
+        malformed=io.BytesIO(archive.getvalue().replace(b'assets/root/',b'assets/root\\'))
+        with self.assertRaisesRegex(ValueError,'noncanonical APK entry'):
+            payload.verify_apk(malformed,pins)
+
 
 if __name__=='__main__': unittest.main()

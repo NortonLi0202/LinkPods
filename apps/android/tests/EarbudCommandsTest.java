@@ -30,6 +30,10 @@ public final class EarbudCommandsTest {
         state.begin(A);
         expect(!state.snapshot(A,0).ready && state.snapshot(A,0).leftBattery==null,"initial state unknown");
         state.connected();
+        byte[] repeatedHeader={4,0,4,0,4,0,4,0,9,0,13,2,0,0,0};
+        expect(state.receive(repeatedHeader),"LibrePods repeated data headers decode a scalar report");
+        expect(state.snapshot(A,0).value(13)==2,"nested report reaches observed state");
+        expect(!state.receive(new byte[]{4,0,4,0,9,0,13,2,1,0,0}),"multi-byte scalar report remains rejected");
         expect(state.queue(A,0x28,1,0)==null,"unobserved capability rejected");
         expect(!state.receive(control(6,1)),"ownership not interpreted as setting");
         expect(!state.receive(new byte[]{4,0,4,0,9,0,40}),"truncated setting rejected");
@@ -71,6 +75,10 @@ public final class EarbudCommandsTest {
 
         // Battery payload count=3, each entry [component,reserved,percent,charging,reserved].
         byte[] batteries={4,0,4,0,4,0,3,4,1,73,2,0,2,1,0,1,0,8,1,100,2,0};
+        byte[] nestedBattery=new byte[batteries.length+4];
+        System.arraycopy(new byte[]{4,0,4,0},0,nestedBattery,0,4);
+        System.arraycopy(batteries,0,nestedBattery,4,batteries.length);
+        expect(state.receive(nestedBattery) && state.snapshot(A,0).leftBattery==73,"nested battery notification reaches state");
         expect(state.receive(batteries),"complete battery notification accepted");
         EarbudSnapshot battery=state.snapshot(A,0);
         expect(battery.leftBattery==73 && battery.rightBattery==0 && battery.caseBattery==100,"physical IDs and percent boundaries decoded");

@@ -10,7 +10,7 @@ import java.lang.reflect.Method;
 import java.util.Locale;
 import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
-/** Diagnostic session only: no ownership writes, key requests, or persistent settings. */
+/** AACP session; setting writes are validated by the caller. No Root acquisition. */
 final class AapProbe {
     interface Logger { void write(String message); }
     interface Listener { void ready(); void packet(byte[] data); void ended(); }
@@ -21,18 +21,37 @@ final class AapProbe {
     private volatile boolean running;
     private volatile boolean stopped;
     private Listener listener;
+    private final java.util.concurrent.ExecutorService writer=java.util.concurrent.Executors.newSingleThreadExecutor();
 
     AapProbe(BluetoothDevice device, Logger logger) { this.device = device; this.logger = logger; }
     AapProbe(BluetoothDevice device, Logger logger, Listener listener) {
         this(device, logger); this.listener = listener;
     }
-    synchronized boolean sendPacket(byte[] packet) {
+    private synchronized boolean sendOn(BluetoothSocket expected,byte[] packet) {
         try {
-            if (socket == null || !socket.isConnected()) return false;
-            socket.getOutputStream().write(packet);
-            socket.getOutputStream().flush();
+            if (stopped || expected == null || socket != expected || !expected.isConnected()) return false;
+            expected.getOutputStream().write(packet);
+            expected.getOutputStream().flush();
             return true;
         } catch (Exception error) { logger.write("AAP_SEND_FAILED " + describe(error)); return false; }
+    }
+    private void schedule(BluetoothSocket expected,byte[] packet,long delay) {
+        timer.postAtTime(() -> {
+            enqueue(expected,packet,sent -> {
+                if(sent)logger.write("AAP_STATE_REQUEST opcode="+(packet[4]&255));
+            });
+        },expected,android.os.SystemClock.uptimeMillis()+delay);
+    }
+    private void enqueue(BluetoothSocket expected,byte[] packet,java.util.function.Consumer<Boolean> result) {
+        try {writer.execute(() -> result.accept(sendOn(expected,packet)));}
+        catch(java.util.concurrent.RejectedExecutionException closed) {result.accept(false);}
+    }
+    void sendPacketAsync(byte[] packet,java.util.function.Consumer<Boolean> result) {
+        enqueue(socket,packet,result);
+    }
+    void requestState() {
+        BluetoothSocket expected=socket;
+        if(expected!=null)schedule(expected,AapPackets.notifications(),300);
     }
     boolean isRunning() { return running; }
 
@@ -55,6 +74,7 @@ final class AapProbe {
                     if (!received && !stopped) attempt(true);
                 } finally {
                     running = false;
+                    writer.shutdownNow();
                     logger.write("AAP_PROBE_END：通道结果不等于原生自动切换已实现。");
                     if (listener != null) listener.ended();
                 }
@@ -64,7 +84,9 @@ final class AapProbe {
 
     void stop() {
         stopped = true;
+        timer.removeCallbacksAndMessages(null);
         close(socket);
+        writer.shutdownNow();
     }
 
     private boolean attempt(boolean secure) {
@@ -93,12 +115,12 @@ final class AapProbe {
             logger.write("AAP_CONNECT_BEGIN " + mode + " PSM=0x1001");
             current.connect();
             logger.write("AAP_SOCKET_CONNECTED " + mode);
-            // Same standard handshake and session-notification subscriptions as PodTide.
-            current.getOutputStream().write(new byte[]{0,0,4,0,1,0,2,0,0,0,0,0,0,0,0,0});
-            current.getOutputStream().write(new byte[]{4,0,4,0,15,0,(byte)255,(byte)255,(byte)239,(byte)255});
-            current.getOutputStream().write(new byte[]{4,0,4,0,15,0,(byte)255,(byte)255,(byte)255,(byte)255});
-            current.getOutputStream().write(new byte[]{4,0,4,0,77,0,(byte)215,0,0,0,0,0,0,0});
-            current.getOutputStream().flush();
+            // Repeat only initialization, following pinned LibrePods. Never request keys here.
+            for(AapPackets.Step step:AapPackets.initialization()) {
+                if(step.delayMs==0) {
+                    if(!sendOn(current,step.packet))throw new java.io.IOException("AACP initialization write failed");
+                } else schedule(current,step.packet,step.delayMs);
+            }
             logger.write("AAP_HANDSHAKE_SENT：等待耳机回应。");
             byte[] buffer = new byte[65535];
             InputStream input = current.getInputStream();
@@ -107,6 +129,9 @@ final class AapProbe {
                 if (length < 0) break;
                 if (length < 4) continue;
                 packets++;
+                byte[] packet=AapPackets.normalize(java.util.Arrays.copyOf(buffer,length));
+                length=packet.length;
+                System.arraycopy(packet,0,buffer,0,length);
                 int type = le16(buffer, 0);
                 if (type == 1) {
                     if (!handshakeResponse) {
@@ -114,11 +139,6 @@ final class AapProbe {
                         if (listener == null) timer.postDelayed(deadline, 90000);
                         else {
                             listener.ready();
-                            timer.postDelayed(() -> {
-                                sendPacket(new byte[]{4,0,4,0,77,0,(byte)215,0,0,0,0,0,0,0});
-                                sendPacket(new byte[]{4,0,4,0,15,0,(byte)255,(byte)255,(byte)255,(byte)255});
-                                logger.write("AAP_POST_HANDSHAKE_SUBSCRIPTIONS");
-                            }, 300);
                         }
                     }
                     handshakeResponse = true;
@@ -144,6 +164,9 @@ final class AapProbe {
                     if (packets <= 15 || command == 0x10 || command == 0x11 || command == 0x2e || command == 0x0e) {
                         logger.write(String.format(Locale.ROOT, "AAP_MESSAGE opcode=0x%04X len=%d", command, length));
                     }
+                    if(command==9 && length==11)logger.write("AAP_SETTING_REPORT id="+(buffer[6]&255)
+                        +" value="+(buffer[7]&255)+" scalar="+(buffer[8]==0&&buffer[9]==0&&buffer[10]==0));
+                    if(command==4)logger.write("AAP_BATTERY_REPORT len="+length+" count="+(length>6?(buffer[6]&255):-1));
                     if (command == 9 && length >= 8 && (buffer[6] & 255) == 6) {
                         logger.write("AAP_OWNERSHIP_EVENT value=" + (buffer[7] & 255));
                     }
@@ -161,6 +184,7 @@ final class AapProbe {
             logger.write("AAP_SESSION_RESULT " + mode + "：" + describe(error));
         } finally {
             timer.removeCallbacks(deadline);
+            timer.removeCallbacksAndMessages(current);
             close(current);
             if (socket == current) socket = null;
             logger.write("AAP_SUMMARY " + mode + " packets=" + packets + " handshakeResponse=" + handshakeResponse);
