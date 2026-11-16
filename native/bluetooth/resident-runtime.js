@@ -3,9 +3,10 @@ let residentTimer = null;
 let residentConfiguration = null;
 const residentControl = '/data/misc/bluedroid/handoff-runtime.control';
 const residentStatus = '/data/misc/bluedroid/handoff-runtime.status';
+const residentInstance = Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
 function residentSnapshot(error) {
   const state = rpc.exports.status();
-  const result = {pid:Process.id,updated_at_ms:Date.now(),state:state,
+  const result = {pid:Process.id,instance_id:residentInstance,updated_at_ms:Date.now(),state:state,
     identity:rpc.exports.diidentity(),resume:rpc.exports.resumestatus ? rpc.exports.resumestatus() : null,
     configuration:residentConfiguration,error:error || null};
   File.writeAllText(residentStatus,JSON.stringify(result)+'\n');

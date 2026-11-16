@@ -10,6 +10,8 @@ context.rpc.exports.startresident(configuration);
 const report=JSON.parse(writes.get('/data/misc/bluedroid/handoff-runtime.status'));
 assert.deepEqual(report.configuration,configuration);
 assert.equal(report.pid,42);
+assert.equal(typeof report.instance_id,'string');
+assert.ok(report.instance_id.length>0);
 assert.equal(report.state.state,'enabled');
 assert.throws(()=>context.rpc.exports.startresident(configuration),/already started/);
 console.log('PASS: resident reports the exact target and configuration used for safe reuse');

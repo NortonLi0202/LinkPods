@@ -27,6 +27,13 @@ public final class DeviceConfig {
         values.put("target", target); values.put("local", local); values.put("peer", peer);
         return values;
     }
+    public static DeviceConfig mergeLocal(DeviceConfig existing,DeviceConfig requested) {
+        if(existing==null)return requested;
+        if(!existing.target.equals(requested.target) || !existing.peer.equals(requested.peer)
+                || (!existing.local.isEmpty() && !requested.local.isEmpty() && !existing.local.equals(requested.local)))
+            throw new IllegalArgumentException("请先停止当前会话，再更换设备配置");
+        return create(existing.target,existing.local.isEmpty()?requested.local:existing.local,existing.peer);
+    }
     public static DeviceConfig restore(Map<String,String> values) {
         try { return create(values.get("target"), values.get("local"), values.get("peer")); }
         catch (IllegalArgumentException error) { return null; }

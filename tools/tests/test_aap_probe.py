@@ -52,6 +52,10 @@ import java.util.concurrent.*;
 public class AapSchedulerTest {
  static void expect(boolean ok,String reason){if(!ok)throw new AssertionError(reason);}
  public static void main(String[] args) throws Exception {
+  expect(AapProbe.classifyFailure(new java.io.IOException("EPROTONOSUPPORT"))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"explicit protocol capability failure");
+  expect(AapProbe.classifyFailure(new java.lang.reflect.InvocationTargetException(new java.io.IOException("Operation not supported")))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"unwrap socket factory cause");
+  for(Exception error:new Exception[]{new java.io.IOException("Connection refused"),new java.net.SocketTimeoutException("timeout"),new SecurityException("EPROTONOSUPPORT"),new NoSuchMethodException("createL2capSocket")})
+   expect(AapProbe.classifyFailure(error)==AapProbe.Failure.OTHER,"reachability, permission and absent API are not evidence for Root");
   AapProbe probe=new AapProbe(new BluetoothDevice(),message -> {});
   Field socket=AapProbe.class.getDeclaredField("socket");socket.setAccessible(true);
   Field writer=AapProbe.class.getDeclaredField("writer");writer.setAccessible(true);

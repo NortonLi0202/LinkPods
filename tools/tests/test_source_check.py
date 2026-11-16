@@ -21,6 +21,7 @@ class SourceCheckTests(unittest.TestCase):
             p=self.root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('source')
         config={'product':{'source':'apps/android'},'release_notes':'docs/v1.md','issues':'docs/issues.md'}
         self.write('project.json',config)
+        self.write('compatibility/adapters.json',{'schema':1,'profiles':[]})
         digest=hashlib.sha256(b'expected binary').hexdigest()
         self.write('third_party/payloads/manifest.json',{'inputs':{'frida':{'file':'frida-inject','sha256':digest}}})
         self.write('third_party/dependencies.json',{'dependencies':{'library':{'path':'apps/android/lib/library.jar','sha256':digest}}})
@@ -37,6 +38,10 @@ class SourceCheckTests(unittest.TestCase):
     def test_source_checkout_checks_without_unpublished_binaries(self):
         self.assertEqual(self.check(),0)
         self.assertEqual(self.check(strict=True),1)
+
+    def test_invalid_adapter_registry_fails_source_check(self):
+        self.write('compatibility/adapters.json',{'schema':1,'profiles':[{'id':'../escape'}]})
+        self.assertEqual(self.check(),1)
 
     def test_present_input_must_match_pin_even_in_source_mode(self):
         (self.root/'third_party/payloads/frida-inject').write_bytes(b'wrong binary')

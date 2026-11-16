@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -159,6 +160,12 @@ def check(root,require_inputs=False):
         for manifest in sorted((root / area).glob('**/manifest.json')):
             errors.extend(verify_manifest(manifest))
     inputs=root/'third_party/payloads'
+    try:
+        spec=importlib.util.spec_from_file_location('project_adapter_registry',Path(__file__).parent/'adapter_registry.py')
+        registry=importlib.util.module_from_spec(spec);spec.loader.exec_module(registry)
+        registry.load_registry(root)
+    except (OSError,ValueError,KeyError) as error:
+        errors.append('invalid bridge adapter registry: '+str(error))
     missing=[]
     for name,entry in json.loads((inputs/'manifest.json').read_text(encoding='utf-8-sig'))['inputs'].items():
         path=(inputs/entry['file']).resolve()
@@ -204,15 +211,17 @@ def test(root):
         raise RuntimeError('JDK (JAVA_HOME or PATH) and Node.js are required')
     source = root / APPS[0]
     package = source / 'src/local/airpods/handoffprobe'
-    tests = ['RoutingTest', 'AudioLinkTest', 'PeerRoutingTest', 'DeviceConfigTest', 'RootAccessTest', 'BackendPolicyTest', 'RequestGateTest', 'RootProtocolTest', 'RootTargetTest', 'RootWorkQueueTest', 'EarbudCommandsTest', 'EarbudUiPolicyTest', 'AapPacketsTest']
+    tests = ['RoutingTest', 'AudioLinkTest', 'PeerRoutingTest', 'DeviceConfigTest', 'RootAccessTest', 'BackendPolicyTest', 'RequestGateTest', 'RootProtocolTest', 'RootTargetTest', 'RootWorkQueueTest', 'EarbudCommandsTest', 'EarbudUiPolicyTest', 'AapPacketsTest', 'ConnectionPolicyTest', 'BridgeAdapterRegistryTest', 'BridgeRuntimeLeaseTest']
     with tempfile.TemporaryDirectory(prefix='handoff-host-tests-') as output:
         sources = [package / (name + '.java') for name in ('RoutingPackets', 'RoutingPolicy', 'AudioLinkPolicy', 'PeerRoutingPolicy', 'SmartRouting', 'DeviceConfig', 'RootAccess', 'BackendPolicy', 'RequestGate', 'RootProtocol', 'RootTarget', 'RootWorkQueue', 'EarbudCommands', 'EarbudSnapshot', 'EarbudUiPolicy')]
         sources += [package / 'AapPackets.java']
+        sources += [package / (name+'.java') for name in ('ConnectionPolicy','BridgeAdapterRegistry','BridgeRuntimeLease')]
         sources += [source / 'tests' / (name + '.java') for name in tests]
         run([javac, '-encoding', 'UTF-8', '-d', output, *sources], root)
         for name in tests:
             run([java, '-cp', output, 'local.airpods.handoffprobe.' + name], root)
     run([node, 'native/bluetooth/test-resident-config.cjs'], root)
+    run([node, 'native/bluetooth/test-sdp-config.cjs'], root)
 
 
 def main():

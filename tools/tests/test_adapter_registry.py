@@ -1,6 +1,8 @@
 import importlib.util
 import json
 from pathlib import Path
+SDP_LAYOUT=json.loads(Path(__file__).with_name('sdp_fixture.json').read_text())
+from pathlib import Path
 import tempfile
 import unittest
 
@@ -16,7 +18,7 @@ class AdapterRegistryTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.entries = []
         for index in range(2):
-            profile = {'module_path': '/apex/test/lib64/library%d.so' % index,
+            profile = {'sdp_identity': dict(SDP_LAYOUT), 'module_path': '/apex/test/lib64/library%d.so' % index,
                        'file_sha256': str(index)*64, 'build_id': {'hex': 'ab'*16, 'offset': 32}}
             path = 'profiles/%d.json' % index
             (self.root/'profiles').mkdir(exist_ok=True)

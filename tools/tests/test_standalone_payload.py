@@ -3,6 +3,8 @@ from pathlib import Path
 import unittest
 import io
 import json
+from pathlib import Path
+SDP_LAYOUT=json.loads(Path(__file__).with_name('sdp_fixture.json').read_text())
 import hashlib
 import zipfile
 import tempfile
@@ -20,7 +22,7 @@ class RelocationTests(unittest.TestCase):
             root=Path(temporary); (root/'compatibility').mkdir(); (root/'profiles').mkdir()
             entries=[]
             for index in range(2):
-                profile={'module_path':'/apex/test/lib.so','file_sha256':str(index)*64,
+                profile={'sdp_identity': dict(SDP_LAYOUT), 'module_path':'/apex/test/lib.so','file_sha256':str(index)*64,
                          'build_id':{'hex':('ab' if index==0 else 'cd')*16,'offset':32+index*16}}
                 path='profiles/%d.json'%index; (root/path).write_text(json.dumps(profile))
                 entries.append({'id':'synthetic-%d'%index,'module_path':profile['module_path'],
@@ -40,6 +42,8 @@ class RelocationTests(unittest.TestCase):
     def test_prepare_synthetic_pinned_inputs_produces_verified_schema2_archive(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)/'repository';root.mkdir()
+            (root/'tools').mkdir()
+            shutil.copyfile(payload.ROOT/'tools/adapter_registry.py',root/'tools/adapter_registry.py')
             for directory in ['native/bluetooth','third_party/payloads','third_party/sources/dfroot',
                               'third_party/sources/librepods','apps/android/native','compatibility']:
                 (root/directory).mkdir(parents=True,exist_ok=True)
@@ -104,7 +108,7 @@ class RelocationTests(unittest.TestCase):
         self.assertFalse(payload.target_matches(dict(known,kernel='other'),known))
 
     def archive(self,changes=None):
-        profile={'module_path':'/apex/test/lib.so','file_sha256':'a'*64,'build_id':{'hex':'ab'*16,'offset':32}}
+        profile={'sdp_identity': dict(SDP_LAYOUT), 'module_path':'/apex/test/lib.so','file_sha256':'a'*64,'build_id':{'hex':'ab'*16,'offset':32}}
         profile_bytes=json.dumps(profile,sort_keys=True,separators=(',',':')).encode()
         profile_hash=hashlib.sha256(profile_bytes).hexdigest()
         base='adapters/synthetic/'

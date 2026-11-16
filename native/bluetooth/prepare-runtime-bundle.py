@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import sys
+import importlib.util
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -42,6 +43,9 @@ def build_bundle(profile_path, target_address, output, agent_source, binary, exp
     if output.exists():
         raise FileExistsError(output)
     profile = json.loads(Path(profile_path).read_text(encoding='utf-8-sig'))
+    spec=importlib.util.spec_from_file_location('runtime_adapter_registry',ROOT/'tools/adapter_registry.py')
+    registry=importlib.util.module_from_spec(spec);spec.loader.exec_module(registry)
+    registry.validate_sdp_layout(profile)
     digest = profile.get('file_sha256', '')
     path = profile.get('module_path', '')
     if not re.fullmatch(r'[0-9a-f]{64}', digest) or not isinstance(path, str) or not re.fullmatch(r'/[A-Za-z0-9_./-]+', path):
@@ -55,8 +59,9 @@ def build_bundle(profile_path, target_address, output, agent_source, binary, exp
     source += '\nconst runtimeProfile = ' + json.dumps(profile) + ';\n'
     source += 'const runtimeProbe = rpc.exports.probe(runtimeProfile);\n'
     source += 'if (!runtimeProbe.ok) throw new Error(JSON.stringify(runtimeProbe));\n'
+    source += 'rpc.exports.prepareidentity(runtimeProfile);\n'
     source += 'rpc.exports.enable(runtimeProfile,{target_address:' + json.dumps(target) + ',spoof_vendor:false});\n'
-    source += 'rpc.exports.appleidentity();\n'
+    source += 'rpc.exports.appleidentity(runtimeProfile);\n'
     configuration = {'target_address': target,
                      'profile_sha256': hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
                      'bundle_id': hashlib.sha256(source.encode()).hexdigest()}
@@ -88,6 +93,9 @@ else
 fi
 if [ "$already" -ne 0 ]; then
     "$runtime/frida-inject" -p "$bt_pid" -s "$runtime/agent.js" -e
+    echo LINKPODS_BRIDGE_STARTED
+else
+    echo LINKPODS_BRIDGE_REUSED
 fi
 '''
     launcher = launcher.replace('__MODULE__', shlex.quote(path)).replace('__HASH__', shlex.quote(digest)).replace('__TARGET__', shlex.quote(target)).replace('__RESIDENT_GUARD__', resident_guard(configuration))

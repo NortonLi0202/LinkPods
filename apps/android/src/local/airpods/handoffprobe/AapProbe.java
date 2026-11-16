@@ -13,7 +13,8 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass;
 /** AACP session; setting writes are validated by the caller. No Root acquisition. */
 final class AapProbe {
     interface Logger { void write(String message); }
-    interface Listener { void ready(); void packet(byte[] data); void ended(); }
+    enum Failure { COMPATIBILITY_REQUIRED, OTHER }
+    interface Listener { void ready(); void packet(byte[] data); void ended(); default void failure(Failure failure){} }
     private final BluetoothDevice device;
     private final Logger logger;
     private final Handler timer = new Handler(Looper.getMainLooper());
@@ -21,6 +22,7 @@ final class AapProbe {
     private volatile boolean running;
     private volatile boolean stopped;
     private Listener listener;
+    private Failure lastFailure=Failure.OTHER;
     private final java.util.concurrent.ExecutorService writer=java.util.concurrent.Executors.newSingleThreadExecutor();
 
     AapProbe(BluetoothDevice device, Logger logger) { this.device = device; this.logger = logger; }
@@ -59,6 +61,7 @@ final class AapProbe {
         running = true;
         new Thread(new Runnable() {
             @Override public void run() {
+                boolean received=false;
                 try {
                     logger.write(listener == null
                         ? "AAP_PROBE_START：只尝试控制通道与标准会话订阅，不写入音频所有权。"
@@ -70,13 +73,16 @@ final class AapProbe {
                         logger.write("AAP_APP_LOCAL_API_FAILED：" + error.getClass().getSimpleName() + ": " + error.getMessage());
                         return;
                     }
-                    boolean received = attempt(false);
-                    if (!received && !stopped) attempt(true);
+                    received = attempt(false);
+                    if (!received && !stopped) received=attempt(true);
                 } finally {
                     running = false;
                     writer.shutdownNow();
                     logger.write("AAP_PROBE_END：通道结果不等于原生自动切换已实现。");
-                    if (listener != null) listener.ended();
+                    if (listener != null) {
+                        listener.failure(received || stopped?Failure.OTHER:lastFailure);
+                        listener.ended();
+                    }
                 }
             }
         }, "AAPProtocolProbe").start();
@@ -90,6 +96,7 @@ final class AapProbe {
     }
 
     private boolean attempt(boolean secure) {
+        lastFailure=Failure.OTHER;
         final String mode = secure ? "secure" : "insecure";
         final BluetoothSocket current;
         try {
@@ -98,6 +105,7 @@ final class AapProbe {
             logger.write("AAP_FACTORY_FOUND：" + methodName);
             current = (BluetoothSocket) factory.invoke(device, 0x1001);
         } catch (Exception error) {
+            lastFailure=classifyFailure(error);
             logger.write("AAP_FACTORY_FAILED " + mode + "：" + describe(error));
             return false;
         }
@@ -181,6 +189,7 @@ final class AapProbe {
                 if (listener != null) listener.packet(java.util.Arrays.copyOf(buffer, length));
             }
         } catch (Exception error) {
+            lastFailure=classifyFailure(error);
             logger.write("AAP_SESSION_RESULT " + mode + "：" + describe(error));
         } finally {
             timer.removeCallbacks(deadline);
@@ -193,6 +202,14 @@ final class AapProbe {
     }
 
     private static int le16(byte[] bytes, int offset) { return (bytes[offset] & 255) | ((bytes[offset + 1] & 255) << 8); }
+    static Failure classifyFailure(Exception error) {
+        Throwable cause=error instanceof InvocationTargetException?((InvocationTargetException)error).getTargetException():error;
+        if(!(cause instanceof java.io.IOException))return Failure.OTHER;
+        String message=String.valueOf(cause.getMessage()).toLowerCase(Locale.ROOT);
+        return message.contains("eprotonosupport") || message.contains("eopnotsupp")
+            || message.contains("protocol not supported") || message.contains("operation not supported")
+            ?Failure.COMPATIBILITY_REQUIRED:Failure.OTHER;
+    }
     private static void close(BluetoothSocket socket) {
         if (socket != null) try { socket.close(); } catch (Exception ignored) { }
     }

@@ -25,7 +25,7 @@ import java.util.ArrayList;
 final class LinkPodsUi {
     interface Actions {
         void openBluetooth(); void requestNearby(); void openMediaAccess(); void requestNotifications();
-        void refreshDevices(); void enableHandoff(); void stopHandoff(); void checkEnvironment();
+        void refreshDevices(); void enableHandoff(); void stopHandoff(); void checkEnvironment(); void prepareBridge();
         boolean setSetting(int id,int value);
         String deviceName(); String connectionStatus();
     }
@@ -43,6 +43,9 @@ final class LinkPodsUi {
     private PodControls.VolumeSlider volume;
     private final ArrayList<SettingRow> settings=new ArrayList<>();
     private EarbudSnapshot snapshot;
+    private ConnectionPolicy.Snapshot capabilities;
+    private boolean mediaGranted;
+    private TextView capabilitiesStatus;
     private Integer lastLeft,lastRight,lastCase;
     private String target="",page=HOME;
     private boolean tablet;
@@ -54,7 +57,7 @@ final class LinkPodsUi {
         bg=dark?Color.BLACK:0xfff2f2f7;side=dark?0xff171719:0xfff8f8fb;
         group=dark?0xff1c1c1e:Color.WHITE;ink=dark?0xfff5f5f7:0xff171719;muted=dark?0xffa1a1aa:0xff777780;
         line=dark?0xff343438:0xffe5e5ea;blue=dark?0xff0a84ff:0xff007aff;
-        environmentStatus=text("Root 与控制通道尚未检测",14,muted);
+        environmentStatus=text("Root 尚未检测；直连无需此项",14,muted);
         logOutput=text("",12,muted);logOutput.setTextIsSelectable(true);
         if(restoredPage!=null&&!restoredPage.isEmpty())page=restoredPage;
         build();
@@ -86,7 +89,7 @@ final class LinkPodsUi {
         body=new LinearLayout(activity){@Override protected void onMeasure(int ws,int hs){int available=View.MeasureSpec.getSize(ws);super.onMeasure(View.MeasureSpec.makeMeasureSpec(Math.min(dp(620),available),View.MeasureSpec.EXACTLY),hs);}};
         body.setOrientation(LinearLayout.VERTICAL);body.setPadding(dp(width<400?16:24),dp(4),dp(width<400?16:24),dp(28));
         FrameLayout.LayoutParams content=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);frame.addView(body,content);
-        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;session=null;modeStatus=null;feedback=null;
+        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;session=null;modeStatus=null;feedback=null;capabilitiesStatus=null;
         if(HOME.equals(page))home();
         else if(AUDIO.equals(page))audioPage();
         else if(PRESS.equals(page))pressPage();
@@ -95,6 +98,7 @@ final class LinkPodsUi {
         else advanced(page);
         activity.setContentView(root);root.requestApplyInsets();
         if(snapshot!=null)bind(snapshot,target);else updateLocalVolume();
+        bindCapabilities(capabilities,mediaGranted);
     }
     private void buildSidebar(int width){
         sidebar=column();sidebar.setPadding(dp(12),dp(20),dp(12),dp(16));sidebar.setBackgroundColor(side);
@@ -130,6 +134,7 @@ final class LinkPodsUi {
         batteries=text("左耳 --   ·   右耳 --   ·   充电盒 --",13,muted);batteries.setGravity(Gravity.CENTER);batteries.setPadding(0,dp(6),0,dp(8));body.addView(batteries);
         connection=text(actions.connectionStatus(),12,muted);connection.setGravity(Gravity.CENTER);connection.setPadding(dp(8),dp(2),dp(8),dp(3));body.addView(connection);
         session=text("耳机控制：尚未读取",12,muted);session.setGravity(Gravity.CENTER);session.setPadding(dp(8),0,dp(8),dp(18));body.addView(session);
+        capabilitiesStatus=text("",12,muted);capabilitiesStatus.setGravity(Gravity.CENTER);capabilitiesStatus.setPadding(dp(8),0,dp(8),dp(14));body.addView(capabilitiesStatus);
     }
     private void home(){hero();LinearLayout name=group();deviceNameValue=navigation(name,"名称",actions.deviceName(),"名称");noiseGroup();
         caption("按住 AirPods");LinearLayout press=group();navigation(press,"左耳","暂未接入","左耳长按");navigation(press,"右耳","暂未接入","右耳长按");
@@ -149,12 +154,17 @@ final class LinkPodsUi {
     private void audioPage(){pageTitle(AUDIO);noiseGroup();volumeGroup();commonSwitches();LinearLayout g=group();setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"麦克风","暂未接入","麦克风");}
     private void pressPage(){pageTitle(PRESS);LinearLayout g=group();navigation(g,"左耳长按","暂未接入","左耳长按");navigation(g,"右耳长按","暂未接入","右耳长按");navigation(g,"按压速度","暂未接入","按压速度");help("按压设置当前暂不可用。");}
     private void connectionPage(){pageTitle("自动设备切换");help("启用后，LinkPods 根据此设备的播放状态协调耳机交接。请先在应用设置中选择耳机，并允许读取媒体播放状态。");
-        LinearLayout g=group();action(g,"启用自动交接",actions::enableHandoff);action(g,"停止自动交接",actions::stopHandoff);navigation(g,"设备与权限","",SETTINGS);attachStatus();help("启用前会检查运行环境；临时 Root 另有确认。音频连接和控制通道就绪分别显示，实际声音与双向切换仍需确认。");}
+        LinearLayout g=group();action(g,"启用自动交接",actions::enableHandoff);action(g,"停止自动交接",actions::stopHandoff);action(g,"准备兼容桥接",actions::prepareBridge);navigation(g,"设备与权限","",SETTINGS);attachStatus();help("启用时先直接连接耳机，直连可用就不请求 Root。明确缺少系统兼容能力时才尝试已有 Root 桥接；也可手动准备桥接。临时 Root 需要单独确认，实际声音与双向切换仍需确认。");}
     private void appSettings(){pageTitle(SETTINGS);caption("设备");LinearLayout device=group();detach(picker);picker.setContentDescription("选择已配对的耳机");device.addView(picker,new LinearLayout.LayoutParams(-1,dp(56)));action(device,"允许附近设备权限",actions::requestNearby);action(device,"配对或管理耳机",actions::openBluetooth);action(device,"刷新设备与连接状态",actions::refreshDevices);
         caption("权限");LinearLayout permissions=group();action(permissions,"允许读取媒体播放状态",actions::openMediaAccess);action(permissions,"允许服务通知",actions::requestNotifications);
-        caption("运行环境");LinearLayout runtime=group();action(runtime,"检查 Root 与运行环境",actions::checkEnvironment);action(runtime,"启用自动交接",actions::enableHandoff);action(runtime,"停止自动交接",actions::stopHandoff);attachStatus();
+        caption("运行环境");LinearLayout runtime=group();action(runtime,"检查 Root 与运行环境",actions::checkEnvironment);action(runtime,"启用自动交接",actions::enableHandoff);action(runtime,"准备兼容桥接",actions::prepareBridge);action(runtime,"停止自动交接",actions::stopHandoff);attachStatus();
         caption("运行记录");LinearLayout logs=group();detach(logOutput);logOutput.setPadding(dp(16),dp(12),dp(16),dp(12));logs.addView(logOutput,new LinearLayout.LayoutParams(-1,-2));help("LinkPods 1.0 · 耳机控制与交接的设备验收仍在进行。");}
-    private void attachStatus(){LinearLayout g=group();detach(environmentStatus);environmentStatus.setPadding(dp(20),dp(14),dp(20),dp(14));g.addView(environmentStatus,new LinearLayout.LayoutParams(-1,-2));}
+    private void attachStatus(){LinearLayout g=group();detach(environmentStatus);environmentStatus.setPadding(dp(20),dp(14),dp(20),dp(14));g.addView(environmentStatus,new LinearLayout.LayoutParams(-1,-2));capabilitiesStatus=text("",13,muted);capabilitiesStatus.setPadding(dp(20),0,dp(20),dp(14));g.addView(capabilitiesStatus);}
+    void bindCapabilities(ConnectionPolicy.Snapshot state,boolean mediaAllowed) {
+        capabilities=state;mediaGranted=mediaAllowed;
+        if(capabilitiesStatus!=null)capabilitiesStatus.setText((state==null?"控制会话尚未启动":state.description)
+            +(mediaAllowed?"":"\n缺少媒体状态权限：耳机控制仍可用，自动交接不可用"));
+    }
     private void advanced(String name){pageTitle(name);LinearLayout g=group();if(name.equals("名称")){info(g,"蓝牙设备名称",actions.deviceName());action(g,"在系统蓝牙设置中管理",actions::openBluetooth);help("名称由系统蓝牙设备信息读取。");}
         else if(name.equals("辅助功能")){setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"按压速度","暂未接入","按压速度");help("仅可更改已由耳机回报且当前可用的选项。");}
         else{info(g,"当前设置","暂未接入");help("此选项尚未接入耳机设置协议，当前无法修改。");}}
