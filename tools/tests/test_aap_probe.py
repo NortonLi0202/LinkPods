@@ -36,11 +36,12 @@ public class BluetoothSocket {
 import java.util.*;
 public class Handler {
  public static final List<Runnable> tasks=new ArrayList<>();
+ public static final Map<Runnable,Object> tokens=new IdentityHashMap<>();
  public Handler(Looper looper){}
- public boolean postDelayed(Runnable r,long delay){tasks.add(r);return true;}
- public boolean postAtTime(Runnable r,Object token,long at){tasks.add(r);return true;}
- public void removeCallbacks(Runnable r){tasks.remove(r);}
- public void removeCallbacksAndMessages(Object token){tasks.clear();}
+ public boolean postDelayed(Runnable r,long delay){tasks.add(r);tokens.put(r,null);return true;}
+ public boolean postAtTime(Runnable r,Object token,long at){tasks.add(r);tokens.put(r,token);return true;}
+ public void removeCallbacks(Runnable r){tasks.remove(r);tokens.remove(r);}
+ public void removeCallbacksAndMessages(Object token){if(token==null){tasks.clear();tokens.clear();}else{tasks.removeIf(r -> tokens.get(r)==token);tokens.entrySet().removeIf(e -> e.getValue()==token);}}
 }''',
     'org/lsposed/hiddenapibypass/HiddenApiBypass.java': '''package org.lsposed.hiddenapibypass;
 public class HiddenApiBypass {public static boolean addHiddenApiExemptions(String... values){return true;}}''',
@@ -52,6 +53,16 @@ import java.util.concurrent.*;
 public class AapSchedulerTest {
  static void expect(boolean ok,String reason){if(!ok)throw new AssertionError(reason);}
  public static void main(String[] args) throws Exception {
+  Handler handler=new Handler(android.os.Looper.getMainLooper());
+  Object firstToken=new Object(),secondToken=new Object();
+  Runnable firstTask=() -> {},secondTask=() -> {},unrelated=() -> {};
+  handler.postAtTime(firstTask,firstToken,0);
+  handler.postAtTime(secondTask,secondToken,0);
+  handler.postDelayed(unrelated,0);
+  handler.removeCallbacksAndMessages(firstToken);
+  expect(!Handler.tasks.contains(firstTask) && Handler.tasks.contains(secondTask) && Handler.tasks.contains(unrelated),"socket cleanup preserves other token and untagged callbacks");
+  handler.removeCallbacks(secondTask);
+  handler.removeCallbacksAndMessages(null);
   AapProbe probe=new AapProbe(new BluetoothDevice(),message -> {});
   Field socket=AapProbe.class.getDeclaredField("socket");socket.setAccessible(true);
   Field writer=AapProbe.class.getDeclaredField("writer");writer.setAccessible(true);
