@@ -14,14 +14,14 @@
 
 ## 增加桥接适配
 
-`compatibility/adapters.json` 每项对应一个不可混用的系统模块身份：稳定 ID、绝对模块路径、文件 SHA-256、BuildID，以及源码树内的 profile 路径。profile 包含该版本实际验证的函数入口和结构偏移。
+`compatibility/adapters.json` 每项对应一个系统模块配置：稳定 ID、绝对模块路径、源码树内的 profile 路径。`match: "exact"`（默认）还必须提供文件 SHA-256 和 BuildID，作为唯一身份；`match: "prologue"` 可以省略这两个字段，只在 exact 适配未命中后作为回退尝试，且同一模块路径最多一个。profile 包含该版本实际验证的函数入口和结构偏移。
 
 新增适配时：
 
 1. 增加对应 profile 源文件，记录可信来源和实测范围；不得猜测偏移或把一个固件的偏移套到其他版本。
-2. 在注册表增加唯一 ID。可以有多个固件使用同一模块路径，但 SHA-256/BuildID 必须分别精确匹配；重复身份及同时匹配多个候选会被拒绝。
+2. 在注册表增加唯一 ID。exact 适配可以有多个固件使用同一模块路径，但 SHA-256/BuildID 必须分别精确匹配；prologue 适配不写 SHA-256/BuildID，同一模块路径最多一个。重复身份及同时匹配多个候选会被拒绝。
 3. 运行 `python tools/project.py check` 和 `python tools/project.py test`。构建工具会校验注册表与 profile 的身份一致性，并将所有配置分别打包到 `assets/root/adapters/<id>/`。
-4. 运行时读取模块实际 SHA-256 及 profile 指定位置的 BuildID。未知模块返回无适配，不采用第一项或按 Android 大版本推测。
+4. 运行时先读取模块实际 SHA-256 及 profile 指定位置的 BuildID 匹配 exact 适配；没有命中时才尝试 prologue 适配。既无 exact 命中、也没有可用 prologue 配置时返回无适配，不采用第一项或按 Android 大版本推测。
 5. Root 准备只消费选中的适配。启用后的状态必须再次吻合目标耳机、profile 哈希和实际运行状态；APK 资产文件名使用标准正斜杠并验证原始 ZIP 条目。
 
 ## 动态解析适配器（实验性）
