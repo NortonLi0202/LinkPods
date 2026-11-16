@@ -29,6 +29,10 @@ public class JSONObject {
   throw new IllegalArgumentException(key);
  }
  public String optString(String key,String fallback){return getString(key);}
+ public boolean optBoolean(String key,boolean fallback){
+  if(key.equals("di_identity"))return true;
+  return fallback;
+ }
  public int getInt(String key){
   if(key.equals("pid"))return Integer.parseInt(fields[5]);
   if(key.equals("active_sdp"))return Integer.parseInt(fields[4]);

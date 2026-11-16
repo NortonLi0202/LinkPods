@@ -46,7 +46,7 @@ def load_registry(root=ROOT, registry_path=None):
     document = json.loads(path.read_text(encoding='utf-8-sig'))
     if document.get('schema') != 1 or not isinstance(document.get('profiles'), list):
         raise ValueError('invalid bridge registry schema')
-    result, ids, identities = [], set(), set()
+    result, ids, identities, prologue_paths = [], set(), set(), set()
     for entry in document['profiles']:
         identifier = entry.get('id', '')
         if not isinstance(identifier, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,79}', identifier) or identifier in ids:
@@ -57,16 +57,44 @@ def load_registry(root=ROOT, registry_path=None):
         if not resolved.is_relative_to(root): raise ValueError('profile escapes repository')
         profile = json.loads(resolved.read_text(encoding='utf-8-sig'))
         validate_sdp_layout(profile)
-        sha, build = entry.get('sha256', ''), entry.get('build_id', '')
-        if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{64}', sha): raise ValueError('invalid adapter SHA-256')
-        if not isinstance(build, str) or not re.fullmatch(r'(?:[0-9a-f]{2}){1,64}', build): raise ValueError('invalid adapter BuildID')
-        note = profile.get('build_id', {})
-        offset = note.get('offset')
-        if profile.get('module_path') != module or profile.get('file_sha256') != sha or note.get('hex') != build:
+        match = entry.get('match', 'exact')
+        if match not in ('exact', 'prologue'):
+            raise ValueError('invalid adapter match mode')
+        if profile.get('module_path') != module:
             raise ValueError('adapter identity differs from profile')
-        if type(offset) is not int or offset < 0 or offset > 2**31-1: raise ValueError('invalid BuildID offset')
-        identity = (module, sha, build)
-        if identity in identities: raise ValueError('ambiguous adapter identity')
-        ids.add(identifier); identities.add(identity)
-        result.append(dict(entry, build_id_offset=offset, profile_sha256=profile_hash(profile)))
+        if match == 'exact':
+            sha, build = entry.get('sha256', ''), entry.get('build_id', '')
+            if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{64}', sha): raise ValueError('invalid adapter SHA-256')
+            if not isinstance(build, str) or not re.fullmatch(r'(?:[0-9a-f]{2}){1,64}', build): raise ValueError('invalid adapter BuildID')
+            note = profile.get('build_id', {})
+            offset = note.get('offset')
+            if profile.get('file_sha256') != sha or note.get('hex') != build:
+                raise ValueError('adapter identity differs from profile')
+            if type(offset) is not int or offset < 0 or offset > 2**31-1: raise ValueError('invalid BuildID offset')
+            identity = (module, sha, build)
+            if identity in identities: raise ValueError('ambiguous adapter identity')
+            identities.add(identity)
+        else:
+            resolution = profile.get('resolution')
+            if (not isinstance(resolution, dict) or resolution.get('schema') != 1
+                    or resolution.get('mode') != 'prologue_scan'):
+                raise ValueError('prologue adapter requires a prologue_scan profile')
+            sha, build = entry.get('sha256', ''), entry.get('build_id', '')
+            if not isinstance(sha, str) or (sha and not re.fullmatch(r'[0-9a-f]{64}', sha)):
+                raise ValueError('invalid adapter SHA-256')
+            if not isinstance(build, str) or (build and not re.fullmatch(r'(?:[0-9a-f]{2}){1,64}', build)):
+                raise ValueError('invalid adapter BuildID')
+            note = profile.get('build_id')
+            if not isinstance(note, dict):
+                raise ValueError('profile build_id must be an object')
+            if sha and sha != profile.get('file_sha256'):
+                raise ValueError('adapter SHA-256 differs from profile')
+            if build and build != note.get('hex'):
+                raise ValueError('adapter BuildID differs from profile')
+            if module in prologue_paths: raise ValueError('ambiguous prologue adapter for module path')
+            prologue_paths.add(module)
+            offset = note.get('offset', 0)
+            if type(offset) is not int or offset < 0 or offset > 2**31-1: raise ValueError('invalid BuildID offset')
+        ids.add(identifier)
+        result.append(dict(entry, match=match, build_id_offset=offset, profile_sha256=profile_hash(profile)))
     return result

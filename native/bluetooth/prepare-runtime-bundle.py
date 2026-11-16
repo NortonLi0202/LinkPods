@@ -89,7 +89,7 @@ name=$(/system/bin/tr '\\000' '\\n' < "/proc/$bt_pid/cmdline" | /system/bin/head
 [ "$name" = com.android.bluetooth ] || exit 33
 library_hash=$(/system/bin/sha256sum "/proc/$bt_pid/root"__MODULE__)
 library_hash=${library_hash%% *}
-[ "$library_hash" = __HASH__ ] || exit 30
+__HASH_GATE__
 status=/data/misc/bluedroid/handoff-runtime.status
 already=1
 if resident_reuse "$status" "$bt_pid" "$(/system/bin/date +%s)"; then
@@ -108,7 +108,12 @@ else
     echo LINKPODS_BRIDGE_REUSED
 fi
 '''
-    launcher = launcher.replace('__MODULE__', shlex.quote(path)).replace('__HASH__', shlex.quote(digest)).replace('__TARGET__', shlex.quote(target)).replace('__RESIDENT_GUARD__', resident_guard(configuration))
+    resolution = profile.get('resolution')
+    if isinstance(resolution, dict) and resolution.get('mode') == 'prologue_scan':
+        hash_gate = 'echo "LINKPODS_MODULE_SHA256=$library_hash"'
+    else:
+        hash_gate = '[ "$library_hash" = ' + shlex.quote(digest) + ' ] || exit 30'
+    launcher = launcher.replace('__MODULE__', shlex.quote(path)).replace('__HASH__', shlex.quote(digest)).replace('__TARGET__', shlex.quote(target)).replace('__RESIDENT_GUARD__', resident_guard(configuration)).replace('__HASH_GATE__', hash_gate)
     output.mkdir(parents=True)
     (output / 'agent.js').write_bytes(source.replace('\r\n', '\n').encode())
     (output / 'inject-bluetooth.sh').write_bytes(launcher.encode())

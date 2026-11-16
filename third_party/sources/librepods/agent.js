@@ -48,8 +48,10 @@ var agent = {
   l2capListener: null,
   sdpListener: null,
   profile: null,
+  resolvedOffsets: null,
   targetBytes: null,
   spoofVendor: false,
+  diIdentity: false,
   activeSdp: 0,
   sdpRecords: new Map(),
   restoreFailures: 0,
@@ -86,6 +88,51 @@ function fail(reason) {
   return { ok: false, reason: String(reason) };
 }
 
+function checkResolution(resolution) {
+  if (resolution === undefined || resolution === null) {
+    return { enabled: false };
+  }
+  if (typeof resolution !== 'object') {
+    return { error: 'resolution must be an object' };
+  }
+  if (resolution.schema !== 1) {
+    return { error: 'unsupported resolution.schema' };
+  }
+  if (resolution.mode !== 'prologue_scan') {
+    return { error: 'unsupported resolution.mode' };
+  }
+  return { enabled: true, mode: resolution.mode };
+}
+
+function scanPrologue(mod, hex) {
+  var pattern = hex.match(/.{2}/g).join(' ');
+  var ranges;
+  try {
+    ranges = mod.enumerateRanges('r-x');
+  } catch (e) {
+    return { error: 'range enumeration failed: ' + String(e) };
+  }
+  if (!ranges || ranges.length === 0) {
+    return { error: 'no executable module ranges' };
+  }
+  var matches = [];
+  for (var i = 0; i < ranges.length; i++) {
+    try {
+      matches = matches.concat(Memory.scanSync(ranges[i].base, ranges[i].size, pattern));
+    } catch (e) {
+      return { error: 'scan failed: ' + String(e) };
+    }
+  }
+  if (matches.length !== 1) {
+    return { error: 'expected exactly one prologue match, got ' + matches.length };
+  }
+  var offset = parseInt(matches[0].address.sub(mod.base).toString(16), 16);
+  if (!isSafeNonNegativeInt(offset) || offset >= mod.size) {
+    return { error: 'resolved offset outside module' };
+  }
+  return { offset: offset };
+}
+
 function checkProfileShape(profile) {
   if (profile === null || typeof profile !== 'object') {
     return 'profile must be an object';
@@ -103,15 +150,26 @@ function checkProfileShape(profile) {
     return 'file_sha256 must be a string';
   }
 
+  var resolution = checkResolution(profile.resolution);
+  if (resolution.error) {
+    return resolution.error;
+  }
+
   var buildId = profile.build_id;
-  if (buildId === null || typeof buildId !== 'object') {
-    return 'build_id must be an object';
-  }
-  if (!isSafeNonNegativeInt(buildId.offset)) {
-    return 'build_id.offset must be a non-negative safe integer';
-  }
-  if (!isHexString(buildId.hex)) {
-    return 'build_id.hex must be a non-empty even-length hex string';
+  if (buildId === undefined) {
+    if (!resolution.enabled) {
+      return 'build_id must be an object';
+    }
+  } else {
+    if (buildId === null || typeof buildId !== 'object') {
+      return 'build_id must be an object';
+    }
+    if (!isSafeNonNegativeInt(buildId.offset)) {
+      return 'build_id.offset must be a non-negative safe integer';
+    }
+    if (!isHexString(buildId.hex)) {
+      return 'build_id.hex must be a non-empty even-length hex string';
+    }
   }
 
   var functions = profile.functions;
@@ -124,12 +182,32 @@ function checkProfileShape(profile) {
     if (fn === null || typeof fn !== 'object') {
       return 'functions.' + names[i] + ' must be an object';
     }
-    if (!isSafeNonNegativeInt(fn.offset)) {
+    if (fn.offset !== undefined) {
+      if (!isSafeNonNegativeInt(fn.offset)) {
+        return 'functions.' + names[i] + '.offset must be a non-negative safe integer';
+      }
+    } else if (!resolution.enabled) {
       return 'functions.' + names[i] + '.offset must be a non-negative safe integer';
     }
     if (!isHexString(fn.prologue)) {
       return 'functions.' + names[i] + '.prologue must be a non-empty even-length hex string';
     }
+  }
+
+  var fingerprint = profile.layout_fingerprint;
+  if (fingerprint !== undefined) {
+    if (fingerprint === null || typeof fingerprint !== 'object') {
+      return 'layout_fingerprint must be an object';
+    }
+    if (!isSafeNonNegativeInt(fingerprint.length) || fingerprint.length < 1 || fingerprint.length > 4096) {
+      return 'layout_fingerprint.length must be between 1 and 4096';
+    }
+    if (!isHexString(fingerprint.hex) || fingerprint.hex.length !== fingerprint.length * 2) {
+      return 'layout_fingerprint.hex must match layout_fingerprint.length';
+    }
+  }
+  if (resolution.enabled && (fingerprint === undefined || fingerprint.length !== 1024)) {
+    return 'prologue_scan requires a 1024-byte layout_fingerprint';
   }
 
   var offsets = profile.offsets;
@@ -208,7 +286,8 @@ function currentStatus() {
     l2cap_matches: agent.stats.l2cap_matches,
     l2cap_rewrites: agent.stats.l2cap_rewrites,
     sdp_writes: agent.stats.sdp_writes,
-    sdp_restores: agent.stats.sdp_restores
+    sdp_restores: agent.stats.sdp_restores,
+    di_identity: agent.diIdentity === true
   });
 }
 
@@ -225,6 +304,12 @@ function probe(profile) {
   if (reason !== null) {
     return fail(reason);
   }
+  if (agent.state !== 'disabled') {
+    return fail('probe rejected: state is ' + agent.state);
+  }
+  // DI capability must be known before any reference-layout read. Reset first so a
+  // failed or non-exact probe cannot inherit an earlier exact session's permission.
+  agent.diIdentity = false;
 
   if (Process.arch !== 'arm64') {
     return fail('unsupported arch: ' + String(Process.arch));
@@ -261,14 +346,7 @@ function probe(profile) {
     return fail('module_path mismatch');
   }
 
-  var checks = [
-    { label: 'build_id', offset: profile.build_id.offset, hex: profile.build_id.hex },
-    { label: 'functions.l2cap.prologue', offset: profile.functions.l2cap.offset,
-      hex: profile.functions.l2cap.prologue },
-    { label: 'functions.sdp.prologue', offset: profile.functions.sdp.offset,
-      hex: profile.functions.sdp.prologue }
-  ];
-
+  var resolution = checkResolution(profile.resolution);
   var details = {
     module: profile.module_name,
     base: base.toString(),
@@ -276,26 +354,102 @@ function probe(profile) {
     checks: {}
   };
 
-  for (var i = 0; i < checks.length; i++) {
+  var checks = [];
+  var exact = true;
+  if (profile.build_id !== undefined) {
+    checks.push({ label: 'build_id', offset: profile.build_id.offset, hex: profile.build_id.hex });
+  } else {
+    exact = false;
+  }
+  var functionNames = ['l2cap', 'sdp'];
+  for (var n = 0; n < functionNames.length; n++) {
+    var name = functionNames[n];
+    if (profile.functions[name].offset !== undefined) {
+      checks.push({ label: 'functions.' + name + '.prologue',
+        offset: profile.functions[name].offset, hex: profile.functions[name].prologue });
+    } else {
+      exact = false;
+    }
+  }
+
+  var mismatch = null;
+  for (var i = 0; i < checks.length && exact; i++) {
     var c = checks[i];
     var length = c.hex.length / 2;
     if (c.offset + length > size) {
-      return fail(c.label + ' range outside module');
+      mismatch = c.label + ' range outside module';
+      exact = false;
+      break;
     }
     var actual;
     try {
       actual = base.add(c.offset).readByteArray(length);
     } catch (e) {
-      return fail(c.label + ' read failed: ' + String(e));
+      mismatch = c.label + ' read failed: ' + String(e);
+      exact = false;
+      break;
     }
     if (!bytesEqualHex(actual, c.hex)) {
-      return fail(c.label + ' mismatch');
+      mismatch = c.label + ' mismatch';
+      exact = false;
+    } else {
+      details.checks[c.label] = true;
     }
-    details.checks[c.label] = true;
   }
 
+  var offsets = {};
+  if (exact) {
+    for (var e = 0; e < functionNames.length; e++) {
+      offsets[functionNames[e]] = profile.functions[functionNames[e]].offset;
+    }
+  } else {
+    if (!resolution.enabled) {
+      return fail(mismatch || 'profile does not match the loaded module');
+    }
+    for (var s = 0; s < functionNames.length; s++) {
+      var scanName = functionNames[s];
+      var scanned = scanPrologue(mod, profile.functions[scanName].prologue);
+      if (scanned.error) {
+        return fail('functions.' + scanName + ': ' + scanned.error);
+      }
+      var expectedLength = profile.functions[scanName].prologue.length / 2;
+      var scannedBytes;
+      try {
+        scannedBytes = base.add(scanned.offset).readByteArray(expectedLength);
+      } catch (scanError) {
+        return fail('functions.' + scanName + ' read failed: ' + String(scanError));
+      }
+      if (!bytesEqualHex(scannedBytes, profile.functions[scanName].prologue)) {
+        return fail('functions.' + scanName + ' resolved prologue mismatch');
+      }
+      offsets[scanName] = scanned.offset;
+      details.checks['functions.' + scanName + '.prologue'] = true;
+    }
+  }
+
+  if (profile.layout_fingerprint !== undefined) {
+    var layoutFingerprint = profile.layout_fingerprint;
+    if (offsets.l2cap + layoutFingerprint.length > size) {
+      return fail('layout_fingerprint range outside module');
+    }
+    var fingerprintBytes;
+    try {
+      fingerprintBytes = base.add(offsets.l2cap).readByteArray(layoutFingerprint.length);
+    } catch (fingerprintError) {
+      return fail('layout_fingerprint read failed: ' + String(fingerprintError));
+    }
+    if (!bytesEqualHex(fingerprintBytes, layoutFingerprint.hex)) {
+      return fail('l2cap layout fingerprint mismatch');
+    }
+    details.layout_fingerprint = true;
+  }
+
+  agent.resolvedOffsets = offsets;
+  agent.diIdentity = exact;
+  details.resolution = exact ? 'exact' : resolution.mode;
+  details.offsets = offsets;
   return { ok: true, module: details.module, base: details.base, size: details.size,
-    checks: details.checks };
+    checks: details.checks, resolution: details.resolution, offsets: offsets };
 }
 
 function onL2capEnter(args) {
@@ -477,6 +631,7 @@ function finishDrain() {
   if (!detachListeners()) return;
   agent.state = 'disabled';
   agent.profile = null;
+  agent.resolvedOffsets = null;
   agent.targetBytes = null;
   agent.spoofVendor = false;
   safeSend({ event: 'disabled', reason: 'drain-complete' });
@@ -527,9 +682,14 @@ function enable(profile, options) {
 
   var l2capAddress;
   var sdpAddress;
+  var resolved = agent.resolvedOffsets;
+  if (resolved === null || resolved === undefined ||
+      !isSafeNonNegativeInt(resolved.l2cap) || !isSafeNonNegativeInt(resolved.sdp)) {
+    return makeStatus('disabled', { last_error: 'resolved function offsets unavailable' });
+  }
   try {
-    l2capAddress = mod.base.add(profile.functions.l2cap.offset);
-    sdpAddress = mod.base.add(profile.functions.sdp.offset);
+    l2capAddress = mod.base.add(resolved.l2cap);
+    sdpAddress = mod.base.add(resolved.sdp);
   } catch (e) {
     return makeStatus('disabled', { last_error: 'address computation failed' });
   }
@@ -540,7 +700,8 @@ function enable(profile, options) {
     return makeStatus('disabled', { last_error: 'profile snapshot failed: ' + String(e) });
   }
   agent.targetBytes = targetBytes;
-  agent.spoofVendor = options.spoof_vendor === true;
+  agent.diIdentity = probeResult.resolution === 'exact';
+  agent.spoofVendor = options.spoof_vendor === true && agent.diIdentity;
   agent.activeSdp = 0;
   agent.sdpRecords = new Map();
   agent.restoreFailures = 0;
@@ -557,7 +718,7 @@ function enable(profile, options) {
     });
     agent.l2capListener = l2capListener;
 
-    if (options.spoof_vendor) {
+    if (options.spoof_vendor && agent.diIdentity) {
       sdpListener = Interceptor.attach(sdpAddress, {
         onEnter: onSdpEnter,
         onLeave: onSdpLeave
@@ -576,7 +737,7 @@ function enable(profile, options) {
 
   agent.state = 'enabled';
   agent.accepting = true;
-  safeSend({ event: 'enabled', spoof_vendor: !!options.spoof_vendor });
+  safeSend({ event: 'enabled', spoof_vendor: agent.spoofVendor });
   return currentStatus();
 }
 

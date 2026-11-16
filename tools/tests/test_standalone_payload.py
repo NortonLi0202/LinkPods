@@ -47,10 +47,11 @@ class RelocationTests(unittest.TestCase):
             for directory in ['native/bluetooth','third_party/payloads','third_party/sources/dfroot',
                               'third_party/sources/librepods','apps/android/native','compatibility']:
                 (root/directory).mkdir(parents=True,exist_ok=True)
-            for name in ['prepare-runtime-bundle.py','sdp-runtime.js','resident-runtime.js','profile.json']:
+            for name in ['prepare-runtime-bundle.py','sdp-runtime.js','resident-runtime.js','profile.json','profile-prologue.json']:
                 shutil.copyfile(payload.ROOT/'native/bluetooth'/name,root/'native/bluetooth'/name)
             shutil.copyfile(payload.ROOT/'compatibility/adapters.json',root/'compatibility/adapters.json')
             shutil.copyfile(payload.ROOT/'compatibility/targets.json',root/'compatibility/targets.json')
+            shutil.copyfile(payload.ROOT/'compatibility/payloads.json',root/'compatibility/payloads.json')
             (root/'third_party/sources/librepods/agent.js').write_text('// synthetic source')
             (root/'third_party/sources/dfroot/diagnostic_android.c').write_text(
                 'static void preclean_link(int fd) {}\nstatic int start_late_load(void *opaque) {}\nstatic int capture_finish(void *opaque) {return 0;}')
@@ -65,7 +66,7 @@ class RelocationTests(unittest.TestCase):
             with patch.multiple(payload,ROOT=root,PAYLOADS=inputs,INPUTS=records,PINS=pins):payload.prepare(output)
             manifest=json.loads((output/'assets/root/manifest.json').read_text())
             self.assertEqual(manifest['schema'],2)
-            self.assertEqual(len(manifest['adapters']),1)
+            self.assertEqual(len(manifest['adapters']),2)
             archive=io.BytesIO()
             with zipfile.ZipFile(archive,'w') as packaged:
                 for file in (output/'assets/root').rglob('*'):
@@ -112,7 +113,13 @@ class RelocationTests(unittest.TestCase):
         profile_bytes=json.dumps(profile,sort_keys=True,separators=(',',':')).encode()
         profile_hash=hashlib.sha256(profile_bytes).hexdigest()
         base='adapters/synthetic/'
+        catalog_entry={'id':'synthetic-payload','status':'device_tested',
+            'target':{'model':'SM-X810','android_sdk':36,'firmware':'X810ZCS6EZH3',
+                      'kernel':'5.15.189-android13-8-3251856-abX810ZCS6EZH3','bluetooth_sha256':'a'*64},
+            'artifacts':{'exploit':'libdfroot.so','module':'diagnostic.ko',
+                         'loader':'libksud.so','bootstrap':'liblpbootstrap.so'}}
         files={'libksud.so':b'loader','diagnostic.ko':b'module','frida-inject':b'frida',
+               'payloads.json':json.dumps({'schema':1,'payloads':[catalog_entry]},separators=(',',':')).encode(),
                base+'inject.template.sh':b'#!/system/bin/sh\n# '+profile_hash.encode()+b'\n',
                base+'agent.template.js':b'// '+profile_hash.encode(),base+'profile.json':profile_bytes}
         original=dict(files)

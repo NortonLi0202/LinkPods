@@ -27,7 +27,7 @@ function exercise(script,profile,generated=false) {
     const module={name:profile.module_name,path:profile.module_path,size:memory.length,base:new Pointer(0)};
     let hooked=false;
     const context=vm.createContext({Process:{id:42,getModuleByName:name=>{assert.equal(name,profile.module_name);return module;}},Date,Math,JSON,
-      rpc:{exports:{probe:()=>{assert.equal(hooked,false,'original prologues can only be checked before hooks');return {ok:validIdentity};},enable:()=>{assert.equal(validTable,true,'invalid SDP must fail before attaching listeners');hooked=true;if(failEnable)throw new Error('partial enable');return {state:'enabled'};},status:()=>({state:hooked?'enabled':'disabled',active_sdp:0}),disable:()=>{hooked=false;return {state:'disabled',active_sdp:0};}}},
+      rpc:{exports:{probe:()=>{assert.equal(hooked,false,'original prologues can only be checked before hooks');return {ok:validIdentity};},enable:()=>{assert.equal(validTable,true,'invalid SDP must fail before attaching listeners');hooked=true;if(failEnable)throw new Error('partial enable');return {state:'enabled'};},status:()=>({state:hooked?'enabled':'disabled',active_sdp:0,di_identity:true}),disable:()=>{hooked=false;return {state:'disabled',active_sdp:0};}}},
       File:{writeAllText:()=>{},readAllText:()=>''},setInterval:()=>1,clearInterval:()=>{},console:{log:()=>{}}});
     if(generated) {
       try {vm.runInContext(script.replace(/const runtimeProfile = [^\n]*;\n/,'const runtimeProfile = '+JSON.stringify(changed)+';\n'),context);}

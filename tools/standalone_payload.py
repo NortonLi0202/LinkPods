@@ -10,10 +10,13 @@ import tempfile
 
 _registry_spec=importlib.util.spec_from_file_location('adapter_registry',Path(__file__).with_name('adapter_registry.py'))
 registry=importlib.util.module_from_spec(_registry_spec);_registry_spec.loader.exec_module(registry)
+_catalog_spec=importlib.util.spec_from_file_location('payload_catalog',Path(__file__).with_name('payload_catalog.py'))
+payload_catalog=importlib.util.module_from_spec(_catalog_spec);_catalog_spec.loader.exec_module(payload_catalog)
 
 ROOT=Path(__file__).resolve().parents[1]
 ORIGINAL_PATH=b'/data/user_de/0/df.root/bootstrap'
 STANDALONE_PATH=b'/data/user_de/0/lp.pods/bootstrap'
+ARTIFACT_NAMES={'exploit':'libdfroot.so','module':'diagnostic.ko','loader':'libksud.so','bootstrap':'liblpbootstrap.so'}
 PAYLOADS=ROOT/'third_party/payloads'
 INPUTS=json.loads((PAYLOADS/'manifest.json').read_text(encoding='utf-8-sig'))['inputs']
 PINS={name:record['sha256'] for name,record in INPUTS.items()}
@@ -77,7 +80,11 @@ def prepare_bridge_assets(assets,root,binary,binary_sha256,agent_source):
             for name,out in [('agent.js','agent.template.js'),('inject-bluetooth.sh','inject.template.sh')]:
                 text=(template/name).read_text(encoding='utf-8').replace(placeholder,'__LINKPODS_TARGET_ADDRESS__')
                 (destination/out).write_bytes(android_text(text))
-        result.append({key:adapter[key] for key in ('id','module_path','sha256','build_id','build_id_offset','profile_sha256')})
+        record={key:adapter[key] for key in ('id','module_path','build_id_offset','profile_sha256','match') if adapter.get(key) is not None}
+        for key in ('sha256','build_id'):
+            if adapter.get(key) is not None:record[key]=adapter[key]
+        if adapter.get('match')=='prologue':record['reference_sha256']=profile.get('file_sha256')
+        result.append(record)
         result[-1].update(profile=base+'profile.json',agent=base+'agent.template.js',launcher=base+'inject.template.sh')
     return result
 
@@ -104,7 +111,19 @@ def prepare(output):
     targets=json.loads((ROOT/'compatibility/targets.json').read_text(encoding='utf-8'))['temporary_root_targets']
     if len(targets)!=1:raise ValueError('exactly one temporary Root target is required')
     target=targets[0]
-    paths={a['module_path'] for a in adapters if a['sha256']==target['bluetooth_sha256']}
+    catalog=payload_catalog.load(ROOT/'compatibility/payloads.json')
+    if len(catalog)!=1:
+        raise ValueError('exactly one packaged Root payload is supported')
+    if catalog[0]['target']!=target:
+        raise ValueError('payload target must match temporary Root target')
+    if any(catalog[0]['artifacts'].get(key)!=value for key,value in ARTIFACT_NAMES.items()):
+        raise ValueError('payload artifacts must match the packaged executor')
+    (output/'assets/root/payloads.json').write_bytes(
+        android_text(json.dumps({'schema':1,'payloads':catalog},sort_keys=True,separators=(',',':'))))
+    paths={a['module_path'] for a in adapters if a.get('sha256')==target['bluetooth_sha256']}
+    if not paths:
+        paths={a['module_path'] for a in adapters
+               if a.get('match')=='prologue' and a.get('reference_sha256')==target['bluetooth_sha256']}
     if len(paths)!=1:raise ValueError('temporary Root target requires one exact module path')
     files={p.relative_to(output/'assets/root').as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
            for p in (output/'assets/root').rglob('*') if p.is_file()}
@@ -132,22 +151,41 @@ def verify_apk(path,pins=None):
         for key,name in [('loader','libksud.so'),('module','diagnostic.ko'),('frida','frida-inject')]:
             if manifest['files'].get(name)!=pins[key]:raise ValueError('APK pinned binary mismatch: '+name)
         if manifest.get('schema')!=2:raise ValueError('unsupported Root payload manifest schema')
+        catalog=payload_catalog.validate(json.loads(archive.read('assets/root/payloads.json')))
+        if len(catalog)!=1:
+            raise ValueError('exactly one packaged Root payload is supported')
+        if manifest.get('target') is not None and catalog[0]['target']!=manifest.get('target'):
+            raise ValueError('APK payload catalog mismatch')
+        if any(catalog[0]['artifacts'].get(key)!=value for key,value in ARTIFACT_NAMES.items()):
+            raise ValueError('APK payload artifacts do not match the executor')
+        if catalog[0]['artifacts']['module'] not in manifest['files'] or catalog[0]['artifacts']['loader'] not in manifest['files']:
+            raise ValueError('APK payload artifact missing')
         adapters=manifest.get('adapters',[])
-        ids=set();identities=set()
+        ids=set();identities=set();prologue_paths=set()
         for adapter in adapters:
             identifier=adapter['id'];base='adapters/'+identifier+'/'
             registry.safe_path(base+'profile.json')
             if identifier in ids:raise ValueError('duplicate adapter id')
             ids.add(identifier)
             registry.safe_path(adapter['module_path'],absolute=True)
-            identity=(adapter['module_path'],adapter['sha256'],adapter['build_id'])
-            if identity in identities:raise ValueError('ambiguous adapter identity')
-            identities.add(identity)
+            match=adapter.get('match','exact')
+            if match not in ('exact','prologue'):raise ValueError('invalid adapter match mode')
             for field,name in [('profile','profile.json'),('agent','agent.template.js'),('launcher','inject.template.sh')]:
                 if adapter[field]!=base+name or adapter[field] not in manifest['files']:raise ValueError('invalid adapter asset reference')
             profile=json.loads(archive.read('assets/root/'+adapter['profile']))
-            if (profile.get('module_path'),profile.get('file_sha256'),profile.get('build_id',{}).get('hex'))!=identity or profile['build_id']['offset']!=adapter['build_id_offset'] or registry.profile_hash(profile)!=adapter['profile_sha256']:
-                raise ValueError('APK adapter profile identity mismatch')
+            if match=='exact':
+                identity=(adapter['module_path'],adapter['sha256'],adapter['build_id'])
+                if identity in identities:raise ValueError('ambiguous adapter identity')
+                identities.add(identity)
+                if (profile.get('module_path'),profile.get('file_sha256'),profile.get('build_id',{}).get('hex'))!=identity or profile['build_id']['offset']!=adapter['build_id_offset'] or registry.profile_hash(profile)!=adapter['profile_sha256']:
+                    raise ValueError('APK adapter profile identity mismatch')
+            else:
+                resolution=profile.get('resolution')
+                if (not isinstance(resolution,dict) or resolution.get('schema')!=1 or resolution.get('mode')!='prologue_scan'
+                        or profile.get('module_path')!=adapter['module_path'] or registry.profile_hash(profile)!=adapter['profile_sha256']):
+                    raise ValueError('APK prologue adapter profile mismatch')
+                if adapter['module_path'] in prologue_paths:raise ValueError('ambiguous prologue adapter')
+                prologue_paths.add(adapter['module_path'])
             launcher=archive.read('assets/root/'+adapter['launcher'])
             if b'\r' in launcher:raise ValueError('Android shell template must use LF')
             if b'am start-foreground-service' in launcher:raise ValueError('Root helper must not start service after cancellation')
