@@ -206,6 +206,9 @@ function checkProfileShape(profile) {
       return 'layout_fingerprint.hex must match layout_fingerprint.length';
     }
   }
+  if (resolution.enabled && (fingerprint === undefined || fingerprint.length !== 1024)) {
+    return 'prologue_scan requires a 1024-byte layout_fingerprint';
+  }
 
   var offsets = profile.offsets;
   if (offsets === null || typeof offsets !== 'object') {

@@ -19,12 +19,14 @@
 
 | 构件 | 作用 | 是否按设备定制 |
 |---|---|---|
-| `libdfroot.so`（或等价 exploit ELF） | 漏洞利用，加载内核模块 | **是**，按内核/固件 |
+| `libdfroot.so` | 漏洞利用，加载内核模块 | **是**，按内核/固件 |
 | `diagnostic.ko` | KernelSU 诊断/加载模块 | **是**，按内核构建 |
 | `libksud.so` | KSU late-load 加载器 | **是**，按内核/ABI |
 | `liblpbootstrap.so` | root broker，负责和 App 通信 | 通常复用 LinkPods 构建 |
 
 蓝牙桥接用的 `frida-inject` 由 LinkPods 自己打包，不属于 payload。
+
+构建不会直接读取独立的 exploit ELF。需要把包含 `lib/arm64-v8a/libdfroot.so` 的 APK 放入 `third_party/payloads/`，并在 `third_party/payloads/manifest.json` 的 `original_apk` 中固定文件名和 SHA-256；当前默认文件是 `DFRoot_4.7.apk`。exploit 不满足构建假定的内部布局时，需要同步调整构建流程。
 
 ## 1. 采集精确设备身份
 
@@ -35,7 +37,7 @@ getprop ro.product.model
 getprop ro.build.version.sdk
 getprop ro.build.version.incremental
 uname -r
-sha256sum /apex/com.android.bt/lib64/libbluetooth_jni.so
+sha256sum <compatibility/adapters.json 中目标适配器的 module_path>
 ```
 
 `compatibility/payloads.json` 的 `target` 必须和这五项**完全一致**：
@@ -75,7 +77,7 @@ sha256sum /apex/com.android.bt/lib64/libbluetooth_jni.so
    ```json
    {
      "id": "sm-x810-x810zcs6ezh3-dfroot",
-     "status": "device_tested",
+     "status": "unverified",
      "target": { "...": "五项精确身份" },
      "artifacts": {
        "exploit": "libdfroot.so",
@@ -85,7 +87,9 @@ sha256sum /apex/com.android.bt/lib64/libbluetooth_jni.so
      }
    }
    ```
-3. 同步 `compatibility/targets.json` 的临时 Root 目标（当前构建要求两者一致）；
+完成真机验证前保持 `unverified`；验证通过后再改为 `device_tested`。
+
+3. 同步 `compatibility/targets.json` 的临时 Root 目标（当前构建要求两者一致）；同时在 `compatibility/adapters.json` 增加与该机蓝牙模块匹配的适配器及 profile：`module_path` 必须和上面计算的路径一致，`sha256`/BuildID 或 prologue profile 的参考哈希必须对应目标模块。缺少匹配适配器时 `prepare()` 会报 `temporary Root target requires one exact module path`；
 4. 运行：
    ```powershell
    python tools/project.py check
