@@ -49,11 +49,14 @@ function currentDiFields(profile) {
 }
 function diRead(p){return (p.readU8()<<8)|p.add(1).readU8();}
 function diWrite(p,value){p.writeByteArray([(value>>>8)&255,value&255]);}
+function diDisabled(){try{return rpc.exports.status().di_identity===false;}catch(error){return false;}}
 rpc.exports.diidentity=function(){
+  if(diDisabled())return {handle:0,vendor:0,source:0,disabled:true};
   const d=currentDiFields(diProfile);
   return {handle:d.primary,vendor:diRead(d.fields[0x201]),source:diRead(d.fields[0x205])};
 };
 rpc.exports.appleidentity=function(profile){
+  if(diDisabled())return {handle:0,vendor:0,source:0,disabled:true};
   if(diSaved)throw new Error('DI identity already enabled');
   const d=currentDiFields(profile);
   diProfile=profile;

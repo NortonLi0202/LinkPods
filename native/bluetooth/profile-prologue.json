@@ -34,7 +34,7 @@
     "input_elf": "libbluetooth_jni.so (local input, not distributed)",
     "input_size": 14415432,
     "generated_at_utc": "2026-11-14T07:01:03Z",
-    "scope": "reference build; addresses are re-resolved by prologue scan when the module build differs"
+    "scope": "reference build; only function addresses are re-resolved by prologue scan when the module build differs; sdp_identity offsets and DI identity writes stay exact-profile-only"
   },
   "sdp_identity": {
     "max_records": 64,

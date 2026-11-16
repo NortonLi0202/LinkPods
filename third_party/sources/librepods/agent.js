@@ -51,6 +51,7 @@ var agent = {
   resolvedOffsets: null,
   targetBytes: null,
   spoofVendor: false,
+  diIdentity: true,
   activeSdp: 0,
   sdpRecords: new Map(),
   restoreFailures: 0,
@@ -103,19 +104,30 @@ function checkResolution(resolution) {
   return { enabled: true, mode: resolution.mode };
 }
 
-function scanPrologue(base, size, hex) {
+function scanPrologue(mod, hex) {
   var pattern = hex.match(/.{2}/g).join(' ');
-  var matches;
+  var ranges;
   try {
-    matches = Memory.scanSync(base, size, pattern);
+    ranges = mod.enumerateRanges('r-x');
   } catch (e) {
-    return { error: 'scan failed: ' + String(e) };
+    return { error: 'range enumeration failed: ' + String(e) };
   }
-  if (!matches || matches.length !== 1) {
-    return { error: 'expected exactly one prologue match, got ' + (matches ? matches.length : 0) };
+  if (!ranges || ranges.length === 0) {
+    return { error: 'no executable module ranges' };
   }
-  var offset = matches[0].address.sub(base).toNumber();
-  if (!isSafeNonNegativeInt(offset) || offset >= size) {
+  var matches = [];
+  for (var i = 0; i < ranges.length; i++) {
+    try {
+      matches = matches.concat(Memory.scanSync(ranges[i].base, ranges[i].size, pattern));
+    } catch (e) {
+      return { error: 'scan failed: ' + String(e) };
+    }
+  }
+  if (matches.length !== 1) {
+    return { error: 'expected exactly one prologue match, got ' + matches.length };
+  }
+  var offset = parseInt(matches[0].address.sub(mod.base).toString(16), 16);
+  if (!isSafeNonNegativeInt(offset) || offset >= mod.size) {
     return { error: 'resolved offset outside module' };
   }
   return { offset: offset };
@@ -258,7 +270,8 @@ function currentStatus() {
     l2cap_matches: agent.stats.l2cap_matches,
     l2cap_rewrites: agent.stats.l2cap_rewrites,
     sdp_writes: agent.stats.sdp_writes,
-    sdp_restores: agent.stats.sdp_restores
+    sdp_restores: agent.stats.sdp_restores,
+    di_identity: agent.diIdentity !== false
   });
 }
 
@@ -373,7 +386,7 @@ function probe(profile) {
     }
     for (var s = 0; s < functionNames.length; s++) {
       var scanName = functionNames[s];
-      var scanned = scanPrologue(base, size, profile.functions[scanName].prologue);
+      var scanned = scanPrologue(mod, profile.functions[scanName].prologue);
       if (scanned.error) {
         return fail('functions.' + scanName + ': ' + scanned.error);
       }
@@ -581,6 +594,7 @@ function finishDrain() {
   agent.resolvedOffsets = null;
   agent.targetBytes = null;
   agent.spoofVendor = false;
+  agent.diIdentity = true;
   safeSend({ event: 'disabled', reason: 'drain-complete' });
 }
 
@@ -647,7 +661,8 @@ function enable(profile, options) {
     return makeStatus('disabled', { last_error: 'profile snapshot failed: ' + String(e) });
   }
   agent.targetBytes = targetBytes;
-  agent.spoofVendor = options.spoof_vendor === true;
+  agent.diIdentity = probeResult.resolution === 'exact';
+  agent.spoofVendor = options.spoof_vendor === true && agent.diIdentity;
   agent.activeSdp = 0;
   agent.sdpRecords = new Map();
   agent.restoreFailures = 0;
@@ -664,7 +679,7 @@ function enable(profile, options) {
     });
     agent.l2capListener = l2capListener;
 
-    if (options.spoof_vendor) {
+    if (options.spoof_vendor && agent.diIdentity) {
       sdpListener = Interceptor.attach(sdpAddress, {
         onEnter: onSdpEnter,
         onLeave: onSdpLeave
@@ -683,7 +698,7 @@ function enable(profile, options) {
 
   agent.state = 'enabled';
   agent.accepting = true;
-  safeSend({ event: 'enabled', spoof_vendor: !!options.spoof_vendor });
+  safeSend({ event: 'enabled', spoof_vendor: agent.spoofVendor });
   return currentStatus();
 }
 

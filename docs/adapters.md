@@ -36,11 +36,12 @@
 
 - 每个函数必须恰好一处命中，零处或多处都失败，不写内存、不安装 hook；
 - 命中后仍校验函数入口字节；hook 触发的 PSM、目标 MAC、preferred mode 校验保持原样，任一不符不重写；
+- 扫描模式下不写 SDP DI 身份：`sdp_identity` 偏移只适用于参考布局，不会随 prologue 扫描重定位，因此 agent 在非精确解析时关闭 DI 写入，状态返回 `di_identity: false`；
 - 结构偏移（`offsets`、`sdp_identity`）仍来自 profile，不从代码猜测，版本差异必须另行验证。
 
 prologue 长度必须在真实模块上验证唯一性：本机 `libbluetooth_jni.so` 的 32 字节 l2cap 前缀有 44 处重复，扩到 40 字节才唯一；sdp 的 32 字节前缀唯一。新增模块时先做离线唯一性检查，再上机验证。
 
-这是实验性扩展，不等于支持范围：它只覆盖“函数代码未变、地址或 BuildID 变了”的同源模块。结构布局不同的模块仍需一套精确 profile。
+这是实验性扩展，不等于支持范围：它只覆盖“函数代码未变、地址或 BuildID 变了”的同源模块；DI 身份与 SDP 布局不在扫描范围内，需要精确 profile。结构布局不同的模块仍需一套精确 profile。
 
 临时 Root 的机型/固件精确白名单仍单独位于 `compatibility/targets.json`；增加 Bluetooth 适配不会增加漏洞适用范围。
 
