@@ -49,7 +49,7 @@ function currentDiFields(profile) {
 }
 function diRead(p){return (p.readU8()<<8)|p.add(1).readU8();}
 function diWrite(p,value){p.writeByteArray([(value>>>8)&255,value&255]);}
-function diDisabled(){try{return rpc.exports.status().di_identity===false;}catch(error){return false;}}
+function diDisabled(){try{return rpc.exports.status().di_identity!==true;}catch(error){return true;}}
 rpc.exports.diidentity=function(){
   if(diDisabled())return {handle:0,vendor:0,source:0,disabled:true};
   const d=currentDiFields(diProfile);

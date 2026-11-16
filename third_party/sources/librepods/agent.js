@@ -51,7 +51,7 @@ var agent = {
   resolvedOffsets: null,
   targetBytes: null,
   spoofVendor: false,
-  diIdentity: true,
+  diIdentity: false,
   activeSdp: 0,
   sdpRecords: new Map(),
   restoreFailures: 0,
@@ -271,7 +271,7 @@ function currentStatus() {
     l2cap_rewrites: agent.stats.l2cap_rewrites,
     sdp_writes: agent.stats.sdp_writes,
     sdp_restores: agent.stats.sdp_restores,
-    di_identity: agent.diIdentity !== false
+    di_identity: agent.diIdentity === true
   });
 }
 
@@ -288,6 +288,9 @@ function probe(profile) {
   if (reason !== null) {
     return fail(reason);
   }
+  // DI capability must be known before any reference-layout read. Reset first so a
+  // failed or non-exact probe cannot inherit an earlier exact session's permission.
+  agent.diIdentity = false;
 
   if (Process.arch !== 'arm64') {
     return fail('unsupported arch: ' + String(Process.arch));
@@ -406,6 +409,7 @@ function probe(profile) {
   }
 
   agent.resolvedOffsets = offsets;
+  agent.diIdentity = exact;
   details.resolution = exact ? 'exact' : resolution.mode;
   details.offsets = offsets;
   return { ok: true, module: details.module, base: details.base, size: details.size,
@@ -594,7 +598,6 @@ function finishDrain() {
   agent.resolvedOffsets = null;
   agent.targetBytes = null;
   agent.spoofVendor = false;
-  agent.diIdentity = true;
   safeSend({ event: 'disabled', reason: 'drain-complete' });
 }
 

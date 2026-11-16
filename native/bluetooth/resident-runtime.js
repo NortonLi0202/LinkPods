@@ -6,8 +6,15 @@ const residentStatus = '/data/misc/bluedroid/handoff-runtime.status';
 let residentInstance = null;
 function residentSnapshot(error) {
   const state = rpc.exports.status();
+  let identity;
+  try {
+    identity = rpc.exports.diidentity();
+  } catch (diError) {
+    // Cleanup confirmation must not depend on optional DI inspection.
+    identity = {handle:0,vendor:0,source:0,disabled:true,error:String(diError)};
+  }
   const result = {pid:Process.id,instance_id:residentInstance,updated_at_ms:Date.now(),state:state,
-    identity:rpc.exports.diidentity(),resume:rpc.exports.resumestatus ? rpc.exports.resumestatus() : null,
+    di_identity:state.di_identity===true,identity:identity,resume:rpc.exports.resumestatus ? rpc.exports.resumestatus() : null,
     configuration:residentConfiguration,error:error || null};
   File.writeAllText(residentStatus,JSON.stringify(result)+'\n');
   return result;
