@@ -8,17 +8,38 @@ import java.nio.file.*;
 import java.security.MessageDigest;
 import java.util.*;
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 /** Verify bundled assets before staging in device-protected private storage. */
 final class RootAssets {
     private final Context context;
     final JSONObject manifest;
+    private final BridgeAdapterRegistry registry;
     RootAssets(Context source) throws Exception {
         context=source.createDeviceProtectedStorageContext();
         if(!RootSessionConfig.PACKAGE.equals(context.getPackageName()) || context.getApplicationInfo().uid/100000!=0)
             throw new IOException("This standalone Root adapter requires the primary-user package");
         manifest=new JSONObject(text("manifest.json"));
         if(!RootSessionConfig.PACKAGE.equals(manifest.getString("package")))throw new IOException("Root payload package mismatch");
+        if(manifest.getInt("schema")!=2)throw new IOException("Unsupported Root manifest schema");
+        JSONObject assets=manifest.getJSONObject("files");
+        Iterator<String> names=assets.keys();while(names.hasNext()) {
+            String name=names.next();BridgeAdapterRegistry.validateAssetPath(name);
+            if(!assets.getString(name).matches("[0-9a-f]{64}"))throw new IOException("Invalid asset digest");
+        }
+        ArrayList<BridgeAdapterRegistry.Adapter> adapters=new ArrayList<>();
+        JSONArray records=manifest.getJSONArray("adapters");
+        for(int index=0;index<records.length();index++) {
+            JSONObject entry=records.getJSONObject(index);
+            BridgeAdapterRegistry.Adapter adapter=new BridgeAdapterRegistry.Adapter(entry.getString("id"),entry.getString("module_path"),
+                entry.getString("sha256"),entry.getString("build_id"),entry.getInt("build_id_offset"),entry.getString("profile_sha256"));
+            for(String[] item:new String[][]{{"profile","profile.json"},{"agent","agent.template.js"},{"launcher","inject.template.sh"}})
+                if(!entry.getString(item[0]).equals(adapter.asset(item[1])) || !assets.has(adapter.asset(item[1])))throw new IOException("Invalid adapter asset reference");
+            // Packaged profiles use the same canonical bytes as the native runtime hash.
+            if(!assets.getString(adapter.asset("profile.json")).equals(adapter.profileHash))throw new IOException("Profile digest mismatch");
+            adapters.add(adapter);
+        }
+        registry=new BridgeAdapterRegistry(adapters);
         File log=new File(context.getFilesDir(),"root-bootstrap.log");
         if(!log.exists()&&!log.createNewFile())throw new IOException("Cannot prepare Root log");
         Os.chmod(log.getPath(),0600);
@@ -36,6 +57,7 @@ final class RootAssets {
         }
     }
     private void extract(String name,File target,boolean executable) throws Exception {
+        BridgeAdapterRegistry.validateAssetPath(name);
         String expected=manifest.getJSONObject("files").getString(name);
         File temporary=File.createTempFile(".root-",".tmp",target.getParentFile());
         try {
@@ -48,8 +70,13 @@ final class RootAssets {
         } finally {temporary.delete();}
     }
     private String verifiedText(String name) throws Exception {
-        File file=new File(context.getCacheDir(),name);extract(name,file,false);
-        return new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8);
+        BridgeAdapterRegistry.validateAssetPath(name);
+        String value=text(name);
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");
+        byte[] actual=digest.digest(value.getBytes(StandardCharsets.UTF_8));
+        StringBuilder hex=new StringBuilder();for(byte item:actual)hex.append(String.format(Locale.ROOT,"%02x",item&255));
+        if(!hex.toString().equals(manifest.getJSONObject("files").getString(name)))throw new IOException("Bundled Root payload mismatch: "+name);
+        return value;
     }
     void stageRoot() throws Exception {
         File directory=context.getFilesDir().getParentFile();
@@ -59,16 +86,38 @@ final class RootAssets {
         File target=new File(directory,"bootstrap");
         Files.copy(source.toPath(),target.toPath(),StandardCopyOption.REPLACE_EXISTING);Os.chmod(target.getPath(),0700);
     }
-    void stageBridge(String targetAddress) throws Exception {
+    BridgeAdapterRegistry.Adapter matchBridge() throws Exception {
+        for(BridgeAdapterRegistry.Adapter adapter:registry.adapters) {
+            JSONObject profile=new JSONObject(verifiedText(adapter.asset("profile.json")));
+            JSONObject build=profile.getJSONObject("build_id");
+            if(!adapter.modulePath.equals(profile.getString("module_path")) || !adapter.sha256.equals(profile.getString("file_sha256")) ||
+               !adapter.buildId.equals(build.getString("hex")) || adapter.buildIdOffset!=build.getInt("offset"))throw new IOException("Invalid adapter profile identity");
+        }
+        return registry.select(adapter->{
+            File file=new File(adapter.modulePath);
+            if(!file.isFile())return null;
+            String hash=sha256(file);
+            if(!hash.equals(adapter.sha256))return null;
+            byte[] bytes=new byte[adapter.buildId.length()/2];
+            try(RandomAccessFile input=new RandomAccessFile(file,"r")) {input.seek(adapter.buildIdOffset);input.readFully(bytes);}
+            StringBuilder hex=new StringBuilder();for(byte value:bytes)hex.append(String.format(Locale.ROOT,"%02x",value&255));
+            return new String[]{hash,hex.toString()};
+        });
+    }
+    void stageBridge(String targetAddress,BridgeAdapterRegistry.Adapter adapter,String instanceId) throws Exception {
+        if(adapter==null || !registry.adapters.contains(adapter))throw new IOException("Bridge adapter was not selected from this registry");
+        if(instanceId==null || !instanceId.matches("[0-9a-f]{32}"))throw new IOException("Invalid bridge instance identity");
         String address=DeviceConfig.address(targetAddress,true);
         File directory=new File(context.getFilesDir(),"root-bundle");
         if(!directory.isDirectory() && !directory.mkdirs())throw new IOException("Cannot stage bridge");
         Os.chmod(directory.getPath(),0700);
         extract("frida-inject",new File(directory,"frida-inject"),true);
         for(String[] item:new String[][]{{"agent.template.js","agent.js"},{"inject.template.sh","inject-bluetooth.sh"}}) {
-            String template=verifiedText(item[0]);
+            String template=verifiedText(adapter.asset(item[0]));
             if(!template.contains("__LINKPODS_TARGET_ADDRESS__"))throw new IOException("Missing target placeholder");
-            Files.write(new File(directory,item[1]).toPath(),template.replace("__LINKPODS_TARGET_ADDRESS__",address).getBytes(StandardCharsets.UTF_8));
+            if(item[1].equals("agent.js") && !template.contains("__LINKPODS_BRIDGE_INSTANCE__"))throw new IOException("Missing bridge instance placeholder");
+            Files.write(new File(directory,item[1]).toPath(),template.replace("__LINKPODS_TARGET_ADDRESS__",address)
+                .replace("__LINKPODS_BRIDGE_INSTANCE__",instanceId).getBytes(StandardCharsets.UTF_8));
             Os.chmod(new File(directory,item[1]).getPath(),item[1].endsWith(".sh")?0700:0600);
         }
         JSONObject files=new JSONObject();
@@ -84,8 +133,9 @@ final class RootAssets {
             for(String key:new String[]{"model","android_sdk","firmware","kernel","bluetooth_sha256"})expected.put(key,target.getString(key));
             observed.put("model",android.os.Build.MODEL);observed.put("android_sdk",String.valueOf(android.os.Build.VERSION.SDK_INT));
             observed.put("firmware",android.os.Build.VERSION.INCREMENTAL);observed.put("kernel",System.getProperty("os.version",""));
-            JSONObject profile=new JSONObject(verifiedText("profile.json"));
-            observed.put("bluetooth_sha256",sha256(new File(profile.getString("module_path"))));
+            String modulePath=manifest.getString("temporary_root_module_path");
+            BridgeAdapterRegistry.validateModulePath(modulePath);
+            observed.put("bluetooth_sha256",sha256(new File(modulePath)));
             return RootTarget.matches(observed,expected) && !new File("/dev/df").exists();
         } catch(Exception error) {return false;}
     }

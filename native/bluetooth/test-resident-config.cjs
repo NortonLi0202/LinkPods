@@ -6,10 +6,13 @@ const context = vm.createContext({Process:{id:42}, Date, JSON,
   File:{writeAllText:(path,value)=>writes.set(path,value),readAllText:path=>writes.get(path)},
   setInterval:()=>1,clearInterval:()=>{}});
 vm.runInContext(fs.readFileSync(__dirname+'/resident-runtime.js','utf8'),context);
-context.rpc.exports.startresident(configuration);
+context.rpc.exports.startresident(configuration,'owned-attempt-123');
 const report=JSON.parse(writes.get('/data/misc/bluedroid/handoff-runtime.status'));
 assert.deepEqual(report.configuration,configuration);
 assert.equal(report.pid,42);
+assert.equal(typeof report.instance_id,'string');
+assert.ok(report.instance_id.length>0);
+assert.equal(report.instance_id,'owned-attempt-123','cleanup identity must be known before starting injection');
 assert.equal(report.state.state,'enabled');
 assert.throws(()=>context.rpc.exports.startresident(configuration),/already started/);
 console.log('PASS: resident reports the exact target and configuration used for safe reuse');

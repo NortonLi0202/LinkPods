@@ -39,6 +39,16 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass;
 /** Runtime AACP experiment; no boot receiver or persistent Root setup. */
 public final class HandoffService extends Service {
     static volatile HandoffService current;
+    private static final java.util.concurrent.atomic.AtomicReference<RootEnvironment.Prepared> pendingBridge=
+        new java.util.concurrent.atomic.AtomicReference<>();
+    static boolean adoptPreparedBridge(RootEnvironment.Prepared prepared) {
+        return RootEnvironment.bridgeUsable(prepared)
+            && pendingBridge.compareAndSet(null,prepared);
+    }
+    static void discardPreparedBridge(RootEnvironment.Prepared prepared) {
+        if(pendingBridge.compareAndSet(prepared,null))
+            RootEnvironment.queueBridgeStop(prepared);
+    }
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final RoutingPolicy policy = new RoutingPolicy();
     private final PeerRoutingPolicy peerPolicy = new PeerRoutingPolicy();
@@ -47,6 +57,10 @@ public final class HandoffService extends Service {
     private DeviceConfig deviceConfig;
     private String peerMac = "";
     private boolean nativeBackendReady;
+    private final ConnectionPolicy connection = new ConnectionPolicy();
+    private java.util.concurrent.Future<?> bridgePreparation;
+    private final java.util.concurrent.atomic.AtomicReference<RootEnvironment.Prepared> ownedBridge=
+        new java.util.concurrent.atomic.AtomicReference<>();
     private final AudioLinkPolicy audioLink = new AudioLinkPolicy();
     private final Set<String> peers = new HashSet<>();
     private BluetoothAdapter adapter;
@@ -64,11 +78,21 @@ public final class HandoffService extends Service {
     private int sourceType;
     private Boolean lastMediaState;
 
+    /** Read-only observed connection state; no Root probes or session creation. */
+    public static ConnectionPolicy.Snapshot capabilities(String targetAddress) {
+        HandoffService service=current;
+        return service==null ? new ConnectionPolicy().snapshot(targetAddress) : service.connection.snapshot(targetAddress);
+    }
+
     /** Read-only: this never starts the service, opens a socket, or sends a query. */
     public static EarbudSnapshot earbudSnapshot(String targetAddress) {
         HandoffService service=current;
         return service==null ? EarbudSnapshot.empty(targetAddress,"控制服务未运行")
             : service.earbudState.snapshot(targetAddress,SystemClock.elapsedRealtime());
+    }
+    public static boolean bridgePrepared() {
+        HandoffService service=current;
+        return service!=null && service.nativeBackendReady;
     }
 
     /** Accept a validated request on the existing session; only a real reply confirms it. */
@@ -165,16 +189,43 @@ public final class HandoffService extends Service {
         final DeviceConfig requested;
         try { requested = DeviceConfig.create(intent.getStringExtra("address"), intent.getStringExtra("local_mac"), intent.getStringExtra("peer_address")); }
         catch (IllegalArgumentException error) { log("SERVICE invalid device configuration"); stopSelf(); return START_NOT_STICKY; }
-        if (deviceConfig != null && !deviceConfig.save().equals(requested.save())) {
-            log("SERVICE stop before selecting a different device configuration"); return START_NOT_STICKY;
+        final DeviceConfig merged;
+        try {merged=DeviceConfig.mergeLocal(deviceConfig,requested);}
+        catch(IllegalArgumentException error){
+            RootEnvironment.Prepared rejected=pendingBridge.getAndSet(null);
+            if(rejected!=null)RootEnvironment.queueBridgeStop(rejected);
+            log("SERVICE stop before selecting a different device configuration");return START_NOT_STICKY;
         }
         if (deviceConfig == null) earbudState.begin(requested.target);
-        deviceConfig = requested;
-        nativeBackendReady=intent.getBooleanExtra("native_backend_ready",false);
+        deviceConfig = merged;
+        boolean preparedBridge=false;
+        if(intent.getBooleanExtra("native_backend_ready",false)) {
+            RootEnvironment.Prepared handedOff=pendingBridge.getAndSet(null);
+            if(handedOff!=null && handedOff.targetAddress.equalsIgnoreCase(deviceConfig.target)
+                    && RootEnvironment.acceptBridge(handedOff)) {
+                preparedBridge=true;
+                retainBridgeOwnership(handedOff);
+            } else if(handedOff!=null)RootEnvironment.queueBridgeStop(handedOff);
+        }
         selfMac = deviceConfig.local;
         if (peerMac.isEmpty()) peerMac = deviceConfig.peer;
         target = adapter.getRemoteDevice(deviceConfig.target);
-        if (session == null) connectSession();
+        ConnectionPolicy.Action next=connection.start(deviceConfig.target,preparedBridge);
+        if (next==ConnectionPolicy.Action.CONNECT_DIRECT || next==ConnectionPolicy.Action.CONNECT_BRIDGE) {
+            // An explicitly prepared bridge can replace a working direct socket. The policy
+            // generation already invalidated callbacks before the old socket is closed.
+            if (preparedBridge) {
+                if (bridgePreparation!=null) { bridgePreparation.cancel(true); bridgePreparation=null; }
+            }
+            final AapProbe previous=session;
+            if (previous!=null) {
+                ++earbudSessionGeneration;
+                session=null;ready=false;
+                earbudState.disconnected();
+                previous.stop();
+            }
+            applyConnection(next);
+        }
         if (intent.getBooleanExtra("yield_audio",false)) release("transport-baseline",true);
         return START_NOT_STICKY;
     }
@@ -233,31 +284,130 @@ public final class HandoffService extends Service {
         if (policy.consumeTake(ready,!peers.isEmpty())) take(reason);
     }
 
+    private void applyConnection(ConnectionPolicy.Action action) {
+        if (stopped || target == null) return;
+        log("CONNECTION " + connection.snapshot(deviceConfig.target).description);
+        if (connection.snapshot(deviceConfig.target).phase==ConnectionPolicy.Phase.FAILED) cleanupOwnedBridge();
+        if (action == ConnectionPolicy.Action.CONNECT_DIRECT || action == ConnectionPolicy.Action.CONNECT_BRIDGE) {
+            nativeBackendReady=action == ConnectionPolicy.Action.CONNECT_BRIDGE;
+            connectSession();
+        } else if (action == ConnectionPolicy.Action.RECONNECT) {
+            final long generation=connection.generation();
+            final String address=deviceConfig.target;
+            handler.postDelayed(() -> {
+                if (!stopped && current==this && deviceConfig!=null && address.equals(deviceConfig.target))
+                    applyConnection(connection.retry(generation,address));
+            },5000);
+        } else if (action == ConnectionPolicy.Action.PREPARE_BRIDGE) {
+            final long generation=connection.generation();
+            final String address=deviceConfig.target;
+            // The serial queue is shared with explicit preparation/cleanup. Never request temporary Root here.
+            bridgePreparation=RootEnvironment.WORK.submit(() -> {
+                if (stopped || generation!=connection.generation()) return;
+                RootEnvironment.Prepared prepared=RootEnvironment.prepare(getApplicationContext(),address,true,false);
+                if (prepared.bridgeOwned) ownedBridge.set(prepared);
+                if (Thread.currentThread().isInterrupted() || stopped || generation!=connection.generation()) {
+                    boolean interrupted=Thread.interrupted();
+                    try {
+                        if (RootEnvironment.stopOwnedBridge(prepared)) ownedBridge.compareAndSet(prepared,null);
+                    } finally {
+                        if (interrupted) Thread.currentThread().interrupt();
+                    }
+                    return;
+                }
+                handler.post(() -> {
+                    if (stopped || current!=this || deviceConfig==null || !address.equals(deviceConfig.target)
+                            || generation!=connection.generation()) {
+                        RootEnvironment.markBridgeStopping(prepared);
+                        RootEnvironment.WORK.submit(() -> {
+                            if (RootEnvironment.stopOwnedBridge(prepared)) ownedBridge.compareAndSet(prepared,null);
+                        });return;
+                    }
+                    bridgePreparation=null;
+                    boolean valid=RootEnvironment.acceptBridge(prepared);
+                    if(valid)retainBridgeOwnership(prepared);
+                    ConnectionPolicy.Action next=connection.bridgePrepared(generation,address,valid,
+                        prepared.adapterId,prepared.missing,prepared.diagnostic);
+                    if (next==ConnectionPolicy.Action.CONNECT_BRIDGE && BluetoothAdapter.checkBluetoothAddress(prepared.local)) {
+                        try {updateLocalIdentity(prepared.local);}
+                        catch(IllegalArgumentException error){
+                            connection.unavailable(connection.generation(),address,"本机蓝牙身份与当前配置冲突，请停止后重新选择设备");
+                            cleanupOwnedBridge();applyConnection(ConnectionPolicy.Action.NONE);return;
+                        }
+                    }
+                    log("BRIDGE_PREPARED missing="+prepared.missing+" diagnostic="+prepared.diagnostic);
+                    if (!valid) cleanupOwnedBridge();
+                    applyConnection(next);
+                });
+            });
+        }
+    }
+
+    private void retainBridgeOwnership(RootEnvironment.Prepared prepared) {
+        if(!prepared.bridgeOwned)return;
+        RootEnvironment.Prepared previousOwned=ownedBridge.getAndSet(prepared);
+        if(previousOwned!=null && previousOwned!=prepared
+                && (previousOwned.lease==null || !previousOwned.lease.sameInstance(prepared.lease)))
+            RootEnvironment.queueBridgeStop(previousOwned);
+    }
+    private void cleanupOwnedBridge() {
+        nativeBackendReady=false;
+        RootEnvironment.Prepared prepared=ownedBridge.getAndSet(null);
+        if(prepared!=null) RootEnvironment.queueBridgeStop(prepared);
+    }
+    private void updateLocalIdentity(String local) {
+        deviceConfig=DeviceConfig.mergeLocal(deviceConfig,DeviceConfig.create(deviceConfig.target,local,deviceConfig.peer));
+        selfMac=deviceConfig.local;
+        android.content.SharedPreferences.Editor editor=getSharedPreferences("devices",MODE_PRIVATE).edit();
+        for(Map.Entry<String,String> entry:deviceConfig.save().entrySet())editor.putString(entry.getKey(),entry.getValue());
+        editor.apply();
+    }
+
     private void connectSession() {
-        if (stopped || target == null || !adapter.isEnabled()) return;
+        if (stopped || target == null || session != null) return;
+        final long connectionGeneration=connection.generation();
+        final String address=deviceConfig.target;
+        if (!adapter.isEnabled()) {
+            connection.unavailable(connectionGeneration,address,"Bluetooth 已关闭");
+            cleanupOwnedBridge();
+            log("CONNECTION " + connection.snapshot(address).description);return;
+        }
         peers.clear();
         lastMediaState = null;
         final long generation=++earbudSessionGeneration;
-        session = new AapProbe(target, this::log, new AapProbe.Listener() {
+        final AapProbe[] active=new AapProbe[1];
+        active[0] = new AapProbe(target, this::log, new AapProbe.Listener() {
+            private volatile boolean compatibilityRequired;
+            @Override public void failure(AapProbe.Failure failure) {
+                if(failure==AapProbe.Failure.COMPATIBILITY_REQUIRED)compatibilityRequired=true;
+            }
+            private boolean valid() {
+                return !stopped && current==HandoffService.this && generation==earbudSessionGeneration
+                    && active[0]==session && connectionGeneration==connection.generation()
+                    && deviceConfig!=null && address.equals(deviceConfig.target);
+            }
             @Override public void ready() { handler.post(() -> {
-                if(stopped || generation!=earbudSessionGeneration) return;
+                if(!valid()) return;
+                connection.ready(connectionGeneration,address);
                 earbudState.connected();
                 ready = true; log("SESSION_READY");
-                log("BACKEND " + BackendPolicy.select(true,nativeBackendReady,nativeBackendReady,nativeBackendReady)
+                log("CONNECTION " + connection.snapshot(address).description);
+                log("BACKEND " + BackendPolicy.select(!nativeBackendReady,nativeBackendReady,nativeBackendReady,nativeBackendReady)
                     + " handoff=not-verified");
                 finishPendingTake("pending-player-play");
             }); }
             @Override public void packet(byte[] data) { handler.post(() -> {
-                if(generation==earbudSessionGeneration) receive(data);
+                if(valid()) receive(data);
             }); }
             @Override public void ended() { handler.post(() -> {
-                if(stopped || generation!=earbudSessionGeneration) return;
+                if(!valid()) return;
                 earbudState.disconnected();
                 ready = false; session = null; log("SESSION_ENDED");
                 log("BACKEND " + BackendPolicy.select(false,false,false,false));
-                if (!stopped) handler.postDelayed(() -> connectSession(), 5000);
+                applyConnection(connection.ended(connectionGeneration,address,compatibilityRequired));
             }); }
         });
+        session=active[0];
         session.start();
     }
 
@@ -384,6 +534,11 @@ public final class HandoffService extends Service {
 
     @Override public void onDestroy() {
         stopped = true; ready = false;
+        connection.stop();
+        RootEnvironment.Prepared pending=pendingBridge.getAndSet(null);
+        if(pending!=null)RootEnvironment.queueBridgeStop(pending);
+        cleanupOwnedBridge();
+        if (bridgePreparation!=null) { bridgePreparation.cancel(true); bridgePreparation=null; }
         ++earbudSessionGeneration;
         earbudState.disconnected();
         if (current == this) current = null;

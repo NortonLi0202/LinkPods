@@ -8,6 +8,9 @@ import zipfile
 import importlib.util
 import tempfile
 
+_registry_spec=importlib.util.spec_from_file_location('adapter_registry',Path(__file__).with_name('adapter_registry.py'))
+registry=importlib.util.module_from_spec(_registry_spec);_registry_spec.loader.exec_module(registry)
+
 ROOT=Path(__file__).resolve().parents[1]
 ORIGINAL_PATH=b'/data/user_de/0/df.root/bootstrap'
 STANDALONE_PATH=b'/data/user_de/0/lp.pods/bootstrap'
@@ -54,6 +57,31 @@ def pinned(path,name):
     return data
 
 
+def prepare_bridge_assets(assets,root,binary,binary_sha256,agent_source):
+    assets,root=Path(assets),Path(root)
+    adapters=registry.load_registry(root)
+    bridge=ROOT/'native/bluetooth'
+    spec=importlib.util.spec_from_file_location('runtime_bundle_builder',bridge/'prepare-runtime-bundle.py')
+    builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
+    result=[]
+    for adapter in adapters:
+        base='adapters/'+adapter['id']+'/'
+        destination=assets/base;destination.mkdir(parents=True)
+        profile=json.loads((root/adapter['profile']).read_text(encoding='utf-8-sig'))
+        (destination/'profile.json').write_bytes(android_text(json.dumps(profile,sort_keys=True,separators=(',',':'))))
+        placeholder='FE:DC:BA:98:76:54'
+        with tempfile.TemporaryDirectory(prefix='linkpods-template-') as temporary:
+            template=Path(temporary)/'bundle'
+            builder.build_bundle(root/adapter['profile'],placeholder,template,agent_source,binary,binary_sha256,
+                                 instance_id='__LINKPODS_BRIDGE_INSTANCE__')
+            for name,out in [('agent.js','agent.template.js'),('inject-bluetooth.sh','inject.template.sh')]:
+                text=(template/name).read_text(encoding='utf-8').replace(placeholder,'__LINKPODS_TARGET_ADDRESS__')
+                (destination/out).write_bytes(android_text(text))
+        result.append({key:adapter[key] for key in ('id','module_path','sha256','build_id','build_id_offset','profile_sha256')})
+        result[-1].update(profile=base+'profile.json',agent=base+'agent.template.js',launcher=base+'inject.template.sh')
+    return result
+
+
 def prepare(output):
     output=Path(output)
     if output.exists(): raise FileExistsError(output)
@@ -70,26 +98,18 @@ def prepare(output):
     (output/'standalone-diagnostic.c').write_bytes(android_text(standalone_diagnostic(diagnostic.read_text(encoding='utf-8-sig'))))
     (output/'native/libdfroot.so').write_bytes(exploit)
     for name,data in inputs.items(): (output/'assets/root'/name).write_bytes(data)
-    bridge=ROOT/'native/bluetooth'
-    sources=[ROOT/'third_party/sources/librepods/agent.js']
-    profile=json.loads((bridge/'profile.json').read_text(encoding='utf-8-sig'))
-    (output/'assets/root/profile.json').write_text(json.dumps(profile,separators=(',',':')),encoding='utf-8')
-    spec=importlib.util.spec_from_file_location('runtime_bundle_builder',bridge/'prepare-runtime-bundle.py')
-    builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
-    placeholder='FE:DC:BA:98:76:54'
-    with tempfile.TemporaryDirectory(prefix='linkpods-template-') as temporary:
-        template=Path(temporary)/'bundle'
-        builder.build_bundle(bridge/'profile.json',placeholder,template,sources[0],
-                             PAYLOADS/INPUTS['frida']['file'],PINS['frida'])
-        for name,destination in [('agent.js','agent.template.js'),('inject-bluetooth.sh','inject.template.sh')]:
-            text=(template/name).read_text(encoding='utf-8').replace(placeholder,'__LINKPODS_TARGET_ADDRESS__')
-            (output/'assets/root'/destination).write_bytes(android_text(text))
+    adapters=prepare_bridge_assets(output/'assets/root',ROOT,PAYLOADS/INPUTS['frida']['file'],PINS['frida'],
+                                   ROOT/'third_party/sources/librepods/agent.js')
     shutil.copyfile(ROOT/'apps/android/native/DFRoot-LICENSE.txt',output/'assets/root/DFRoot-LICENSE.txt')
-    target=json.loads((ROOT/'compatibility/targets.json').read_text(encoding='utf-8'))['temporary_root_targets'][0]
-    if target['bluetooth_sha256']!=profile['file_sha256']:raise ValueError('target and Bluetooth profile mismatch')
+    targets=json.loads((ROOT/'compatibility/targets.json').read_text(encoding='utf-8'))['temporary_root_targets']
+    if len(targets)!=1:raise ValueError('exactly one temporary Root target is required')
+    target=targets[0]
+    paths={a['module_path'] for a in adapters if a['sha256']==target['bluetooth_sha256']}
+    if len(paths)!=1:raise ValueError('temporary Root target requires one exact module path')
     files={p.relative_to(output/'assets/root').as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
-           for p in (output/'assets/root').iterdir() if p.is_file()}
-    (output/'assets/root/manifest.json').write_text(json.dumps({'schema':1,'package':'lp.pods','target':target,'files':files},indent=2)+'\n',encoding='utf-8')
+           for p in (output/'assets/root').rglob('*') if p.is_file()}
+    (output/'assets/root/manifest.json').write_text(json.dumps({'schema':2,'package':'lp.pods','target':target,
+        'temporary_root_module_path':paths.pop(),'adapters':adapters,'files':files},indent=2)+'\n',encoding='utf-8')
     (output/'provenance.json').write_text(json.dumps({'original_pins':PINS,'relocated_exploit_sha256':hashlib.sha256(exploit).hexdigest(),
                 'relocation_count':8,'device_execution':False},indent=2)+'\n',encoding='utf-8')
 
@@ -104,15 +124,35 @@ def verify_apk(path,pins=None):
         manifest=json.loads(archive.read('assets/root/manifest.json'))
         if manifest.get('package')!='lp.pods':raise ValueError('standalone payload package mismatch')
         for name,expected in manifest['files'].items():
+            registry.safe_path(name)
             with archive.open('assets/root/'+name) as stream:
                 digest=hashlib.sha256()
                 for block in iter(lambda:stream.read(1024*1024),b''):digest.update(block)
             if digest.hexdigest()!=expected:raise ValueError('APK asset hash mismatch: '+name)
         for key,name in [('loader','libksud.so'),('module','diagnostic.ko'),('frida','frida-inject')]:
             if manifest['files'].get(name)!=pins[key]:raise ValueError('APK pinned binary mismatch: '+name)
-        launcher=archive.read('assets/root/inject.template.sh')
-        if b'\r' in launcher:raise ValueError('Android shell template must use LF')
-        if b'am start-foreground-service' in launcher:raise ValueError('Root helper must not start service after cancellation')
+        if manifest.get('schema')!=2:raise ValueError('unsupported Root payload manifest schema')
+        adapters=manifest.get('adapters',[])
+        ids=set();identities=set()
+        for adapter in adapters:
+            identifier=adapter['id'];base='adapters/'+identifier+'/'
+            registry.safe_path(base+'profile.json')
+            if identifier in ids:raise ValueError('duplicate adapter id')
+            ids.add(identifier)
+            registry.safe_path(adapter['module_path'],absolute=True)
+            identity=(adapter['module_path'],adapter['sha256'],adapter['build_id'])
+            if identity in identities:raise ValueError('ambiguous adapter identity')
+            identities.add(identity)
+            for field,name in [('profile','profile.json'),('agent','agent.template.js'),('launcher','inject.template.sh')]:
+                if adapter[field]!=base+name or adapter[field] not in manifest['files']:raise ValueError('invalid adapter asset reference')
+            profile=json.loads(archive.read('assets/root/'+adapter['profile']))
+            if (profile.get('module_path'),profile.get('file_sha256'),profile.get('build_id',{}).get('hex'))!=identity or profile['build_id']['offset']!=adapter['build_id_offset'] or registry.profile_hash(profile)!=adapter['profile_sha256']:
+                raise ValueError('APK adapter profile identity mismatch')
+            launcher=archive.read('assets/root/'+adapter['launcher'])
+            if b'\r' in launcher:raise ValueError('Android shell template must use LF')
+            if b'am start-foreground-service' in launcher:raise ValueError('Root helper must not start service after cancellation')
+            for field in ('agent','launcher'):
+                if adapter['profile_sha256'].encode() not in archive.read('assets/root/'+adapter[field]):raise ValueError('runtime profile hash mismatch')
         exploit=archive.read('lib/arm64-v8a/libdfroot.so')
         if exploit.count(STANDALONE_PATH)!=8 or ORIGINAL_PATH in exploit:raise ValueError('APK bootstrap relocation mismatch')
         if b'late-load' in archive.read('lib/arm64-v8a/liblpbootstrap.so'):

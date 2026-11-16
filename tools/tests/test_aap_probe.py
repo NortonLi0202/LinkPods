@@ -8,7 +8,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 STUBS = {
-    'android/bluetooth/BluetoothDevice.java': 'package android.bluetooth; public class BluetoothDevice {}',
+    'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth;
+import java.io.IOException;
+public class BluetoothDevice {
+ public BluetoothSocket createInsecureL2capSocket(int psm) throws IOException {throw new IOException("EPROTONOSUPPORT");}
+ public BluetoothSocket createL2capSocket(int psm) throws IOException {throw new IOException("Connection refused");}
+}''',
     'android/bluetooth/BluetoothSocket.java': '''package android.bluetooth;
 import java.io.*;
 public class BluetoothSocket {
@@ -53,6 +58,23 @@ import java.util.concurrent.*;
 public class AapSchedulerTest {
  static void expect(boolean ok,String reason){if(!ok)throw new AssertionError(reason);}
  public static void main(String[] args) throws Exception {
+  expect(AapProbe.classifyFailure(new java.io.IOException("EPROTONOSUPPORT"))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"explicit protocol capability failure");
+  expect(AapProbe.classifyFailure(new java.lang.reflect.InvocationTargetException(new java.io.IOException("Operation not supported")))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"unwrap socket factory cause");
+  for(String message:new String[]{"connect failed: EPROTONOSUPPORT (93)","[EOPNOTSUPP]", "error: protocol not supported.","(operation not supported)"})
+   expect(AapProbe.classifyFailure(new java.io.IOException(message))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"delimited compatibility marker: "+message);
+  for(String message:new String[]{"NOT_EPROTONOSUPPORT", "prefixEPROTONOSUPPORT", "EPROTONOSUPPORT_suffix", "EOPNOTSUPP2", "prefixprotocol not supported", "operation not supportedness"})
+   expect(AapProbe.classifyFailure(new java.io.IOException(message))==AapProbe.Failure.OTHER,"embedded compatibility marker must not request Root: "+message);
+  for(Exception error:new Exception[]{new java.io.IOException(),new java.io.IOException("Connection refused"),new java.net.SocketTimeoutException("timeout"),new SecurityException("EPROTONOSUPPORT"),new NoSuchMethodException("createL2capSocket")})
+   expect(AapProbe.classifyFailure(error)==AapProbe.Failure.OTHER,"reachability, permission and absent API are not evidence for Root");
+  CountDownLatch ended=new CountDownLatch(1);
+  AapProbe.Failure[] outcome={null};
+  AapProbe failedProbe=new AapProbe(new BluetoothDevice(),message -> {},new AapProbe.Listener(){
+   public void ready(){} public void packet(byte[] data){} public void ended(){ended.countDown();}
+   public void failure(AapProbe.Failure value){outcome[0]=value;}
+  });
+  failedProbe.start();
+  expect(ended.await(3,TimeUnit.SECONDS),"probe completed both socket attempts");
+  expect(outcome[0]==AapProbe.Failure.COMPATIBILITY_REQUIRED,"ordinary secure failure preserves insecure compatibility failure");
   Handler handler=new Handler(android.os.Looper.getMainLooper());
   Object firstToken=new Object(),secondToken=new Object();
   Runnable firstTask=() -> {},secondTask=() -> {},unrelated=() -> {};

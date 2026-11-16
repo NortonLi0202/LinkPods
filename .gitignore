@@ -4,7 +4,6 @@
 !/.gitattributes
 !/*.md
 !/project.json
-!/.coderabbit.yaml
 !/.github/
 !/apps/
 /apps/*
@@ -45,3 +44,4 @@
 *.key
 *.private.*
 local.settings.json
+!/.coderabbit.yaml

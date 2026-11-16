@@ -39,12 +39,15 @@ public class MainActivity extends Activity {
     private TextView output;
     private boolean receiverRegistered;
     private boolean proxyRequested;
-    private boolean destroyed;
+    private volatile boolean destroyed;
+    private final java.util.concurrent.atomic.AtomicReference<RootEnvironment.Prepared> pendingPrepared=
+        new java.util.concurrent.atomic.AtomicReference<>();
+    private RootEnvironment.Prepared bridgeToStart;
     private DeviceConfig savedConfig;
     private final RequestGate environmentRequests = new RequestGate();
     private java.util.concurrent.Future<?> environmentWorker;
     private boolean environmentEnabling;
-    private String environmentStatus = "Root 与控制通道尚未检测";
+    private String environmentStatus = "Root 尚未检测；直连无需此项";
     private boolean nativeBackendReady;
     private String preparedLocalAddress="";
 
@@ -107,9 +110,11 @@ public class MainActivity extends Activity {
             @Override public void stopHandoff() {
                 cancelEnvironment(); nativeBackendReady=false;
                 stopService(new Intent(MainActivity.this,HandoffService.class));
-                log("已请求停止交接，正在确认原生桥接恢复。"); queueBridgeStop(); refreshControls();
+                log("已请求停止会话；仅清理本次应用实际启动的桥接。");
+                refreshControls();
             }
             @Override public void checkEnvironment() { prepareEnvironment(false); }
+            @Override public void prepareBridge() { prepareEnvironment(true,false); }
             @Override public boolean setSetting(int id,int value) {
                 BluetoothDevice target=selected();
                 boolean accepted=target!=null && HandoffService.setEarbudSetting(target.getAddress(),id,value);
@@ -158,6 +163,7 @@ public class MainActivity extends Activity {
         String address=target==null?"":target.getAddress();
         EarbudSnapshot observed=target==null?EarbudSnapshot.empty(address,"请在应用设置中选择耳机"):HandoffService.earbudSnapshot(address);
         ui.bind(observed,address);
+        ui.bindCapabilities(HandoffService.capabilities(address),mediaAccessGranted());
     }
     @Override protected void onResume() {
         super.onResume();visible=true;handler.removeCallbacks(controlPoll);handler.post(controlPoll);
@@ -251,7 +257,18 @@ public class MainActivity extends Activity {
         } catch (Exception error) { failure("查询状态", error); }
     }
 
-    private void startAutomatic() { prepareEnvironment(true,false); }
+    private boolean mediaAccessGranted() {
+        return Build.VERSION.SDK_INT<27 || getSystemService(android.app.NotificationManager.class).isNotificationListenerAccessGranted(
+            new android.content.ComponentName(this,PlaybackListener.class));
+    }
+    private void startAutomatic() {
+        if(!hasPermission() || selected()==null){log("请先授权附近设备并选择耳机。");return;}
+        cancelEnvironment();
+        nativeBackendReady=false;preparedLocalAddress="";
+        if(!mediaAccessGranted())log("媒体状态权限未授权：可以使用耳机控制，自动交接还缺少播放状态。");
+        log("先直接连接耳机控制通道；不检测或请求 Root。");
+        startAutomaticPrepared();
+    }
     private void confirmTemporaryRoot() {
         new android.app.AlertDialog.Builder(this).setTitle("运行临时 Root")
             .setMessage("将先复用已有 Root；没有时，仅在系统精确匹配适配方案后运行漏洞。临时 Root 重启后失效。请选择耳机后继续。")
@@ -263,21 +280,24 @@ public class MainActivity extends Activity {
     private void prepareEnvironment(boolean enable,boolean allowTemporary) {
         if (environmentRequests.pending()) { log("正在检查运行环境，请等待。"); return; }
         if (enable && (!hasPermission() || selected()==null)) { log("请先授权并选择耳机。"); return; }
-        if(enable && Build.VERSION.SDK_INT>=27 && !getSystemService(android.app.NotificationManager.class).isNotificationListenerAccessGranted(
-            new android.content.ComponentName(this,PlaybackListener.class))) {
-            log("请在系统通知访问设置中允许 LinkPods 读取媒体播放状态，返回后再启用。");
-            startActivity(new Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));return;
-        }
         long request=environmentRequests.begin();
         environmentEnabling=enable;
         final String requestedTarget=selected()==null?null:selected().getAddress();
         log("检测可用 Root；若已安装 Root 管理器，可能出现授权提示。");
         environmentWorker=RootEnvironment.WORK.submit(() -> {
             RootEnvironment.Prepared prepared=RootEnvironment.prepare(this,requestedTarget,enable,allowTemporary);
+            RootEnvironment.Prepared displaced=pendingPrepared.getAndSet(prepared);
+            if(displaced!=null && displaced!=prepared)queueBridgeStop(displaced);
+            if(destroyed || Thread.currentThread().isInterrupted()) {
+                pendingPrepared.compareAndSet(prepared,null);
+                queueBridgeStop(prepared);
+                return;
+            }
             RootAccess.Result result=prepared.access;
             String local=prepared.local;
             handler.post(() -> {
-                if (destroyed || !environmentRequests.complete(request)) return;
+                if(!pendingPrepared.compareAndSet(prepared,null)){queueBridgeStop(prepared);return;}
+                if (destroyed || !environmentRequests.complete(request)) {queueBridgeStop(prepared);return;}
                 environmentWorker=null;
                 environmentEnabling=false;
                 switch (result.status) {
@@ -285,7 +305,9 @@ public class MainActivity extends Activity {
                     case TEMPORARY_ROOT: environmentStatus="已验证临时 Root"; break;
                     case DENIED: environmentStatus="Root 授权未通过，不尝试绕过授权"; break;
                     case UNKNOWN: environmentStatus="Root 检测未完成，可重新检查"; break;
-                    case UNSUPPORTED: environmentStatus="未获得 Root；当前系统或此操作没有可用临时 Root 方案"; break;
+                    case UNSUPPORTED: environmentStatus=prepared.missing.equals("matching_bridge_adapter_missing")
+                        ?"缺少匹配的系统桥接适配，未请求 Root"
+                        :"未取得应用 Root 控制权限；本次没有可用的 Root 路线"; break;
                     case PREPARATION_FAILED: environmentStatus=prepared.temporaryAttempted
                         ?"Root 准备流程异常，尚未确认 UID 0；请查看运行记录"
                         :"Root 运行环境准备失败，请查看运行记录；未执行临时 Root"; break;
@@ -293,16 +315,18 @@ public class MainActivity extends Activity {
                 }
                 log(environmentStatus);
                 if(!prepared.diagnostic.isEmpty())log(prepared.diagnostic);
-                nativeBackendReady=prepared.nativeReady;
+                nativeBackendReady=RootEnvironment.bridgeUsable(prepared);
                 if(nativeBackendReady)log("原生桥接状态已核对；实际交接仍需试听验收。");
                 preparedLocalAddress=local;
                 refreshStatus();
                 if (enable) {
                     if(selected()==null || !selected().getAddress().equalsIgnoreCase(requestedTarget)) {
-                        nativeBackendReady=false;queueBridgeStop();log("设备选择已变化，已请求恢复旧桥接，请重新启用。");return;
+                        nativeBackendReady=false;queueBridgeStop(prepared);log("设备选择已变化，已请求清理本次桥接，请重新启用。");return;
                     }
                     if(!allowTemporary && result.status==RootAccess.Status.UNSUPPORTED && prepared.temporarySupported) {confirmTemporaryRoot();return;}
                     if (!result.ready()) log("仅尝试当前系统的控制通道，不启用原生桥接；通道成功不代表双向交接已验证。");
+                    if(RootEnvironment.bridgeUsable(prepared))bridgeToStart=prepared;
+                    else queueBridgeStop(prepared);
                     startAutomaticPrepared();
                 }
             });
@@ -314,17 +338,22 @@ public class MainActivity extends Activity {
         if (environmentWorker!=null) environmentWorker.cancel(true);
         environmentWorker=null;
         environmentEnabling=false;
+        queueBridgeStop(pendingPrepared.getAndSet(null));
+        queueBridgeStop(bridgeToStart);bridgeToStart=null;
     }
-    private void queueBridgeStop() {
+    private void queueBridgeStop(RootEnvironment.Prepared prepared) {
+        if(prepared==null)return;
+        RootEnvironment.markBridgeStopping(prepared);
+        if(!prepared.bridgeOwned)return;
         RootEnvironment.WORK.submit(()->{
-            boolean restored=RootEnvironment.stopBridge();
-            handler.post(()->{if(!destroyed)log(restored?"原生桥接已停止或当前应用未建立 Root 通道。":"停止请求未能确认原生恢复，请保留现场与日志。");});
+            boolean restored=RootEnvironment.stopOwnedBridge(prepared);
+            handler.post(()->{if(!destroyed)log(restored?"本次启动的桥接已恢复。":"未确认本次桥接恢复，未停止其他运行实例。");});
         });
     }
 
     private void startAutomaticPrepared() {
         BluetoothDevice target = selected();
-        if (target == null || !hasPermission()) return;
+        if (target == null || !hasPermission()) {queueBridgeStop(bridgeToStart);bridgeToStart=null;return;}
         final DeviceConfig config;
         try {
             String local = preparedLocalAddress.isEmpty() ? null : preparedLocalAddress;
@@ -332,7 +361,7 @@ public class MainActivity extends Activity {
             String peer = null;
             if (peer == null && savedConfig != null && savedConfig.target.equalsIgnoreCase(target.getAddress())) peer = savedConfig.peer;
             config = DeviceConfig.create(target.getAddress(), local, peer);
-        } catch (IllegalArgumentException error) { log(error.getMessage()); return; }
+        } catch (IllegalArgumentException error) {queueBridgeStop(bridgeToStart);bridgeToStart=null;log(error.getMessage());return;}
         android.content.SharedPreferences.Editor editor = getSharedPreferences("devices", MODE_PRIVATE).edit();
         for (java.util.Map.Entry<String,String> entry : config.save().entrySet()) editor.putString(entry.getKey(), entry.getValue());
         editor.apply(); savedConfig = config;
@@ -341,7 +370,15 @@ public class MainActivity extends Activity {
             .putExtra("local_mac", config.local)
             .putExtra("peer_address", config.peer);
         service.putExtra("native_backend_ready",nativeBackendReady);
-        startForegroundService(service);
+        RootEnvironment.Prepared prepared=bridgeToStart;bridgeToStart=null;
+        if(nativeBackendReady && (!RootEnvironment.bridgeUsable(prepared) || !HandoffService.adoptPreparedBridge(prepared))) {
+            queueBridgeStop(prepared);nativeBackendReady=false;log("桥接未能交给当前会话，请重试。");return;
+        }
+        try {startForegroundService(service);}
+        catch(RuntimeException error) {
+            if(prepared!=null)HandoffService.discardPreparedBridge(prepared);
+            failure("启动控制会话",error);return;
+        }
         log("自动交接服务已启动；请按实际出声验证。");
     }
 
@@ -373,9 +410,7 @@ public class MainActivity extends Activity {
     @Override public void onDestroy() {
         destroyed = true;
         if(Build.VERSION.SDK_INT>=33 && backCallback!=null)getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
-        boolean pendingEnable=environmentWorker!=null&&environmentEnabling;
         cancelEnvironment();
-        if(pendingEnable)queueBridgeStop();
         handler.removeCallbacksAndMessages(null);
         if (receiverRegistered) unregisterReceiver(receiver);
         if (adapter != null && a2dp != null) adapter.closeProfileProxy(BluetoothProfile.A2DP, a2dp);

@@ -2,6 +2,8 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+SDP_LAYOUT=json.loads(Path(__file__).with_name('sdp_fixture.json').read_text())
+from pathlib import Path
 import tempfile
 import unittest
 
@@ -16,7 +18,7 @@ class BundleTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.profile = self.root / 'profile.json'
-        self.profile.write_text(json.dumps({'file_sha256': 'a' * 64, 'module_path': '/apex/test/lib64/test.so',
+        self.profile.write_text(json.dumps({'sdp_identity': SDP_LAYOUT, 'file_sha256': 'a' * 64, 'module_path': '/apex/test/lib64/test.so',
                                           'build_id': {'hex': 'b' * 40}}))
         self.agent = self.root / 'agent.js'
         self.agent.write_text('// fixture agent')
@@ -53,6 +55,21 @@ class BundleTests(unittest.TestCase):
     def test_existing_output_refused(self):
         self.build()
         with self.assertRaises(FileExistsError): self.build()
+
+    def test_generated_scripts_apply_each_profiles_sdp_layout(self):
+        import shutil,subprocess
+        node=shutil.which('node')
+        if not node:self.skipTest('Node required')
+        for index in range(2):
+            profile=json.loads(self.profile.read_text())
+            profile['module_name']='synthetic-%d.so'%index
+            profile['sdp_identity']=dict(SDP_LAYOUT,records_offset=128+index*256,record_stride=128+index*64,
+                                         attribute_stride=24+index*8)
+            self.profile.write_text(json.dumps(profile))
+            output=self.root/('generated-%d'%index)
+            bundle.build_bundle(self.profile,'AA:BB:CC:DD:EE:01',output,self.agent,self.binary,self.digest)
+            result=subprocess.run([node,str(bundle.HERE/'test-sdp-config.cjs'),str(output/'agent.js'),str(self.profile)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 
     def test_protected_runtime_output_refused(self):
         with self.assertRaises(ValueError):
