@@ -1,6 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 function exercise(script,profile,generated=false) {
-  function run(changed=profile,validIdentity=true) {
+  function run(changed=profile,validIdentity=true,validTable=true,failEnable=false) {
     const memory=Buffer.alloc(4096),writes=[];
     class Pointer {
       constructor(offset){this.offset=offset;}
@@ -13,7 +13,7 @@ function exercise(script,profile,generated=false) {
       writeByteArray(bytes){writes.push(this.offset);Buffer.from(bytes).copy(memory,this.offset);}
     }
     const layout=profile.sdp_identity;
-    memory.writeUInt32LE(42,layout.primary_handle_offset);memory.writeUInt16LE(1,layout.record_count_offset);
+    memory.writeUInt32LE(validTable?42:0,layout.primary_handle_offset);memory.writeUInt16LE(1,layout.record_count_offset);
     memory.writeUInt32LE(42,layout.records_offset+layout.record_handle_offset);
     memory.writeUInt16LE(2,layout.records_offset+layout.attribute_count_offset);
     for(let index=0;index<2;index++) {
@@ -27,9 +27,12 @@ function exercise(script,profile,generated=false) {
     const module={name:profile.module_name,path:profile.module_path,size:memory.length,base:new Pointer(0)};
     let hooked=false;
     const context=vm.createContext({Process:{id:42,getModuleByName:name=>{assert.equal(name,profile.module_name);return module;}},Date,Math,JSON,
-      rpc:{exports:{probe:()=>{assert.equal(hooked,false,'original prologues can only be checked before hooks');return {ok:validIdentity};},enable:()=>{hooked=true;return {state:'enabled'};},status:()=>({state:'enabled'}),disable:()=>({state:'disabled',active_sdp:0})}},
+      rpc:{exports:{probe:()=>{assert.equal(hooked,false,'original prologues can only be checked before hooks');return {ok:validIdentity};},enable:()=>{assert.equal(validTable,true,'invalid SDP must fail before attaching listeners');hooked=true;if(failEnable)throw new Error('partial enable');return {state:'enabled'};},status:()=>({state:hooked?'enabled':'disabled',active_sdp:0}),disable:()=>{hooked=false;return {state:'disabled',active_sdp:0};}}},
       File:{writeAllText:()=>{},readAllText:()=>''},setInterval:()=>1,clearInterval:()=>{},console:{log:()=>{}}});
-    if(generated)vm.runInContext(script.replace(/const runtimeProfile = [^\n]*;\n/,'const runtimeProfile = '+JSON.stringify(changed)+';\n'),context);
+    if(generated) {
+      try {vm.runInContext(script.replace(/const runtimeProfile = [^\n]*;\n/,'const runtimeProfile = '+JSON.stringify(changed)+';\n'),context);}
+      catch(error) {assert.equal(hooked,false,'startup failure must restore partial listeners');throw error;}
+    }
     else {vm.runInContext(script,context);context.rpc.exports.appleidentity(changed);}
     return {memory,writes,context};
   }
@@ -42,6 +45,10 @@ function exercise(script,profile,generated=false) {
   }
   const wrongPath={...profile,module_path:'/wrong/module.so'};
   assert.throws(()=>run(wrongPath),/module|identity/i);
+  if(generated) {
+    assert.throws(()=>run(profile,true,false),/Invalid local SDP table/);
+    assert.throws(()=>run(profile,true,true,true),/partial enable/);
+  }
 }
 const base=JSON.parse(fs.readFileSync(__dirname+'/profile.json','utf8'));
 if(process.argv[2]) {

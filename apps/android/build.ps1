@@ -52,8 +52,11 @@ try {
     # Windows aapt2 -A emits backslashes inside nested asset entry names.
     # Android looks up literal forward-slash ZIP paths; add these explicitly.
     $probeAssetRoot=Join-Path $probePayload 'assets'
+    $probeAssetPrefix=[IO.Path]::GetFullPath($probeAssetRoot).TrimEnd('\','/') + '\'
     foreach($probeAsset in @(Get-ChildItem -LiteralPath $probeAssetRoot -File -Recurse)) {
-        $probeAssetName='assets/'+[IO.Path]::GetRelativePath($probeAssetRoot,$probeAsset.FullName).Replace('\','/')
+        $probeAssetPath=[IO.Path]::GetFullPath($probeAsset.FullName)
+        if (!$probeAssetPath.StartsWith($probeAssetPrefix,[StringComparison]::OrdinalIgnoreCase)) { throw "Asset outside root: $probeAssetPath" }
+        $probeAssetName='assets/'+$probeAssetPath.Substring($probeAssetPrefix.Length).Replace('\','/')
         [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,$probeAsset.FullName,$probeAssetName) | Out-Null
     }
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeDex 'classes.dex'),'classes.dex') | Out-Null

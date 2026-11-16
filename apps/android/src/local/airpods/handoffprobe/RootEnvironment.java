@@ -7,6 +7,8 @@ import org.json.JSONObject;
 /** App entry for existing root, a matching temporary adapter and bridge staging. */
 final class RootEnvironment {
     static final RootWorkQueue WORK=new RootWorkQueue();
+    // Keep failed cleanups reachable even after the Activity/Service releases its reference.
+    private static final java.util.Set<Prepared> pendingCleanup=java.util.concurrent.ConcurrentHashMap.newKeySet();
     static final class Prepared {
         RootAccess.Result access;
         String local="",diagnostic="";
@@ -17,6 +19,7 @@ final class RootEnvironment {
         String adapterId="",missing="";
         volatile boolean bridgeOwned;
         String targetAddress="",bridgeProfileHash="";
+        String bridgeInstanceId="";
         BridgeRuntimeLease lease;
     }
     static Prepared prepare(Context context,String target,boolean enable,boolean allowTemporary) {
@@ -71,19 +74,38 @@ final class RootEnvironment {
                 prepared.diagnostic=allowTemporary?temporary.diagnostic():"仅检测已有 Root，没有运行临时 Root";
                 return prepared;
             }
+            if(enable) {
+                for(Prepared pending:pendingCleanup)stopOwnedBridge(pending);
+                // A lost response may also mean injection never started or a resident
+                // was reused. Keep unmatched records; let the launcher validate reuse.
+            }
             prepared.local=DeviceConfig.address(host.call(RootProtocol.Command.LOCAL_ADDRESS),true);
             if(enable && !Thread.currentThread().isInterrupted()) {
-                assets.stageBridge(target,adapter);
+                prepared.bridgeInstanceId=java.util.UUID.randomUUID().toString().replace("-","");
+                assets.stageBridge(target,adapter,prepared.bridgeInstanceId);
                 if(Thread.currentThread().isInterrupted())throw new InterruptedException();
                 preparingBridge=true;
+                // This is a possible ownership claim until status proves the exact instance.
+                // Retain it before the call: a failed response can still have started a runtime.
+                prepared.bridgeOwned=true;
+                pendingCleanup.add(prepared);
                 String outcome=host.call(RootProtocol.Command.BRIDGE_PREPARE);
-                for(String line:outcome.split("\\r?\\n"))
-                    if(line.equals("LINKPODS_BRIDGE_STARTED"))prepared.bridgeOwned=true;
+                boolean started=false,reused=false;
+                for(String line:outcome.split("\\r?\\n")) {
+                    if(line.equals("LINKPODS_BRIDGE_STARTED"))started=true;
+                    if(line.equals("LINKPODS_BRIDGE_REUSED"))reused=true;
+                }
+                if(started==reused)throw new IOException("Bridge preparation outcome is unknown");
+                if(reused){prepared.bridgeOwned=false;pendingCleanup.remove(prepared);}
                 JSONObject status=new JSONObject(host.call(RootProtocol.Command.BRIDGE_STATUS));
                 JSONObject configuration=status.getJSONObject("configuration");
                 JSONObject identity=status.getJSONObject("identity");
                 if(!status.optString("instance_id","").isEmpty())prepared.lease=new BridgeRuntimeLease(prepared.targetAddress,adapter.profileHash,
                     status.getInt("pid"),status.getString("instance_id"));
+                if(started && !prepared.bridgeInstanceId.equals(status.optString("instance_id",""))) {
+                    prepared.lease=null;
+                    throw new IOException("Started bridge instance did not match this preparation");
+                }
                 if(Thread.currentThread().isInterrupted())throw new InterruptedException();
                 long age=System.currentTimeMillis()-status.getLong("updated_at_ms");
                 prepared.nativeReady=status.getInt("pid")>0 && age>=0 && age<=15000
@@ -92,6 +114,22 @@ final class RootEnvironment {
                     && configuration.getString("profile_sha256").equals(adapter.profileHash)
                     && identity.getInt("vendor")==0x4c && identity.getInt("source")==1;
                 if(!prepared.nativeReady)throw new IOException("Bridge runtime status did not validate");
+                if(reused) {
+                    // A prior ambiguous start may be the resident we just validated.
+                    // Transfer its cleanup claim instead of leaving a live session pending.
+                    for(Prepared pending:pendingCleanup) {
+                        if(pending!=prepared && pending.bridgeOwned
+                                && pending.targetAddress.equalsIgnoreCase(prepared.targetAddress)
+                                && pending.bridgeProfileHash.equals(prepared.bridgeProfileHash)
+                                && pending.bridgeInstanceId.equals(status.optString("instance_id",""))
+                                && (pending.lease==null || pending.lease.sameInstance(prepared.lease))) {
+                            prepared.bridgeOwned=true;prepared.bridgeInstanceId=pending.bridgeInstanceId;
+                            pending.bridgeOwned=false;pending.nativeReady=false;
+                            pendingCleanup.remove(pending);
+                        }
+                    }
+                }
+                pendingCleanup.remove(prepared);
             }
         }catch(InterruptedException error){
             // Clear interruption for bounded ownership cleanup, then preserve cancellation.
@@ -101,6 +139,8 @@ final class RootEnvironment {
             prepared.missing="preparation_cancelled";
         }
         catch(Exception error){
+            prepared.nativeReady=false;
+            if(preparingBridge && prepared.bridgeOwned)stopOwnedBridge(prepared);
             prepared.missing=enable?"bridge_preparation_failed":"root_preparation_failed";
             prepared.diagnostic=error.getClass().getSimpleName()+": "+error.getMessage();
         }
@@ -109,13 +149,21 @@ final class RootEnvironment {
     }
     static boolean stopOwnedBridge(Prepared prepared) {
         if(prepared==null || !prepared.bridgeOwned)return true;
-        if(prepared.lease==null)return false;
+        pendingCleanup.add(prepared);
         RootHost host=RootHost.current();
         if(host==null)return false;
         try {
             if(!host.await(5000))return false;
             JSONObject status=new JSONObject(host.call(RootProtocol.Command.BRIDGE_STATUS));
             JSONObject configuration=status.getJSONObject("configuration");
+            if(prepared.lease==null) {
+                // Recover only our preassigned token, never infer ownership from target alone.
+                if(prepared.bridgeInstanceId.isEmpty() || !prepared.bridgeInstanceId.equals(status.optString("instance_id",""))
+                        || !prepared.targetAddress.equalsIgnoreCase(configuration.getString("target_address"))
+                        || !prepared.bridgeProfileHash.equals(configuration.getString("profile_sha256")))return false;
+                prepared.lease=new BridgeRuntimeLease(prepared.targetAddress,prepared.bridgeProfileHash,
+                    status.getInt("pid"),status.getString("instance_id"));
+            }
             if(!prepared.lease.matches(configuration.getString("target_address"),configuration.getString("profile_sha256"),
                     status.getInt("pid"),status.optString("instance_id","")))return false;
             host.call(RootProtocol.Command.BRIDGE_STOP);
@@ -125,7 +173,9 @@ final class RootEnvironment {
                 if(!prepared.lease.matches(latestConfig.getString("target_address"),latestConfig.getString("profile_sha256"),
                         latest.getInt("pid"),latest.optString("instance_id","")))return false;
                 JSONObject state=latest.getJSONObject("state");
-                if(state.getString("state").equals("disabled")&&state.getInt("active_sdp")==0){prepared.bridgeOwned=false;return true;}
+                if(state.getString("state").equals("disabled")&&state.getInt("active_sdp")==0){
+                    prepared.bridgeOwned=false;prepared.nativeReady=false;pendingCleanup.remove(prepared);return true;
+                }
                 Thread.sleep(500);
             }
         }catch(InterruptedException error){Thread.currentThread().interrupt();}

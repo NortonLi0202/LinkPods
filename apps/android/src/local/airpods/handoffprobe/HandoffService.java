@@ -198,10 +198,11 @@ public final class HandoffService extends Service {
         }
         if (deviceConfig == null) earbudState.begin(requested.target);
         deviceConfig = merged;
-        boolean preparedBridge=intent.getBooleanExtra("native_backend_ready",false);
-        if(preparedBridge) {
+        boolean preparedBridge=false;
+        if(intent.getBooleanExtra("native_backend_ready",false)) {
             RootEnvironment.Prepared handedOff=pendingBridge.getAndSet(null);
             if(handedOff!=null && handedOff.targetAddress.equalsIgnoreCase(deviceConfig.target)) {
+                preparedBridge=true;
                 if(handedOff.bridgeOwned) {
                     RootEnvironment.Prepared previousOwned=ownedBridge.getAndSet(handedOff);
                     if(previousOwned!=null && previousOwned!=handedOff
@@ -308,15 +309,22 @@ public final class HandoffService extends Service {
             bridgePreparation=RootEnvironment.WORK.submit(() -> {
                 if (stopped || generation!=connection.generation()) return;
                 RootEnvironment.Prepared prepared=RootEnvironment.prepare(getApplicationContext(),address,true,false);
-                if (Thread.currentThread().isInterrupted() || stopped || generation!=connection.generation()) {
-                    RootEnvironment.stopOwnedBridge(prepared);return;
-                }
                 if (prepared.bridgeOwned) ownedBridge.set(prepared);
+                if (Thread.currentThread().isInterrupted() || stopped || generation!=connection.generation()) {
+                    boolean interrupted=Thread.interrupted();
+                    try {
+                        if (RootEnvironment.stopOwnedBridge(prepared)) ownedBridge.compareAndSet(prepared,null);
+                    } finally {
+                        if (interrupted) Thread.currentThread().interrupt();
+                    }
+                    return;
+                }
                 handler.post(() -> {
                     if (stopped || current!=this || deviceConfig==null || !address.equals(deviceConfig.target)
                             || generation!=connection.generation()) {
-                        ownedBridge.compareAndSet(prepared,null);
-                        RootEnvironment.WORK.submit(() -> RootEnvironment.stopOwnedBridge(prepared));return;
+                        RootEnvironment.WORK.submit(() -> {
+                            if (RootEnvironment.stopOwnedBridge(prepared)) ownedBridge.compareAndSet(prepared,null);
+                        });return;
                     }
                     bridgePreparation=null;
                     boolean valid=prepared.access!=null && prepared.access.ready() && prepared.nativeReady;
@@ -338,6 +346,7 @@ public final class HandoffService extends Service {
     }
 
     private void cleanupOwnedBridge() {
+        nativeBackendReady=false;
         RootEnvironment.Prepared prepared=ownedBridge.getAndSet(null);
         if(prepared!=null) RootEnvironment.WORK.submit(() -> RootEnvironment.stopOwnedBridge(prepared));
     }

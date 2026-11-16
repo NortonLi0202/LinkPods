@@ -24,6 +24,7 @@ public final class ConnectionPolicy {
             && (phase==Phase.DIRECT_CONNECTING || phase==Phase.DIRECT_READY
                 || phase==Phase.RECONNECTING || phase==Phase.BRIDGE_PREPARING);
         if(!upgrade && phase!=Phase.IDLE && phase!=Phase.FAILED && phase!=Phase.STOPPED)return Action.NONE;
+        if(!upgrade)directWorked=false;
         target=address;++generation;bridge=preparedBridge;sessionReady=false;
         phase=bridge?Phase.BRIDGE_CONNECTING:Phase.DIRECT_CONNECTING;
         description=bridge?"已准备桥接，等待控制通道握手；交接未验证":"直接连接控制通道，无需 Root；交接未验证";

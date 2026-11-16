@@ -58,6 +58,7 @@ final class AapProbe {
     boolean isRunning() { return running; }
 
     void start() {
+        lastFailure=Failure.OTHER;
         running = true;
         new Thread(new Runnable() {
             @Override public void run() {
@@ -96,7 +97,6 @@ final class AapProbe {
     }
 
     private boolean attempt(boolean secure) {
-        lastFailure=Failure.OTHER;
         final String mode = secure ? "secure" : "insecure";
         final BluetoothSocket current;
         try {
@@ -105,7 +105,7 @@ final class AapProbe {
             logger.write("AAP_FACTORY_FOUND：" + methodName);
             current = (BluetoothSocket) factory.invoke(device, 0x1001);
         } catch (Exception error) {
-            lastFailure=classifyFailure(error);
+            if(classifyFailure(error)==Failure.COMPATIBILITY_REQUIRED)lastFailure=Failure.COMPATIBILITY_REQUIRED;
             logger.write("AAP_FACTORY_FAILED " + mode + "：" + describe(error));
             return false;
         }
@@ -189,7 +189,7 @@ final class AapProbe {
                 if (listener != null) listener.packet(java.util.Arrays.copyOf(buffer, length));
             }
         } catch (Exception error) {
-            lastFailure=classifyFailure(error);
+            if(classifyFailure(error)==Failure.COMPATIBILITY_REQUIRED)lastFailure=Failure.COMPATIBILITY_REQUIRED;
             logger.write("AAP_SESSION_RESULT " + mode + "：" + describe(error));
         } finally {
             timer.removeCallbacks(deadline);

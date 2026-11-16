@@ -4,6 +4,18 @@ public final class ConnectionPolicyTest {
     private static final String TARGET="AA:BB:CC:DD:EE:FF";
     static void expect(boolean ok,String message){if(!ok)throw new AssertionError(message);}
     static void action(ConnectionPolicy.Action got,ConnectionPolicy.Action expected){expect(got==expected,"expected "+expected+", got "+got);}
+    static void unsuccessfulBridgeReconnectStopsAfterOneRetry(){
+        ConnectionPolicy p=new ConnectionPolicy();action(p.start(TARGET,true),ConnectionPolicy.Action.CONNECT_BRIDGE);
+        long bridge=p.generation();p.ready(bridge,TARGET);
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_READY,"explicit native start isn't direct");
+        action(p.start(TARGET,false),ConnectionPolicy.Action.NONE);
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_READY,"duplicate start doesn't reclassify bridge");
+        action(p.ended(bridge,TARGET),ConnectionPolicy.Action.RECONNECT);
+        action(p.retry(bridge,TARGET),ConnectionPolicy.Action.CONNECT_BRIDGE);
+        action(p.ended(p.generation(),TARGET),ConnectionPolicy.Action.NONE);
+        expect(!p.fallbackUsed(),"bridge failure never requests another preparation");
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.FAILED,"unsuccessful bridge reconnect stops after one retry");
+    }
     public static void main(String[] args){
         ConnectionPolicy p=new ConnectionPolicy();
         action(p.start(TARGET,false),ConnectionPolicy.Action.CONNECT_DIRECT);
@@ -29,7 +41,8 @@ public final class ConnectionPolicyTest {
         action(p.ended(p.generation(),TARGET),ConnectionPolicy.Action.NONE);
         expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.FAILED,"failed bridge handshake stops");
         action(p.start(TARGET,false),ConnectionPolicy.Action.CONNECT_DIRECT);
-        action(p.ended(p.generation(),TARGET),ConnectionPolicy.Action.NONE);
+        action(p.ended(p.generation(),TARGET,true),ConnectionPolicy.Action.NONE);
+        expect(p.fallbackUsed(),"manual retry retains consumed fallback budget");
         expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.FAILED,"manual retry does not renew lifetime root budget");
 
         for(String missing:new String[]{"missing adapter","Root denied","no existing Root"}){
@@ -49,15 +62,7 @@ public final class ConnectionPolicyTest {
         expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.DIRECT_CONNECTING,"generation and target isolated");
         expect(p.snapshot("11:22:33:44:55:66").phase==ConnectionPolicy.Phase.IDLE,"foreign target gets no capability");
 
-        p=new ConnectionPolicy();action(p.start(TARGET,true),ConnectionPolicy.Action.CONNECT_BRIDGE);
-        long bridge=p.generation();p.ready(bridge,TARGET);
-        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_READY,"explicit native start isn't direct");
-        action(p.start(TARGET,false),ConnectionPolicy.Action.NONE);
-        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_READY,"duplicate start doesn't reclassify bridge");
-        action(p.ended(bridge,TARGET),ConnectionPolicy.Action.RECONNECT);
-        action(p.retry(bridge,TARGET),ConnectionPolicy.Action.CONNECT_BRIDGE);
-        action(p.ended(p.generation(),TARGET),ConnectionPolicy.Action.NONE);
-        expect(!p.fallbackUsed(),"bridge failure never requests another preparation");
+        unsuccessfulBridgeReconnectStopsAfterOneRetry();
         p=new ConnectionPolicy();p.start(TARGET,false);long g=p.generation();p.ended(g,TARGET,true);
         action(p.bridgePrepared(g,TARGET,true,"","",""),ConnectionPolicy.Action.NONE);
         expect(p.snapshot(TARGET).description.contains("适配器"),"ready result needs selected adapter");
@@ -66,6 +71,10 @@ public final class ConnectionPolicyTest {
             p.bridgePrepared(g,TARGET,false,"",reason,"");
             expect(!p.snapshot(TARGET).description.contains(reason),"UI explains capability failure in Chinese");
         }
+        p=new ConnectionPolicy();p.start(TARGET,false);long previous=p.generation();p.ready(previous,TARGET);p.stop();
+        p.start(TARGET,false);
+        action(p.ended(p.generation(),TARGET,true),ConnectionPolicy.Action.PREPARE_BRIDGE);
+        expect(p.fallbackUsed(),"new session can use the lifetime fallback after prior direct success");
         p=new ConnectionPolicy();p.start(TARGET,false);long beforeUpgrade=p.generation();p.ready(beforeUpgrade,TARGET);
         action(p.start(TARGET,true),ConnectionPolicy.Action.CONNECT_BRIDGE);
         expect(p.generation()!=beforeUpgrade,"explicit bridge upgrade invalidates direct session callbacks");

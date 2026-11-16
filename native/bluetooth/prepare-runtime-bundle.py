@@ -8,6 +8,7 @@ import shlex
 import shutil
 import sys
 import importlib.util
+import uuid
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -32,7 +33,7 @@ def resident_guard(configuration):
 '''.replace('__CONFIGURATION__', expected)
 
 
-def build_bundle(profile_path, target_address, output, agent_source, binary, expected_binary_sha256):
+def build_bundle(profile_path, target_address, output, agent_source, binary, expected_binary_sha256, instance_id=None):
     target = target_address.strip().upper() if isinstance(target_address, str) else ''
     if not re.fullmatch(r'(?:[0-9A-F]{2}:){5}[0-9A-F]{2}', target) or target in ('00:00:00:00:00:00', '02:00:00:00:00:00'):
         raise ValueError('an explicit, valid target Bluetooth address is required')
@@ -60,12 +61,21 @@ def build_bundle(profile_path, target_address, output, agent_source, binary, exp
     source += 'const runtimeProbe = rpc.exports.probe(runtimeProfile);\n'
     source += 'if (!runtimeProbe.ok) throw new Error(JSON.stringify(runtimeProbe));\n'
     source += 'rpc.exports.prepareidentity(runtimeProfile);\n'
-    source += 'rpc.exports.enable(runtimeProfile,{target_address:' + json.dumps(target) + ',spoof_vendor:false});\n'
-    source += 'rpc.exports.appleidentity(runtimeProfile);\n'
+    source += 'rpc.exports.diidentity();\n'
     configuration = {'target_address': target,
                      'profile_sha256': hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
                      'bundle_id': hashlib.sha256(source.encode()).hexdigest()}
-    source += 'const runtimeReady = rpc.exports.startresident(' + json.dumps(configuration, separators=(',', ':')) + ');\n'
+    # Publish the cleanup identity before attaching listeners. A failed injector
+    # response must not be the only way the app learns which instance it owns.
+    source += 'rpc.exports.startresident(' + json.dumps(configuration, separators=(',', ':')) + ',' + json.dumps(instance_id or uuid.uuid4().hex) + ');\n'
+    source += 'try {\n'
+    source += 'rpc.exports.enable(runtimeProfile,{target_address:' + json.dumps(target) + ',spoof_vendor:false});\n'
+    source += 'rpc.exports.appleidentity(runtimeProfile);\n'
+    source += 'residentSnapshot(null);\n'
+    source += '} catch (error) {\n'
+    source += 'try { rpc.exports.disable(); } finally { residentSnapshot(String(error)); }\n'
+    source += 'throw error;\n}\n'
+    source += 'const runtimeReady = residentSnapshot(null);\n'
     source += "console.log('HANDOFF_RUNTIME_READY ' + JSON.stringify(runtimeReady));\n"
     launcher = '''#!/system/bin/sh
 set -eu

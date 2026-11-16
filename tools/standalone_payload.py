@@ -72,7 +72,8 @@ def prepare_bridge_assets(assets,root,binary,binary_sha256,agent_source):
         placeholder='FE:DC:BA:98:76:54'
         with tempfile.TemporaryDirectory(prefix='linkpods-template-') as temporary:
             template=Path(temporary)/'bundle'
-            builder.build_bundle(root/adapter['profile'],placeholder,template,agent_source,binary,binary_sha256)
+            builder.build_bundle(root/adapter['profile'],placeholder,template,agent_source,binary,binary_sha256,
+                                 instance_id='__LINKPODS_BRIDGE_INSTANCE__')
             for name,out in [('agent.js','agent.template.js'),('inject-bluetooth.sh','inject.template.sh')]:
                 text=(template/name).read_text(encoding='utf-8').replace(placeholder,'__LINKPODS_TARGET_ADDRESS__')
                 (destination/out).write_bytes(android_text(text))

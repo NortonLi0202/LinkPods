@@ -104,8 +104,9 @@ final class RootAssets {
             return new String[]{hash,hex.toString()};
         });
     }
-    void stageBridge(String targetAddress,BridgeAdapterRegistry.Adapter adapter) throws Exception {
+    void stageBridge(String targetAddress,BridgeAdapterRegistry.Adapter adapter,String instanceId) throws Exception {
         if(adapter==null || !registry.adapters.contains(adapter))throw new IOException("Bridge adapter was not selected from this registry");
+        if(instanceId==null || !instanceId.matches("[0-9a-f]{32}"))throw new IOException("Invalid bridge instance identity");
         String address=DeviceConfig.address(targetAddress,true);
         File directory=new File(context.getFilesDir(),"root-bundle");
         if(!directory.isDirectory() && !directory.mkdirs())throw new IOException("Cannot stage bridge");
@@ -114,7 +115,9 @@ final class RootAssets {
         for(String[] item:new String[][]{{"agent.template.js","agent.js"},{"inject.template.sh","inject-bluetooth.sh"}}) {
             String template=verifiedText(adapter.asset(item[0]));
             if(!template.contains("__LINKPODS_TARGET_ADDRESS__"))throw new IOException("Missing target placeholder");
-            Files.write(new File(directory,item[1]).toPath(),template.replace("__LINKPODS_TARGET_ADDRESS__",address).getBytes(StandardCharsets.UTF_8));
+            if(item[1].equals("agent.js") && !template.contains("__LINKPODS_BRIDGE_INSTANCE__"))throw new IOException("Missing bridge instance placeholder");
+            Files.write(new File(directory,item[1]).toPath(),template.replace("__LINKPODS_TARGET_ADDRESS__",address)
+                .replace("__LINKPODS_BRIDGE_INSTANCE__",instanceId).getBytes(StandardCharsets.UTF_8));
             Os.chmod(new File(directory,item[1]).getPath(),item[1].endsWith(".sh")?0700:0600);
         }
         JSONObject files=new JSONObject();
