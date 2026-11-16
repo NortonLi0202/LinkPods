@@ -65,15 +65,16 @@ class RootHost {
    case LOCAL_ADDRESS:return "AA:BB:CC:DD:EE:FF";
    case BRIDGE_PREPARE:
     events.add("prepare");prepares++;
+    if(!reuse){activeInstance=RootAssets.stagedInstance;disabled=false;}
     if(prepareThrows){prepareThrows=false;throw new IOException("response lost");}
     if(statusUntilPrepare){statusThrows=false;statusUntilPrepare=false;}
     if(reuse)return "LINKPODS_BRIDGE_REUSED";
-    activeInstance=RootAssets.stagedInstance;return "LINKPODS_BRIDGE_STARTED";
+    return "LINKPODS_BRIDGE_STARTED";
    case BRIDGE_STOP:events.add("stop");stops++;disabled=true;return "";
    case BRIDGE_STATUS:
     if(statusFailures>0){statusFailures--;throw new IOException("status unavailable");}
     if(statusThrows)throw new IOException("status unavailable");
-    return (otherInstance.isEmpty()?(reuse?activeInstance:RootAssets.stagedInstance):otherInstance)+"|AA:BB:CC:DD:EE:FF|profile|"+(disabled?"disabled|0":"enabled|1")+"|42";
+    return (otherInstance.isEmpty()?activeInstance:otherInstance)+"|AA:BB:CC:DD:EE:FF|profile|"+(disabled?"disabled|0":"enabled|1")+"|42";
    default:throw new IOException();
   }
  }
@@ -120,6 +121,7 @@ public class RootEnvironmentHostTest {
   RootEnvironment.Prepared next=RootEnvironment.prepare(new Context(),TARGET,true,false);
   int stop=host.events.indexOf("stop"), second=host.events.lastIndexOf("prepare");
   expect(stop>=0 && second>stop,"pending cleanup must stop old runtime before next prepare");
+  expect(next.nativeReady,"new bridge is ready after prior cleanup");
   if(next.bridgeOwned)RootEnvironment.stopOwnedBridge(next);
  }
  static void successfulBridgeIsNotPendingCleanup(){
@@ -182,11 +184,24 @@ public class RootEnvironmentHostTest {
   RootEnvironment.Prepared first=RootEnvironment.prepare(new Context(),TARGET,true,false);
   host.reuse=true;
   RootEnvironment.Prepared second=RootEnvironment.prepare(new Context(),TARGET,true,false);
-  expect(second.nativeReady && second.bridgeOwned && !first.bridgeOwned,"reuse transfers active ownership");
+  expect(second.nativeReady && !second.bridgeOwned && first.bridgeOwned,"preparation leaves ownership with current owner");
+  expect(RootEnvironment.acceptBridge(second),"receiver accepts reused bridge");
+  expect(second.bridgeOwned && !first.bridgeOwned,"acceptance transfers active ownership");
+  RootEnvironment.stopOwnedBridge(first);
+  expect(host.stops==0 && second.bridgeOwned && RootEnvironment.bridgeUsable(second),"displaced cleanup must leave accepted owner running");
   expect(!RootEnvironment.bridgeUsable(first) && RootEnvironment.bridgeUsable(second),"only the transferred result remains usable");
   RootEnvironment.markBridgeStopping(second);
   expect(!RootEnvironment.bridgeUsable(first) && !RootEnvironment.bridgeUsable(second),"stop invalidates all aliases before I/O");
   expect(host.stops==0,"marking stop does not perform host I/O");
+ }
+ static void cancelledReuseLeavesOwnerRunning() {
+  RootHost host=RootHost.INSTANCE;
+  RootEnvironment.Prepared first=RootEnvironment.prepare(new Context(),TARGET,true,false);
+  host.reuse=true;
+  RootEnvironment.Prepared second=RootEnvironment.prepare(new Context(),TARGET,true,false);
+  expect(second.nativeReady,"reuse preparation is ready");
+  RootEnvironment.stopOwnedBridge(second);
+  expect(host.stops==0 && first.bridgeOwned && RootEnvironment.bridgeUsable(first),"cancelled reuse must leave original owner running");
  }
  public static void main(String[] args) throws Exception {
   switch(args[0]) {
@@ -200,6 +215,7 @@ public class RootEnvironmentHostTest {
    case "failed_cleanup_retries":failedCleanupRetries();break;
    case "channel_reconnect":channelReconnectRetries();break;
    case "stopping_aliases":stoppingInvalidatesAliases();break;
+   case "cancelled_reuse":cancelledReuseLeavesOwnerRunning();break;
    default:throw new IllegalArgumentException(args[0]);
   }
  }
@@ -228,7 +244,7 @@ class RootEnvironmentTests(unittest.TestCase):
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             for scenario in ('lost_prepare', 'lost_status', 'immediate_cleanup', 'pending_cleanup',
                              'unknown_pending', 'successful_bridge', 'stopping_pending',
-                             'failed_cleanup_retries', 'channel_reconnect', 'stopping_aliases'):
+                             'failed_cleanup_retries', 'channel_reconnect', 'stopping_aliases', 'cancelled_reuse'):
                 with self.subTest(scenario=scenario):
                     result = subprocess.run([java, '-cp', str(root), 'local.airpods.handoffprobe.RootEnvironmentHostTest', scenario], capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 0, result.stderr)

@@ -201,14 +201,10 @@ public final class HandoffService extends Service {
         boolean preparedBridge=false;
         if(intent.getBooleanExtra("native_backend_ready",false)) {
             RootEnvironment.Prepared handedOff=pendingBridge.getAndSet(null);
-            if(RootEnvironment.bridgeUsable(handedOff) && handedOff.targetAddress.equalsIgnoreCase(deviceConfig.target)) {
+            if(handedOff!=null && handedOff.targetAddress.equalsIgnoreCase(deviceConfig.target)
+                    && RootEnvironment.acceptBridge(handedOff)) {
                 preparedBridge=true;
-                if(handedOff.bridgeOwned) {
-                    RootEnvironment.Prepared previousOwned=ownedBridge.getAndSet(handedOff);
-                    if(previousOwned!=null && previousOwned!=handedOff
-                            && (previousOwned.lease==null || !previousOwned.lease.sameInstance(handedOff.lease)))
-                        RootEnvironment.queueBridgeStop(previousOwned);
-                }
+                retainBridgeOwnership(handedOff);
             } else if(handedOff!=null)RootEnvironment.queueBridgeStop(handedOff);
         }
         selfMac = deviceConfig.local;
@@ -328,7 +324,8 @@ public final class HandoffService extends Service {
                         });return;
                     }
                     bridgePreparation=null;
-                    boolean valid=RootEnvironment.bridgeUsable(prepared);
+                    boolean valid=RootEnvironment.acceptBridge(prepared);
+                    if(valid)retainBridgeOwnership(prepared);
                     ConnectionPolicy.Action next=connection.bridgePrepared(generation,address,valid,
                         prepared.adapterId,prepared.missing,prepared.diagnostic);
                     if (next==ConnectionPolicy.Action.CONNECT_BRIDGE && BluetoothAdapter.checkBluetoothAddress(prepared.local)) {
@@ -346,6 +343,13 @@ public final class HandoffService extends Service {
         }
     }
 
+    private void retainBridgeOwnership(RootEnvironment.Prepared prepared) {
+        if(!prepared.bridgeOwned)return;
+        RootEnvironment.Prepared previousOwned=ownedBridge.getAndSet(prepared);
+        if(previousOwned!=null && previousOwned!=prepared
+                && (previousOwned.lease==null || !previousOwned.lease.sameInstance(prepared.lease)))
+            RootEnvironment.queueBridgeStop(previousOwned);
+    }
     private void cleanupOwnedBridge() {
         nativeBackendReady=false;
         RootEnvironment.Prepared prepared=ownedBridge.getAndSet(null);
@@ -365,6 +369,7 @@ public final class HandoffService extends Service {
         final String address=deviceConfig.target;
         if (!adapter.isEnabled()) {
             connection.unavailable(connectionGeneration,address,"Bluetooth 已关闭");
+            cleanupOwnedBridge();
             log("CONNECTION " + connection.snapshot(address).description);return;
         }
         peers.clear();

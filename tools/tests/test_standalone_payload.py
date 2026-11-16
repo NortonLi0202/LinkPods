@@ -139,11 +139,18 @@ class RelocationTests(unittest.TestCase):
     def test_verify_archive_pins_and_launcher(self):
         archive,pins=self.archive()
         payload.verify_apk(archive,pins)
-        for changes in [{'assets/root/frida-inject':b'changed'},
-                        {'assets/root/adapters/synthetic/inject.template.sh':b'#!/system/bin/sh\r\n'},
-                        {'assets/root/adapters/synthetic/inject.template.sh':b'am start-foreground-service service\n'}]:
-            archive,pins=self.archive(changes)
-            with self.subTest(changes=list(changes)),self.assertRaises(ValueError):payload.verify_apk(archive,pins)
+        archive,pins=self.archive({'assets/root/frida-inject':b'changed'})
+        with self.assertRaises(ValueError):payload.verify_apk(archive,pins)
+        launcher_path='assets/root/adapters/synthetic/inject.template.sh'
+        original,_=self.archive()
+        with zipfile.ZipFile(original) as source:
+            launcher=source.read(launcher_path)
+        for altered,error in [
+            (launcher.replace(b'\n',b'\r\n'),'Android shell template must use LF'),
+            (launcher+b'am start-foreground-service service\n','Root helper must not start service after cancellation'),
+        ]:
+            archive,pins=self.archive({launcher_path:altered})
+            with self.subTest(error=error),self.assertRaisesRegex(ValueError,error):payload.verify_apk(archive,pins)
 
     def test_android_rejects_windows_zip_asset_separators(self):
         archive,pins=self.archive()

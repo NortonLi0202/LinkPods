@@ -62,15 +62,22 @@ final class RootEnvironment {
         markBridgeStopping(prepared);
         WORK.submit(() -> stopOwnedBridge(prepared));
     }
-    private static boolean activateBridge(Prepared prepared,boolean reused) {
+    private static boolean activateBridge(Prepared prepared) {
         synchronized(bridgeLock) {
             for(Prepared pending:pendingCleanup)if(pending!=prepared && pending.cleanupRequested && sameBridge(pending,prepared))
                 return false;
-            if(reused)for(Prepared owner:readyBridges)if(owner.bridgeOwned && !owner.cleanupRequested && sameBridge(owner,prepared)) {
+            prepared.nativeReady=true;readyBridges.add(prepared);pendingCleanup.remove(prepared);
+            return true;
+        }
+    }
+    /** Transfer a reused instance only when its receiver commits to taking it. */
+    static boolean acceptBridge(Prepared prepared) {
+        synchronized(bridgeLock) {
+            if(!bridgeUsable(prepared))return false;
+            for(Prepared owner:readyBridges)if(owner!=prepared && owner.bridgeOwned && !owner.cleanupRequested && sameBridge(owner,prepared)) {
                 prepared.bridgeOwned=true;prepared.bridgeInstanceId=owner.bridgeInstanceId;
                 owner.bridgeOwned=false;owner.nativeReady=false;readyBridges.remove(owner);
             }
-            prepared.nativeReady=true;readyBridges.add(prepared);pendingCleanup.remove(prepared);
             return true;
         }
     }
@@ -194,7 +201,7 @@ final class RootEnvironment {
                     && configuration.getString("target_address").equals(DeviceConfig.address(target,true))
                     && configuration.getString("profile_sha256").equals(adapter.profileHash)
                     && identity.getInt("vendor")==0x4c && identity.getInt("source")==1;
-                if(!nativeReady || !activateBridge(prepared,reused))throw new IOException("Bridge runtime is invalid or already stopping");
+                if(!nativeReady || !activateBridge(prepared))throw new IOException("Bridge runtime is invalid or already stopping");
             }
         }catch(InterruptedException error){
             // Clear interruption for bounded ownership cleanup, then preserve cancellation.
