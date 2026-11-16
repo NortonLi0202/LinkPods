@@ -55,7 +55,7 @@ class RootAssets {
 class RootProtocol {enum Command {ID,LOCAL_ADDRESS,BRIDGE_PREPARE,BRIDGE_STATUS,BRIDGE_STOP}}
 class RootHost {
  static final RootHost INSTANCE=new RootHost();
- boolean prepareThrows,statusThrows,disabled,reuse,statusUntilPrepare; int stops,prepares,statusFailures; String otherInstance="",activeInstance="";
+ volatile boolean prepareThrows,statusThrows,disabled,reuse,statusUntilPrepare; volatile int stops,prepares,statusFailures; String otherInstance="",activeInstance="";
  final List<String> events=new ArrayList<>();
  static RootHost get(Context context){return INSTANCE;} static RootHost current(){return INSTANCE;}
  boolean await(long timeout) throws InterruptedException{return true;}
@@ -144,20 +144,65 @@ public class RootEnvironmentHostTest {
   expect(next.nativeReady,"new preparation succeeds once runtime starts");
   if(next.bridgeOwned)RootEnvironment.stopOwnedBridge(next);
  }
- static void reusedPendingBridgeTransfersOwnership(){
+ static void stoppingPendingBridgeCannotBeReused(){
   RootHost host=RootHost.INSTANCE;host.disabled=false;host.otherInstance="";host.stops=0;host.reuse=false;
   host.prepareThrows=true;host.statusThrows=true;
   RootEnvironment.Prepared first=RootEnvironment.prepare(new Context(),TARGET,true,false);
   expect(first.bridgeOwned,"uncertain first launch retains ownership");
   host.activeInstance=RootAssets.stagedInstance;host.reuse=true;host.statusThrows=false;host.statusFailures=1;
   RootEnvironment.Prepared second=RootEnvironment.prepare(new Context(),TARGET,true,false);
-  expect(second.nativeReady && second.bridgeOwned,"reused matching pending bridge transfers ownership");
-  expect(!first.bridgeOwned,"transferred bridge is no longer pending on first preparation");
-  RootEnvironment.Prepared third=RootEnvironment.prepare(new Context(),TARGET,true,false);
-  expect(third.nativeReady && host.stops==0,"later preparation leaves transferred active bridge running");
-  host.reuse=false;RootEnvironment.stopOwnedBridge(second);
+  expect(!second.nativeReady,"bridge pending cleanup cannot be handed off as ready");
+  expect(first.bridgeOwned,"cleanup claim remains with original preparation");
  }
- public static void main(String[] args){run(true);run(false);immediateCleanupSucceedsWhenStatusAvailable();pendingCleanupRunsBeforeNextPrepare();unknownPendingDoesNotBlockLaterPrepare();successfulBridgeIsNotPendingCleanup();reusedPendingBridgeTransfersOwnership();}
+ static void awaitStop(RootHost host) throws Exception {
+  long deadline=System.nanoTime()+3_000_000_000L;
+  while(host.stops==0 && System.nanoTime()<deadline)Thread.sleep(20);
+  expect(host.stops>0,"failed cleanup must retry without another prepare");
+ }
+ static void failedCleanupRetries() throws Exception {
+  RootHost host=RootHost.INSTANCE;
+  RootEnvironment.Prepared prepared=RootEnvironment.prepare(new Context(),TARGET,true,false);
+  expect(prepared.nativeReady && prepared.bridgeOwned,"bridge must start owned");
+  host.statusThrows=true;
+  expect(!RootEnvironment.stopOwnedBridge(prepared),"unavailable status must defer cleanup");
+  host.statusThrows=false;
+  awaitStop(host);
+ }
+ static void channelReconnectRetries() throws Exception {
+  RootHost host=RootHost.INSTANCE;
+  RootEnvironment.Prepared prepared=RootEnvironment.prepare(new Context(),TARGET,true,false);
+  host.statusThrows=true;
+  expect(!RootEnvironment.stopOwnedBridge(prepared),"unavailable status must defer cleanup");
+  host.statusThrows=false;
+  RootEnvironment.rootChannelConnected();
+  awaitStop(host);
+ }
+ static void stoppingInvalidatesAliases() {
+  RootHost host=RootHost.INSTANCE;
+  RootEnvironment.Prepared first=RootEnvironment.prepare(new Context(),TARGET,true,false);
+  host.reuse=true;
+  RootEnvironment.Prepared second=RootEnvironment.prepare(new Context(),TARGET,true,false);
+  expect(second.nativeReady && second.bridgeOwned && !first.bridgeOwned,"reuse transfers active ownership");
+  expect(!RootEnvironment.bridgeUsable(first) && RootEnvironment.bridgeUsable(second),"only the transferred result remains usable");
+  RootEnvironment.markBridgeStopping(second);
+  expect(!RootEnvironment.bridgeUsable(first) && !RootEnvironment.bridgeUsable(second),"stop invalidates all aliases before I/O");
+  expect(host.stops==0,"marking stop does not perform host I/O");
+ }
+ public static void main(String[] args) throws Exception {
+  switch(args[0]) {
+   case "lost_prepare":run(true);break;
+   case "lost_status":run(false);break;
+   case "immediate_cleanup":immediateCleanupSucceedsWhenStatusAvailable();break;
+   case "pending_cleanup":pendingCleanupRunsBeforeNextPrepare();break;
+   case "unknown_pending":unknownPendingDoesNotBlockLaterPrepare();break;
+   case "successful_bridge":successfulBridgeIsNotPendingCleanup();break;
+   case "stopping_pending":stoppingPendingBridgeCannotBeReused();break;
+   case "failed_cleanup_retries":failedCleanupRetries();break;
+   case "channel_reconnect":channelReconnectRetries();break;
+   case "stopping_aliases":stoppingInvalidatesAliases();break;
+   default:throw new IllegalArgumentException(args[0]);
+  }
+ }
 }''',
 }
 
@@ -165,8 +210,8 @@ public class RootEnvironmentHostTest {
 class RootEnvironmentTests(unittest.TestCase):
     def test_ambiguous_prepare_recovers_only_matching_runtime(self):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None
-        javac = str(jdk / 'javac.exe') if jdk else shutil.which('javac')
-        java = str(jdk / 'java.exe') if jdk else shutil.which('java')
+        javac = shutil.which('javac', path=str(jdk) if jdk else None)
+        java = shutil.which('java', path=str(jdk) if jdk else None)
         if not javac or not java:
             self.skipTest('JDK required')
         with tempfile.TemporaryDirectory(prefix='linkpods-root-environment-') as directory:
@@ -181,5 +226,9 @@ class RootEnvironmentTests(unittest.TestCase):
             files += [str(package / name) for name in ('RootEnvironment.java', 'BridgeRuntimeLease.java', 'RootAccess.java', 'RootWorkQueue.java')]
             compiled = subprocess.run([javac, '-encoding', 'UTF-8', '-d', str(root), *files], capture_output=True, text=True, timeout=30)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
-            result = subprocess.run([java, '-cp', str(root), 'local.airpods.handoffprobe.RootEnvironmentHostTest'], capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            for scenario in ('lost_prepare', 'lost_status', 'immediate_cleanup', 'pending_cleanup',
+                             'unknown_pending', 'successful_bridge', 'stopping_pending',
+                             'failed_cleanup_retries', 'channel_reconnect', 'stopping_aliases'):
+                with self.subTest(scenario=scenario):
+                    result = subprocess.run([java, '-cp', str(root), 'local.airpods.handoffprobe.RootEnvironmentHostTest', scenario], capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)

@@ -60,6 +60,10 @@ public class AapSchedulerTest {
  public static void main(String[] args) throws Exception {
   expect(AapProbe.classifyFailure(new java.io.IOException("EPROTONOSUPPORT"))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"explicit protocol capability failure");
   expect(AapProbe.classifyFailure(new java.lang.reflect.InvocationTargetException(new java.io.IOException("Operation not supported")))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"unwrap socket factory cause");
+  for(String message:new String[]{"connect failed: EPROTONOSUPPORT (93)","[EOPNOTSUPP]", "error: protocol not supported.","(operation not supported)"})
+   expect(AapProbe.classifyFailure(new java.io.IOException(message))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"delimited compatibility marker: "+message);
+  for(String message:new String[]{"NOT_EPROTONOSUPPORT", "prefixEPROTONOSUPPORT", "EPROTONOSUPPORT_suffix", "EOPNOTSUPP2", "prefixprotocol not supported", "operation not supportedness"})
+   expect(AapProbe.classifyFailure(new java.io.IOException(message))==AapProbe.Failure.OTHER,"embedded compatibility marker must not request Root: "+message);
   for(Exception error:new Exception[]{new java.io.IOException(),new java.io.IOException("Connection refused"),new java.net.SocketTimeoutException("timeout"),new SecurityException("EPROTONOSUPPORT"),new NoSuchMethodException("createL2capSocket")})
    expect(AapProbe.classifyFailure(error)==AapProbe.Failure.OTHER,"reachability, permission and absent API are not evidence for Root");
   CountDownLatch ended=new CountDownLatch(1);

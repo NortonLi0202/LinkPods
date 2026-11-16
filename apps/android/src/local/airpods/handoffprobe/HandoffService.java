@@ -42,12 +42,12 @@ public final class HandoffService extends Service {
     private static final java.util.concurrent.atomic.AtomicReference<RootEnvironment.Prepared> pendingBridge=
         new java.util.concurrent.atomic.AtomicReference<>();
     static boolean adoptPreparedBridge(RootEnvironment.Prepared prepared) {
-        return prepared!=null && prepared.nativeReady && prepared.access!=null && prepared.access.ready()
+        return RootEnvironment.bridgeUsable(prepared)
             && pendingBridge.compareAndSet(null,prepared);
     }
     static void discardPreparedBridge(RootEnvironment.Prepared prepared) {
         if(pendingBridge.compareAndSet(prepared,null))
-            RootEnvironment.WORK.submit(() -> RootEnvironment.stopOwnedBridge(prepared));
+            RootEnvironment.queueBridgeStop(prepared);
     }
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final RoutingPolicy policy = new RoutingPolicy();
@@ -193,7 +193,7 @@ public final class HandoffService extends Service {
         try {merged=DeviceConfig.mergeLocal(deviceConfig,requested);}
         catch(IllegalArgumentException error){
             RootEnvironment.Prepared rejected=pendingBridge.getAndSet(null);
-            if(rejected!=null)RootEnvironment.WORK.submit(() -> RootEnvironment.stopOwnedBridge(rejected));
+            if(rejected!=null)RootEnvironment.queueBridgeStop(rejected);
             log("SERVICE stop before selecting a different device configuration");return START_NOT_STICKY;
         }
         if (deviceConfig == null) earbudState.begin(requested.target);
@@ -201,15 +201,15 @@ public final class HandoffService extends Service {
         boolean preparedBridge=false;
         if(intent.getBooleanExtra("native_backend_ready",false)) {
             RootEnvironment.Prepared handedOff=pendingBridge.getAndSet(null);
-            if(handedOff!=null && handedOff.targetAddress.equalsIgnoreCase(deviceConfig.target)) {
+            if(RootEnvironment.bridgeUsable(handedOff) && handedOff.targetAddress.equalsIgnoreCase(deviceConfig.target)) {
                 preparedBridge=true;
                 if(handedOff.bridgeOwned) {
                     RootEnvironment.Prepared previousOwned=ownedBridge.getAndSet(handedOff);
                     if(previousOwned!=null && previousOwned!=handedOff
                             && (previousOwned.lease==null || !previousOwned.lease.sameInstance(handedOff.lease)))
-                        RootEnvironment.WORK.submit(() -> RootEnvironment.stopOwnedBridge(previousOwned));
+                        RootEnvironment.queueBridgeStop(previousOwned);
                 }
-            } else if(handedOff!=null)RootEnvironment.WORK.submit(() -> RootEnvironment.stopOwnedBridge(handedOff));
+            } else if(handedOff!=null)RootEnvironment.queueBridgeStop(handedOff);
         }
         selfMac = deviceConfig.local;
         if (peerMac.isEmpty()) peerMac = deviceConfig.peer;
@@ -322,12 +322,13 @@ public final class HandoffService extends Service {
                 handler.post(() -> {
                     if (stopped || current!=this || deviceConfig==null || !address.equals(deviceConfig.target)
                             || generation!=connection.generation()) {
+                        RootEnvironment.markBridgeStopping(prepared);
                         RootEnvironment.WORK.submit(() -> {
                             if (RootEnvironment.stopOwnedBridge(prepared)) ownedBridge.compareAndSet(prepared,null);
                         });return;
                     }
                     bridgePreparation=null;
-                    boolean valid=prepared.access!=null && prepared.access.ready() && prepared.nativeReady;
+                    boolean valid=RootEnvironment.bridgeUsable(prepared);
                     ConnectionPolicy.Action next=connection.bridgePrepared(generation,address,valid,
                         prepared.adapterId,prepared.missing,prepared.diagnostic);
                     if (next==ConnectionPolicy.Action.CONNECT_BRIDGE && BluetoothAdapter.checkBluetoothAddress(prepared.local)) {
@@ -348,7 +349,7 @@ public final class HandoffService extends Service {
     private void cleanupOwnedBridge() {
         nativeBackendReady=false;
         RootEnvironment.Prepared prepared=ownedBridge.getAndSet(null);
-        if(prepared!=null) RootEnvironment.WORK.submit(() -> RootEnvironment.stopOwnedBridge(prepared));
+        if(prepared!=null) RootEnvironment.queueBridgeStop(prepared);
     }
     private void updateLocalIdentity(String local) {
         deviceConfig=DeviceConfig.mergeLocal(deviceConfig,DeviceConfig.create(deviceConfig.target,local,deviceConfig.peer));
@@ -530,7 +531,7 @@ public final class HandoffService extends Service {
         stopped = true; ready = false;
         connection.stop();
         RootEnvironment.Prepared pending=pendingBridge.getAndSet(null);
-        if(pending!=null)RootEnvironment.WORK.submit(() -> RootEnvironment.stopOwnedBridge(pending));
+        if(pending!=null)RootEnvironment.queueBridgeStop(pending);
         cleanupOwnedBridge();
         if (bridgePreparation!=null) { bridgePreparation.cancel(true); bridgePreparation=null; }
         ++earbudSessionGeneration;

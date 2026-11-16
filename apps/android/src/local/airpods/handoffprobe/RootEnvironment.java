@@ -9,10 +9,17 @@ final class RootEnvironment {
     static final RootWorkQueue WORK=new RootWorkQueue();
     // Keep failed cleanups reachable even after the Activity/Service releases its reference.
     private static final java.util.Set<Prepared> pendingCleanup=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.Set<Prepared> readyBridges=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final Object bridgeLock=new Object();
+    private static java.util.concurrent.Future<?> cleanupRetry;
+    private static int cleanupRetryAttempt;
+    private static long cleanupRetryGeneration;
+    private static final long[] cleanupRetryDelays={1000,5000,15000};
     static final class Prepared {
         RootAccess.Result access;
         String local="",diagnostic="";
-        boolean nativeReady;
+        volatile boolean nativeReady;
+        volatile boolean cleanupRequested;
         boolean temporarySupported;
         boolean temporaryAttempted;
         boolean rootChecked;
@@ -21,6 +28,80 @@ final class RootEnvironment {
         String targetAddress="",bridgeProfileHash="";
         String bridgeInstanceId="";
         BridgeRuntimeLease lease;
+    }
+    static boolean bridgeUsable(Prepared prepared) {
+        synchronized(bridgeLock) {
+            return prepared!=null && prepared.nativeReady && !prepared.cleanupRequested
+                && prepared.access!=null && prepared.access.ready();
+        }
+    }
+    private static boolean sameBridge(Prepared first,Prepared second) {
+        if(first.lease!=null && second.lease!=null)return first.lease.sameInstance(second.lease);
+        if(first.lease!=null)return first.lease.matchesPreparation(second.targetAddress,second.bridgeProfileHash,second.bridgeInstanceId);
+        if(second.lease!=null)return second.lease.matchesPreparation(first.targetAddress,first.bridgeProfileHash,first.bridgeInstanceId);
+        return !first.bridgeInstanceId.isEmpty() && first.bridgeInstanceId.equals(second.bridgeInstanceId)
+            && first.targetAddress.equalsIgnoreCase(second.targetAddress) && first.bridgeProfileHash.equals(second.bridgeProfileHash);
+    }
+    static void markBridgeStopping(Prepared prepared) {
+        if(prepared==null)return;
+        synchronized(bridgeLock) {
+            prepared.nativeReady=false;
+            boolean firstRequest=!prepared.cleanupRequested;
+            prepared.cleanupRequested=true;
+            readyBridges.remove(prepared);
+            if(!prepared.bridgeOwned)return;
+            pendingCleanup.add(prepared);
+            if(firstRequest)cleanupRetryAttempt=0;
+            for(Prepared alias:readyBridges)if(sameBridge(prepared,alias)) {
+                alias.nativeReady=false;alias.cleanupRequested=true;readyBridges.remove(alias);
+            }
+        }
+    }
+    static void queueBridgeStop(Prepared prepared) {
+        if(prepared==null)return;
+        markBridgeStopping(prepared);
+        WORK.submit(() -> stopOwnedBridge(prepared));
+    }
+    private static boolean activateBridge(Prepared prepared,boolean reused) {
+        synchronized(bridgeLock) {
+            for(Prepared pending:pendingCleanup)if(pending!=prepared && pending.cleanupRequested && sameBridge(pending,prepared))
+                return false;
+            if(reused)for(Prepared owner:readyBridges)if(owner.bridgeOwned && !owner.cleanupRequested && sameBridge(owner,prepared)) {
+                prepared.bridgeOwned=true;prepared.bridgeInstanceId=owner.bridgeInstanceId;
+                owner.bridgeOwned=false;owner.nativeReady=false;readyBridges.remove(owner);
+            }
+            prepared.nativeReady=true;readyBridges.add(prepared);pendingCleanup.remove(prepared);
+            return true;
+        }
+    }
+    static void rootChannelConnected() {
+        synchronized(bridgeLock) {
+            cleanupRetryAttempt=0;
+            ++cleanupRetryGeneration;
+            if(cleanupRetry!=null){cleanupRetry.cancel(false);cleanupRetry=null;}
+            scheduleCleanupRetry(0);
+        }
+    }
+    private static void scheduleCleanupRetry(long delayMs) {
+        synchronized(bridgeLock) {
+            if(pendingCleanup.isEmpty() || cleanupRetry!=null)return;
+            final long generation=cleanupRetryGeneration;
+            cleanupRetry=WORK.schedule(() -> {
+                try {
+                    for(Prepared pending:pendingCleanup)if(pending.cleanupRequested)stopOwnedBridge(pending);
+                } finally {
+                    synchronized(bridgeLock) {
+                        if(generation==cleanupRetryGeneration){cleanupRetry=null;scheduleCleanupRetry();}
+                    }
+                }
+            },delayMs);
+        }
+    }
+    private static void scheduleCleanupRetry() {
+        synchronized(bridgeLock) {
+            if(cleanupRetry==null && !pendingCleanup.isEmpty() && cleanupRetryAttempt<cleanupRetryDelays.length)
+                scheduleCleanupRetry(cleanupRetryDelays[cleanupRetryAttempt++]);
+        }
     }
     static Prepared prepare(Context context,String target,boolean enable,boolean allowTemporary) {
         Prepared prepared=new Prepared();
@@ -108,28 +189,12 @@ final class RootEnvironment {
                 }
                 if(Thread.currentThread().isInterrupted())throw new InterruptedException();
                 long age=System.currentTimeMillis()-status.getLong("updated_at_ms");
-                prepared.nativeReady=status.getInt("pid")>0 && age>=0 && age<=15000
+                boolean nativeReady=status.getInt("pid")>0 && age>=0 && age<=15000
                     && status.getJSONObject("state").getString("state").equals("enabled")
                     && configuration.getString("target_address").equals(DeviceConfig.address(target,true))
                     && configuration.getString("profile_sha256").equals(adapter.profileHash)
                     && identity.getInt("vendor")==0x4c && identity.getInt("source")==1;
-                if(!prepared.nativeReady)throw new IOException("Bridge runtime status did not validate");
-                if(reused) {
-                    // A prior ambiguous start may be the resident we just validated.
-                    // Transfer its cleanup claim instead of leaving a live session pending.
-                    for(Prepared pending:pendingCleanup) {
-                        if(pending!=prepared && pending.bridgeOwned
-                                && pending.targetAddress.equalsIgnoreCase(prepared.targetAddress)
-                                && pending.bridgeProfileHash.equals(prepared.bridgeProfileHash)
-                                && pending.bridgeInstanceId.equals(status.optString("instance_id",""))
-                                && (pending.lease==null || pending.lease.sameInstance(prepared.lease))) {
-                            prepared.bridgeOwned=true;prepared.bridgeInstanceId=pending.bridgeInstanceId;
-                            pending.bridgeOwned=false;pending.nativeReady=false;
-                            pendingCleanup.remove(pending);
-                        }
-                    }
-                }
-                pendingCleanup.remove(prepared);
+                if(!nativeReady || !activateBridge(prepared,reused))throw new IOException("Bridge runtime is invalid or already stopping");
             }
         }catch(InterruptedException error){
             // Clear interruption for bounded ownership cleanup, then preserve cancellation.
@@ -148,11 +213,12 @@ final class RootEnvironment {
         return prepared;
     }
     static boolean stopOwnedBridge(Prepared prepared) {
+        markBridgeStopping(prepared);
         if(prepared==null || !prepared.bridgeOwned)return true;
         pendingCleanup.add(prepared);
         RootHost host=RootHost.current();
-        if(host==null)return false;
         try {
+            if(host==null)return false;
             if(!host.await(5000))return false;
             JSONObject status=new JSONObject(host.call(RootProtocol.Command.BRIDGE_STATUS));
             JSONObject configuration=status.getJSONObject("configuration");
@@ -180,6 +246,7 @@ final class RootEnvironment {
             }
         }catch(InterruptedException error){Thread.currentThread().interrupt();}
         catch(Exception ignored){}
+        finally {if(prepared.bridgeOwned)scheduleCleanupRetry();}
         return false;
     }
 }

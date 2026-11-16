@@ -206,8 +206,8 @@ final class AapProbe {
         Throwable cause=error instanceof InvocationTargetException?((InvocationTargetException)error).getTargetException():error;
         if(!(cause instanceof java.io.IOException))return Failure.OTHER;
         String message=String.valueOf(cause.getMessage()).toLowerCase(Locale.ROOT);
-        return message.contains("eprotonosupport") || message.contains("eopnotsupp")
-            || message.contains("protocol not supported") || message.contains("operation not supported")
+        return java.util.regex.Pattern.compile("(?<![a-z0-9_])(?:eprotonosupport|eopnotsupp|protocol not supported|operation not supported)(?![a-z0-9_])")
+            .matcher(message).find()
             ?Failure.COMPATIBILITY_REQUIRED:Failure.OTHER;
     }
     private static void close(BluetoothSocket socket) {

@@ -52,6 +52,8 @@ final class RootHost {
                     if(connection!=null)connection.close();
                     connection=accepted;notifyAll();
                 }
+                // Only retry already-authorized cleanup; this never probes or acquires Root.
+                RootEnvironment.rootChannelConnected();
             } catch(IOException error) { if(accepted!=null)try{accepted.close();}catch(IOException ignored){} }
         }
     }

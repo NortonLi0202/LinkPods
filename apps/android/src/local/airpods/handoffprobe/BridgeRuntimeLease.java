@@ -10,6 +10,9 @@ final class BridgeRuntimeLease {
     boolean matches(String target,String profile,int pid,String instance) {
         return this.target.equalsIgnoreCase(target) && this.profile.equals(profile) && this.pid==pid && this.instance.equals(instance);
     }
+    boolean matchesPreparation(String target,String profile,String instance) {
+        return this.target.equalsIgnoreCase(target) && this.profile.equals(profile) && this.instance.equals(instance);
+    }
     boolean sameInstance(BridgeRuntimeLease other) {
         return other!=null && matches(other.target,other.profile,other.pid,other.instance);
     }

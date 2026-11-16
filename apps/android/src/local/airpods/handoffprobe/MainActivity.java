@@ -286,15 +286,17 @@ public class MainActivity extends Activity {
         log("检测可用 Root；若已安装 Root 管理器，可能出现授权提示。");
         environmentWorker=RootEnvironment.WORK.submit(() -> {
             RootEnvironment.Prepared prepared=RootEnvironment.prepare(this,requestedTarget,enable,allowTemporary);
-            pendingPrepared.set(prepared);
+            RootEnvironment.Prepared displaced=pendingPrepared.getAndSet(prepared);
+            if(displaced!=null && displaced!=prepared)queueBridgeStop(displaced);
             if(destroyed || Thread.currentThread().isInterrupted()) {
-                if(pendingPrepared.compareAndSet(prepared,null))queueBridgeStop(prepared);
+                pendingPrepared.compareAndSet(prepared,null);
+                queueBridgeStop(prepared);
                 return;
             }
             RootAccess.Result result=prepared.access;
             String local=prepared.local;
             handler.post(() -> {
-                if(!pendingPrepared.compareAndSet(prepared,null))return;
+                if(!pendingPrepared.compareAndSet(prepared,null)){queueBridgeStop(prepared);return;}
                 if (destroyed || !environmentRequests.complete(request)) {queueBridgeStop(prepared);return;}
                 environmentWorker=null;
                 environmentEnabling=false;
@@ -313,7 +315,7 @@ public class MainActivity extends Activity {
                 }
                 log(environmentStatus);
                 if(!prepared.diagnostic.isEmpty())log(prepared.diagnostic);
-                nativeBackendReady=prepared.nativeReady;
+                nativeBackendReady=RootEnvironment.bridgeUsable(prepared);
                 if(nativeBackendReady)log("原生桥接状态已核对；实际交接仍需试听验收。");
                 preparedLocalAddress=local;
                 refreshStatus();
@@ -323,7 +325,7 @@ public class MainActivity extends Activity {
                     }
                     if(!allowTemporary && result.status==RootAccess.Status.UNSUPPORTED && prepared.temporarySupported) {confirmTemporaryRoot();return;}
                     if (!result.ready()) log("仅尝试当前系统的控制通道，不启用原生桥接；通道成功不代表双向交接已验证。");
-                    if(prepared.nativeReady)bridgeToStart=prepared;
+                    if(RootEnvironment.bridgeUsable(prepared))bridgeToStart=prepared;
                     else queueBridgeStop(prepared);
                     startAutomaticPrepared();
                 }
@@ -340,7 +342,9 @@ public class MainActivity extends Activity {
         queueBridgeStop(bridgeToStart);bridgeToStart=null;
     }
     private void queueBridgeStop(RootEnvironment.Prepared prepared) {
-        if(prepared==null || !prepared.bridgeOwned)return;
+        if(prepared==null)return;
+        RootEnvironment.markBridgeStopping(prepared);
+        if(!prepared.bridgeOwned)return;
         RootEnvironment.WORK.submit(()->{
             boolean restored=RootEnvironment.stopOwnedBridge(prepared);
             handler.post(()->{if(!destroyed)log(restored?"本次启动的桥接已恢复。":"未确认本次桥接恢复，未停止其他运行实例。");});
@@ -367,7 +371,7 @@ public class MainActivity extends Activity {
             .putExtra("peer_address", config.peer);
         service.putExtra("native_backend_ready",nativeBackendReady);
         RootEnvironment.Prepared prepared=bridgeToStart;bridgeToStart=null;
-        if(nativeBackendReady && (prepared==null || !HandoffService.adoptPreparedBridge(prepared))) {
+        if(nativeBackendReady && (!RootEnvironment.bridgeUsable(prepared) || !HandoffService.adoptPreparedBridge(prepared))) {
             queueBridgeStop(prepared);nativeBackendReady=false;log("桥接未能交给当前会话，请重试。");return;
         }
         try {startForegroundService(service);}
