@@ -305,8 +305,10 @@ public final class HandoffService extends Service {
 
     void restartSessionWatch() {
         if (stopped || mode != SessionMode.AUTO_HANDOFF) return;
+        boolean keepPending = watching && policy.isPending();
         if (watching) stopSessionWatch();
         startSessionWatch();
+        if (watching && keepPending) policy.restorePendingIfPlaying();
     }
 
     void onMediaAccessLost() {
@@ -326,6 +328,7 @@ public final class HandoffService extends Service {
             mediaSessions.addOnActiveSessionsChangedListener(sessionsChanged, listener, handler);
             watching = true;
             log("MEDIA_SESSION_WATCH ready");
+            if (ready) mediaInformation(policy.hasPlayback());
         } catch (SecurityException error) {
             stopSessionWatch();
             log("MEDIA_SESSION_WATCH access-required " + error);

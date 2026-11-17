@@ -317,13 +317,72 @@ public class HandoffLifecycleTest {
   listener.onListenerConnected();
   expect(manager.removed==3&&manager.added==4,"onListenerConnected replaces existing registration cleanly");
 
+  // Path 4: Revoke while playing sends media-state false; restoring while still playing resends media-state true without TAKE.
+  MediaController activeBeforeRevoke=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.clear();manager.active.add(activeBeforeRevoke);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(activeBeforeRevoke));
+  probe.packets.clear();
+  nm.notificationAccessGranted=false;
+  manager.active.clear();
+  manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
+  byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
+  byte[] mediaTrue=RoutingPackets.mediaInformation(SELF,PEER,true);
+  byte[] ownershipTrue=RoutingPackets.ownership(true);
+  boolean sentFalseOnRevoke=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentFalseOnRevoke=true;
+  expect(sentFalseOnRevoke,"revocation while playing sends mediaInformation(false)");
+  probe.packets.clear();
+  nm.notificationAccessGranted=true;
+  manager.active.add(activeBeforeRevoke);
+  listener.onListenerConnected();
+  boolean sentTrueOnRestore=false,tookOnRestore=false;
+  for(byte[] p:probe.packets){
+   if(Arrays.equals(p,mediaTrue)) sentTrueOnRestore=true;
+   if(Arrays.equals(p,ownershipTrue)) tookOnRestore=true;
+  }
+  expect(sentTrueOnRestore,"re-grant while playing resyncs mediaInformation(true)");
+  expect(!tookOnRestore,"media state resync on restore must not trigger TAKE");
+  expect(activeBeforeRevoke.paused==0,"media state resync must not pause media");
+
+  // Fresh playback edge after recovery still triggers TAKE.
+  probe.packets.clear();
   MediaController newPlayer=new MediaController(PlaybackState.STATE_PLAYING);
-  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(newPlayer));
-  expect(((Map<?,?>)get(s,"players")).size()==1,"new player is tracked after permission recovery");
+  manager.lastListener.onActiveSessionsChanged(Arrays.asList(activeBeforeRevoke,newPlayer));
+  expect(((Map<?,?>)get(s,"players")).size()==2,"new player is tracked after permission recovery");
+  boolean took=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) took=true;
+  expect(took,"new player playback after permission recovery triggers handoff TAKE");
+ }
+ static void restartPreservesPendingTakeUntilReady()throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();
+  MediaSessionManager manager=new MediaSessionManager();
+  NotificationManager nm=new NotificationManager();
+  HandoffService s=service(manager);s.services.put(NotificationManager.class,nm);
+  s.onCreate();
+  Intent start=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
+  s.onStartCommand(start,0,1);
+  expect(AapProbe.created.size()==1,"initial start creates one probe");
+  AapProbe probe=AapProbe.created.get(0);
+  // Control channel is not ready yet; peer discovered and player starts playing -> pending TAKE queued.
+  ((Set<String>)get(s,"peers")).add(PEER);
+  MediaController playing=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.add(playing);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(playing));
+  expect(((RoutingPolicy)get(s,"policy")).isPending(),"playback while unready queues pending TAKE");
+
+  // Rebuilding listener registration while watching=true must preserve pending TAKE for active playback.
+  PlaybackListener listener=new PlaybackListener();
+  listener.onListenerConnected();
+  expect(manager.removed==1&&manager.added==2,"restartSessionWatch replaces registration");
+  expect(((RoutingPolicy)get(s,"policy")).isPending(),"restartSessionWatch preserves pending TAKE when player still playing");
+
+  // Once control channel becomes ready, the preserved pending TAKE completes handoff.
+  probe.listener.ready();
   boolean took=false;
   byte[] ownershipTrue=RoutingPackets.ownership(true);
   for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) took=true;
-  expect(took,"new player playback after permission recovery triggers handoff TAKE");
+  expect(took,"ready() after listener restart completes preserved pending TAKE");
  }
  static void downgradeReusesSessionWithoutAudioDisruption()throws Exception{
   AapProbe.failStart=true;
@@ -402,6 +461,7 @@ public class HandoffLifecycleTest {
    case "partial-stop":stopPartialWatch();break;
    case "mode-round-trip":modeRoundTripInvalidatesQueuedRouting();break;
    case "permission-recovery":permissionRevokeAndRestoreResumesHandoff();break;
+   case "restart-pending-take":restartPreservesPendingTakeUntilReady();break;
    case "mode-downgrade":downgradeReusesSessionWithoutAudioDisruption();break;
    case "bridge-control-only":bridgeLifecycle("CONTROL_ONLY");break;
    case "bridge-auto-handoff":bridgeLifecycle("AUTO_HANDOFF");break;
@@ -431,6 +491,9 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_media_permission_revoked_and_restored_resumes_handoff(self):
         self.run_scenario('permission-recovery')
+
+    def test_listener_restart_preserves_pending_take_until_ready(self):
+        self.run_scenario('restart-pending-take')
 
     def test_mode_downgrade_reuses_session_without_disconnection(self):
         self.run_scenario('mode-downgrade')

@@ -55,6 +55,16 @@ public final class RoutingTest {
         expect(!resetPolicy.hasPlayback(), "playback cleared after reset");
         expect(!resetPolicy.consumeTake(true, true), "pending take cleared after reset");
         expect(resetPolicy.onPlayback("music", 3) == RoutingPolicy.Action.TAKE, "fresh playback edge can be detected after reset");
+        expect(resetPolicy.isPending(), "pending take reported while playback active");
+        RoutingPolicy reseed = new RoutingPolicy();
+        reseed.seed("music", 3);
+        expect(!reseed.isPending(), "passive seed alone does not create pending take");
+        reseed.restorePendingIfPlaying();
+        expect(reseed.isPending() && reseed.consumeTake(true, true), "pending take restored when active playback remains");
+        RoutingPolicy stoppedReseed = new RoutingPolicy();
+        stoppedReseed.seed("music", 2);
+        stoppedReseed.restorePendingIfPlaying();
+        expect(!stoppedReseed.isPending(), "stopped playback does not restore stale pending take");
         expect(!p.needsClaim(true,true), "already-owned local media must not ask the phone to yield again");
         expect(p.needsClaim(false,true), "local source alone does not establish ownership");
         expect(p.needsClaim(true,false), "ownership without a local source still permits recovery");
