@@ -6,6 +6,8 @@ final class AudioLinkPolicy {
     private Boolean wanted;
     boolean isWanted() { return Boolean.TRUE.equals(wanted); }
     Action want(boolean active, int state) { wanted = active; return update(state); }
+    void reset() { wanted = null; }
+    void clear() { reset(); }
     Action update(int state) {
         if (wanted == null) return Action.NONE;
         if (wanted && state == 0) return Action.CONNECT;

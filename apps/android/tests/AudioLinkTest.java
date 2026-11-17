@@ -14,6 +14,13 @@ public final class AudioLinkTest {
         expect(p.update(2) == AudioLinkPolicy.Action.DISCONNECT, "late connection after yield is torn down");
         expect(p.want(true,0) == AudioLinkPolicy.Action.CONNECT, "new explicit playback can reconnect");
         expect(p.update(2) == AudioLinkPolicy.Action.NONE, "connected owner needs no profile churn");
+        p.want(true, 0);
+        p.reset();
+        expect(p.update(0) == AudioLinkPolicy.Action.NONE, "reset clears wanted and avoids connecting");
+        expect(p.update(2) == AudioLinkPolicy.Action.NONE, "reset avoids disconnecting active link");
+        p.want(false, 2);
+        p.clear();
+        expect(p.update(2) == AudioLinkPolicy.Action.NONE, "clear clears wanted and avoids disconnecting");
         System.out.println("PASS: A2DP ownership lifecycle and takeover/disconnect races");
     }
 }
