@@ -137,7 +137,7 @@ class AapSchedulerTests(unittest.TestCase):
                 file.write_text(text, encoding='utf-8')
                 files.append(str(file))
             package = ROOT / 'apps/android/src/local/airpods/handoffprobe'
-            files += [str(package / name) for name in ('AapProbe.java', 'AapPackets.java')]
+            files += [str(package / name) for name in ('AapProbe.java', 'AapPackets.java', 'AirPodsInformation.java')]
             compile_result = subprocess.run([javac, '-encoding', 'UTF-8', '-d', str(root), *files], capture_output=True, text=True, timeout=30)
             self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
             result = subprocess.run([java, '-cp', str(root), 'local.airpods.handoffprobe.AapSchedulerTest'], capture_output=True, text=True, timeout=10)

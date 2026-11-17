@@ -159,16 +159,19 @@ final class PodControls {
             if(adaptiveSeen){next[i]=EarbudCommands.MODE_ADAPTIVE;labels[i]="自适应";}
             values=next;names=labels;observed=current;setEnabled(enabled);setAlpha(enabled?1:.48f);
             if(!enabled&&dragging)cancelTouch();
-            setStateDescription(current==null?"尚未读取":names[observedIndex()]+(pending?"，请求等待耳机确认":""));
-            bindPosition(observedPosition());invalidate();
+            int index=observedIndex();
+            String label=EarbudUiPolicy.listeningModeLabel(current,values,names);
+            if(pending)label+="，请求等待耳机确认";
+            setStateDescription(label);
+            bindPosition(index>=0?index:position);invalidate();
         }
-        private int observedIndex(){for(int i=0;i<values.length;i++)if(observed!=null&&values[i]==observed)return i;return 0;}
-        @Override float observedPosition(){return observedIndex();}
+        private int observedIndex(){for(int i=0;i<values.length;i++)if(observed!=null&&values[i]==observed)return i;return -1;}
+        @Override float observedPosition(){int index=observedIndex();return index>=0?index:position;}
         @Override protected void onMeasure(int ws,int hs){setMeasuredDimension(resolveSize((int)dp(360),ws),resolveSize((int)dp(94),hs));}
         @Override protected void onDraw(Canvas c) {
             float h=dp(60),width=getWidth(),segment=width/values.length;
             pill(c,0,0,width,h,track);
-            if(observed!=null||dragging) {float x=Math.max(0,Math.min(values.length-1,position))*segment;glass(c,x+dp(3),dp(3),x+segment-dp(3),h-dp(3));}
+            if((observed!=null&&observedIndex()>=0)||dragging) {float x=Math.max(0,Math.min(values.length-1,position))*segment;glass(c,x+dp(3),dp(3),x+segment-dp(3),h-dp(3));}
             for(int i=0;i<values.length;i++) {
                 float center=segment*(i+.5f);
                 Drawable d=values[i]==EarbudCommands.MODE_ANC?anc:values[i]==EarbudCommands.MODE_TRANSPARENCY?transparency:values[i]==EarbudCommands.MODE_ADAPTIVE?adaptive:null;
@@ -186,12 +189,13 @@ final class PodControls {
             if(e.getActionMasked()==MotionEvent.ACTION_CANCEL)cancelTouch();return true;
         }
         @Override public boolean onKeyDown(int key,KeyEvent e) {
-            if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){submit(observedIndex()+(key==KeyEvent.KEYCODE_DPAD_LEFT?-1:1));return true;}
+            if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){submit(EarbudUiPolicy.arrowTarget(observedIndex(),values.length,key==KeyEvent.KEYCODE_DPAD_LEFT));return true;}
             return super.onKeyDown(key,e);
         }
         @Override public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo n) {
             super.onInitializeAccessibilityNodeInfo(n);n.setClassName("android.widget.SeekBar");
-            n.setRangeInfo(AccessibilityNodeInfo.RangeInfo.obtain(AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_INT,0,values.length-1,observedIndex()));
+            int index=observedIndex();
+            if(index>=0)n.setRangeInfo(AccessibilityNodeInfo.RangeInfo.obtain(AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_INT,0,values.length-1,index));
             if(isEnabled())for(int i=0;i<names.length;i++)n.addAction(new AccessibilityNodeInfo.AccessibilityAction(0x01000000+i,"切换到"+names[i]));
         }
         @Override public boolean performAccessibilityAction(int action,Bundle args) {

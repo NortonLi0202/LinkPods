@@ -477,8 +477,13 @@ public final class HandoffService extends Service {
         boolean accepted=earbudState.receive(data);
         byte[] statePacket=AapPackets.normalize(data);
         if(statePacket.length>=6 && statePacket[0]==4 && statePacket[1]==0 && statePacket[2]==4
-                && statePacket[3]==0 && statePacket[5]==0 && (statePacket[4]==4 || statePacket[4]==9))
+                && statePacket[3]==0 && statePacket[5]==0
+                && (statePacket[4]==4 || statePacket[4]==9 || statePacket[4]==0x1d))
             log("EARBUD_STATE opcode="+(statePacket[4]&255)+" len="+statePacket.length+" accepted="+accepted);
+        if(accepted && statePacket[4]==0x1d && deviceConfig!=null) {
+            EarbudSnapshot identity=earbudState.snapshot(deviceConfig.target,SystemClock.elapsedRealtime());
+            log("EARBUD_MODEL "+identity.modelNumber+" known="+identity.modelKnown());
+        }
         Boolean owns = RoutingPackets.ownershipEvent(data, data.length);
         if (owns != null) {
             Boolean previous = this.owns;
