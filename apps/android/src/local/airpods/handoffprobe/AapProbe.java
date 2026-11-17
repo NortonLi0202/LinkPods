@@ -29,9 +29,13 @@ final class AapProbe {
     AapProbe(BluetoothDevice device, Logger logger, Listener listener) {
         this(device, logger); this.listener = listener;
     }
-    private synchronized boolean sendOn(BluetoothSocket expected,byte[] packet) {
+    private boolean sendOn(BluetoothSocket expected,byte[] packet) {
+        return sendOn(expected,packet,() -> true);
+    }
+    private synchronized boolean sendOn(BluetoothSocket expected,byte[] packet,java.util.function.BooleanSupplier allowed) {
         try {
             if (stopped || expected == null || socket != expected || !expected.isConnected()) return false;
+            if (!allowed.getAsBoolean()) return false;
             expected.getOutputStream().write(packet);
             expected.getOutputStream().flush();
             return true;
@@ -45,11 +49,17 @@ final class AapProbe {
         },expected,android.os.SystemClock.uptimeMillis()+delay);
     }
     private void enqueue(BluetoothSocket expected,byte[] packet,java.util.function.Consumer<Boolean> result) {
-        try {writer.execute(() -> result.accept(sendOn(expected,packet)));}
+        enqueue(expected,packet,() -> true,result);
+    }
+    private void enqueue(BluetoothSocket expected,byte[] packet,java.util.function.BooleanSupplier allowed,java.util.function.Consumer<Boolean> result) {
+        try {writer.execute(() -> result.accept(sendOn(expected,packet,allowed)));}
         catch(java.util.concurrent.RejectedExecutionException closed) {result.accept(false);}
     }
     void sendPacketAsync(byte[] packet,java.util.function.Consumer<Boolean> result) {
         enqueue(socket,packet,result);
+    }
+    void sendPacketAsync(byte[] packet,java.util.function.BooleanSupplier allowed,java.util.function.Consumer<Boolean> result) {
+        enqueue(socket,packet,allowed,result);
     }
     void requestState() {
         BluetoothSocket expected=socket;
