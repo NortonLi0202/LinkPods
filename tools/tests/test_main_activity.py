@@ -120,10 +120,12 @@ public class SharedPreferences {
     'android/content/Intent.java': '''package android.content;
 import java.util.*;
 public class Intent {
+ private String action;
  private final Map<String,Object> extras=new HashMap<>();
  public Intent(){}
- public Intent(String a){}
+ public Intent(String a){action=a;}
  public Intent(Context c,Class<?> cls){}
+ public String getAction(){return action;}
  public Intent putExtra(String k,String v){extras.put(k,v);return this;}
  public Intent putExtra(String k,boolean v){extras.put(k,v);return this;}
  public String getStringExtra(String k){return (String)extras.get(k);}
@@ -133,7 +135,7 @@ public class Intent {
  public <T>T getParcelableExtra(String k,Class<T> t){return t.cast(extras.get(k));}
 }''',
     'android/content/ComponentName.java': 'package android.content; public class ComponentName {public ComponentName(Context c,Class<?> t){}}',
-    'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(String a){}}',
+    'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(){}public IntentFilter(String a){}public void addAction(String a){}}',
     'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i);}',
     'android/service/notification/NotificationListenerService.java': 'package android.service.notification; public class NotificationListenerService {public void onListenerConnected(){}public void onListenerDisconnected(){}}',
     'android/app/Activity.java': '''package android.app;
@@ -191,6 +193,7 @@ public class BluetoothDevice {
     'android/bluetooth/BluetoothAdapter.java': '''package android.bluetooth;
 import java.util.*;
 public class BluetoothAdapter {
+ public static final String ACTION_STATE_CHANGED="android.bluetooth.adapter.action.STATE_CHANGED";
  public static final Set<BluetoothDevice> bonded=new LinkedHashSet<>();
  public static boolean checkBluetoothAddress(String s){return s!=null&&s.matches("[0-9A-F]{2}(:[0-9A-F]{2}){5}");}
  public BluetoothDevice getRemoteDevice(String a){return new BluetoothDevice(a);}
@@ -207,14 +210,48 @@ public interface BluetoothProfile {
  int getConnectionState(BluetoothDevice d);
  interface ServiceListener {void onServiceConnected(int k,BluetoothProfile p);void onServiceDisconnected(int k);}
 }''',
+    'android/bluetooth/BluetoothA2dp.java': 'package android.bluetooth; public class BluetoothA2dp {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED";}',
+    'android/bluetooth/BluetoothHeadset.java': 'package android.bluetooth; public class BluetoothHeadset {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED",ACTION_AUDIO_STATE_CHANGED="android.bluetooth.headset.profile.action.AUDIO_STATE_CHANGED";}',
     'android/media/session/MediaSession.java': 'package android.media.session; public class MediaSession {public static class Token {}}',
     'android/media/session/PlaybackState.java': 'package android.media.session; public class PlaybackState {public static final int STATE_PLAYING=3,STATE_BUFFERING=6,STATE_CONNECTING=8;private final int s;public PlaybackState(int s){this.s=s;}public int getState(){return s;}}',
     'android/media/session/MediaController.java': 'package android.media.session; public class MediaController {public String getPackageName(){return "p";}public MediaSession.Token getSessionToken(){return new MediaSession.Token();}public PlaybackState getPlaybackState(){return new PlaybackState(0);}public void registerCallback(Callback c,android.os.Handler h){}public void unregisterCallback(Callback c){}public TransportControls getTransportControls(){return new TransportControls();}public static class Callback{public void onPlaybackStateChanged(PlaybackState s){}}public static class TransportControls{public void pause(){}}}',
     'android/media/session/MediaSessionManager.java': 'package android.media.session; import java.util.*; public class MediaSessionManager {public List<MediaController> getActiveSessions(android.content.ComponentName c){return Collections.emptyList();}public void addOnActiveSessionsChangedListener(OnActiveSessionsChangedListener l,android.content.ComponentName c,android.os.Handler h){}public void removeOnActiveSessionsChangedListener(OnActiveSessionsChangedListener l){}public interface OnActiveSessionsChangedListener{void onActiveSessionsChanged(List<MediaController> l);}}',
-    'android/media/AudioManager.java': 'package android.media; public class AudioManager {public static final int MODE_IN_CALL=2,MODE_IN_COMMUNICATION=3;public interface OnModeChangedListener{void onModeChanged(int m);}public void addOnModeChangedListener(java.util.concurrent.Executor e,OnModeChangedListener l){}public void removeOnModeChangedListener(OnModeChangedListener l){}}',
+    'android/media/AudioManager.java': '''package android.media;
+import java.util.*;
+public class AudioManager {
+ public static final int GET_DEVICES_OUTPUTS=2,MODE_NORMAL=0,MODE_IN_CALL=2,MODE_IN_COMMUNICATION=3;
+ public interface OnModeChangedListener{void onModeChanged(int m);}
+ public interface OnCommunicationDeviceChangedListener{void onCommunicationDeviceChanged(AudioDeviceInfo d);}
+ public static abstract class AudioPlaybackCallback{public void onPlaybackConfigChanged(List<AudioPlaybackConfiguration> c){}}
+ public AudioDeviceInfo[] getDevices(int f){return new AudioDeviceInfo[0];}
+ public int getMode(){return MODE_NORMAL;}
+ public AudioDeviceInfo getCommunicationDevice(){return null;}
+ public List<AudioPlaybackConfiguration> getActivePlaybackConfigurations(){return Collections.emptyList();}
+ public List<AudioDeviceInfo> getAudioDevicesForAttributes(AudioAttributes a){return Collections.emptyList();}
+ public void registerAudioDeviceCallback(AudioDeviceCallback c,android.os.Handler h){}
+ public void unregisterAudioDeviceCallback(AudioDeviceCallback c){}
+ public void registerAudioPlaybackCallback(AudioPlaybackCallback c,android.os.Handler h){}
+ public void unregisterAudioPlaybackCallback(AudioPlaybackCallback c){}
+ public void addOnModeChangedListener(java.util.concurrent.Executor e,OnModeChangedListener l){}
+ public void removeOnModeChangedListener(OnModeChangedListener l){}
+ public void addOnCommunicationDeviceChangedListener(java.util.concurrent.Executor e,OnCommunicationDeviceChangedListener l){}
+ public void removeOnCommunicationDeviceChangedListener(OnCommunicationDeviceChangedListener l){}
+}''',
     'android/media/MediaMetadata.java': 'package android.media; public class MediaMetadata {}',
-    'android/media/AudioAttributes.java': 'package android.media; public class AudioAttributes {}',
-    'android/media/AudioPlaybackConfiguration.java': 'package android.media; public class AudioPlaybackConfiguration {}',
+    'android/media/AudioAttributes.java': '''package android.media;
+public class AudioAttributes {
+ public static final int USAGE_UNKNOWN=0,USAGE_MEDIA=1,USAGE_GAME=14,CONTENT_TYPE_MUSIC=2;
+ public int getUsage(){return USAGE_MEDIA;}
+ public static class Builder{public Builder setUsage(int u){return this;}public Builder setContentType(int c){return this;}public AudioAttributes build(){return new AudioAttributes();}}
+}''',
+    'android/media/AudioDeviceInfo.java': '''package android.media;
+public class AudioDeviceInfo {
+ public static final int TYPE_BUILTIN_EARPIECE=1,TYPE_BUILTIN_SPEAKER=2,TYPE_WIRED_HEADSET=3,TYPE_WIRED_HEADPHONES=4,TYPE_BLUETOOTH_SCO=7,TYPE_BLUETOOTH_A2DP=8,TYPE_USB_DEVICE=11,TYPE_USB_HEADSET=22,TYPE_HEARING_AID=23,TYPE_BLE_HEADSET=26,TYPE_BLE_SPEAKER=27,TYPE_BLE_BROADCAST=30;
+ public int getType(){return TYPE_UNKNOWN;} public static final int TYPE_UNKNOWN=0;
+ public String getAddress(){return "";} public CharSequence getProductName(){return "";}
+}''',
+    'android/media/AudioDeviceCallback.java': 'package android.media; public abstract class AudioDeviceCallback {public void onAudioDevicesAdded(AudioDeviceInfo[] a){}public void onAudioDevicesRemoved(AudioDeviceInfo[] r){}}',
+    'android/media/AudioPlaybackConfiguration.java': 'package android.media; public class AudioPlaybackConfiguration {public AudioAttributes getAudioAttributes(){return null;}public AudioDeviceInfo getAudioDeviceInfo(){return null;}}',
     'android/view/KeyEvent.java': 'package android.view; public class KeyEvent {}',
     'org/lsposed/hiddenapibypass/HiddenApiBypass.java': 'package org.lsposed.hiddenapibypass; public class HiddenApiBypass {public static boolean addHiddenApiExemptions(String... s){return true;}}',
     PACKAGE + 'LinkPodsUi.java': '''package local.airpods.handoffprobe;
@@ -234,6 +271,7 @@ final class LinkPodsUi {
  String page(){return "设备";}
  boolean back(){return false;}
  void bind(EarbudSnapshot s,String a,SessionStatus st){}
+ void bindAudio(SamsungAudioSnapshot s){}
  void bindCapabilities(ConnectionPolicy.Snapshot c,boolean m){}
 }''',
     PACKAGE + 'RootEnvironment.java': '''package local.airpods.handoffprobe;
@@ -377,10 +415,12 @@ class MainActivityBridgeTests(unittest.TestCase):
                 files.append(str(target))
             package = ROOT / 'apps/android/src' / PACKAGE
             names = ('MainActivity', 'HandoffService', 'PlaybackListener', 'SessionMode',
-                     'SessionStatus', 'RoutingPolicy', 'AudioLinkPolicy', 'PeerRoutingPolicy',
-                     'DeviceConfig', 'ConnectionPolicy', 'RequestGate', 'RootAccess',
-                     'RoutingPackets', 'AapPackets', 'SmartRouting', 'EarbudCommands',
-                     'EarbudSnapshot', 'AirPodsModels', 'AirPodsInformation', 'BackendPolicy')
+                     'SessionStatus', 'SamsungAudioMonitor', 'SamsungAudioSnapshot',
+                     'SamsungAudioPolicy', 'RoutingPolicy', 'AudioLinkPolicy',
+                     'PeerRoutingPolicy', 'DeviceConfig', 'ConnectionPolicy', 'RequestGate',
+                     'RootAccess', 'RoutingPackets', 'AapPackets', 'SmartRouting',
+                     'EarbudCommands', 'EarbudSnapshot', 'AirPodsModels',
+                     'AirPodsInformation', 'BackendPolicy')
             files += [str(package / (name + '.java')) for name in names]
             compiled = subprocess.run([javac, '-encoding', 'UTF-8', '-d', str(output), *files],
                                       capture_output=True, text=True, timeout=30)

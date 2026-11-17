@@ -10,17 +10,13 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.content.Intent;
 import android.content.ComponentName;
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.IntentFilter;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSession;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
-import android.media.AudioAttributes;
 import android.media.AudioManager;
-import android.media.AudioPlaybackConfiguration;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -68,8 +64,8 @@ public final class HandoffService extends Service {
     private final Set<String> peers = new HashSet<>();
     private BluetoothAdapter adapter;
     private BluetoothDevice target;
-    private BluetoothProfile a2dp, headset;
     private AudioManager audio;
+    private SamsungAudioMonitor audioMonitor;
     private volatile AapProbe session;
     private volatile boolean stopped;
     private boolean ready;
@@ -98,6 +94,14 @@ public final class HandoffService extends Service {
         HandoffService service=current;
         return service==null ? EarbudSnapshot.empty(targetAddress,"控制服务未运行")
             : service.earbudState.snapshot(targetAddress,SystemClock.elapsedRealtime());
+    }
+    /** Read-only system audio and profile snapshot from the active service monitor. */
+    public static SamsungAudioSnapshot audioSnapshot(String targetAddress) {
+        HandoffService service = current;
+        if (service == null || service.stopped || service.audioMonitor == null) {
+            return SamsungAudioSnapshot.unavailable(targetAddress);
+        }
+        return service.audioMonitor.snapshot(targetAddress);
     }
     public static boolean bridgePrepared() {
         HandoffService service=current;
@@ -157,38 +161,35 @@ public final class HandoffService extends Service {
                 active.requestState();
         });
     }
-    private final BroadcastReceiver audioStateReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context context, Intent intent) {
-            BluetoothDevice device = android.os.Build.VERSION.SDK_INT>=33
-                ? intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice.class)
-                : intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-            if (stopped || target == null || !target.equals(device)) return;
-            int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE,-1);
-            log("A2DP_STATE " + state);
-            if (mode.allowsRouting()) applyAudioLink(audioLink.update(state));
-        }
-    };
     private final Map<MediaSession.Token, MediaController> players = new HashMap<>();
     private final Map<MediaSession.Token, MediaController.Callback> playerCallbacks = new HashMap<>();
     private final MediaSessionManager.OnActiveSessionsChangedListener sessionsChanged = list -> watchPlayers(list, false);
-    private final AudioManager.OnModeChangedListener modeListener = audioMode -> {
-        log("AUDIO_MODE " + audioMode);
-        if (ready && mode.allowsRouting() && (audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_IN_COMMUNICATION)) take("call");
-    };
-    private final BluetoothProfile.ServiceListener profiles = new BluetoothProfile.ServiceListener() {
-        @Override public void onServiceConnected(int kind, BluetoothProfile proxy) {
-            if (stopped) { adapter.closeProfileProxy(kind, proxy); return; }
-            if (kind == BluetoothProfile.A2DP) a2dp = proxy;
-            if (kind == BluetoothProfile.HEADSET) headset = proxy;
-            log("PROFILE ready=" + kind);
-            if (kind == BluetoothProfile.A2DP && target != null && mode.allowsRouting())
-                applyAudioLink(audioLink.update(a2dp.getConnectionState(target)));
+    private final SamsungAudioMonitor.Listener audioMonitorListener = new SamsungAudioMonitor.Listener() {
+        @Override public void onAudioSnapshotChanged(SamsungAudioSnapshot snapshot) {}
+        @Override public void onA2dpStateChanged(String address, int state) {
+            if (stopped || target == null || !target.getAddress().equalsIgnoreCase(address)) return;
+            log("A2DP_STATE " + state);
+            if (mode.allowsRouting()) applyAudioLink(audioLink.update(state));
         }
-        @Override public void onServiceDisconnected(int kind) {
-            if (kind == BluetoothProfile.A2DP) a2dp = null;
-            if (kind == BluetoothProfile.HEADSET) headset = null;
+        @Override public void onA2dpProxyReady(BluetoothProfile proxy) {
+            log("PROFILE ready=" + BluetoothProfile.A2DP);
+            if (!stopped && target != null && mode.allowsRouting()) {
+                applyAudioLink(audioLink.update(proxy.getConnectionState(target)));
+            }
+        }
+        @Override public void onAudioModeChanged(int audioMode) {
+            log("AUDIO_MODE " + audioMode);
+            if (ready && mode.allowsRouting() && (audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_IN_COMMUNICATION)) take("call");
         }
     };
+
+    private BluetoothProfile a2dpProxy() {
+        return audioMonitor == null ? null : audioMonitor.a2dpProxy();
+    }
+
+    private BluetoothProfile headsetProxy() {
+        return audioMonitor == null ? null : audioMonitor.headsetProxy();
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -203,12 +204,8 @@ public final class HandoffService extends Service {
             .setContentTitle("LinkPods 耳机控制")
             .setContentText("保持耳机控制通道；可在应用内停止")
             .setOngoing(true).build());
-        adapter.getProfileProxy(this, profiles, BluetoothProfile.A2DP);
-        adapter.getProfileProxy(this, profiles, BluetoothProfile.HEADSET);
-        IntentFilter audioFilter=new IntentFilter("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED");
-        if(android.os.Build.VERSION.SDK_INT>=33)registerReceiver(audioStateReceiver,audioFilter,Context.RECEIVER_EXPORTED);
-        else registerReceiver(audioStateReceiver,audioFilter);
-        audio.addOnModeChangedListener(getMainExecutor(), modeListener);
+        audioMonitor = new SamsungAudioMonitor(this, handler, audioMonitorListener);
+        audioMonitor.start();
         log("SERVICE created");
     }
 
@@ -239,6 +236,7 @@ public final class HandoffService extends Service {
         if (deviceConfig == null) earbudState.begin(requested.target);
         deviceConfig = merged;
         selfMac = deviceConfig.local;
+        if (audioMonitor != null) audioMonitor.setTargetAddress(deviceConfig.target);
         SessionMode requestedMode = SessionMode.CONTROL_ONLY;
         String modeName = intent.getStringExtra(EXTRA_SESSION_MODE);
         if (modeName != null) {
@@ -618,6 +616,8 @@ public final class HandoffService extends Service {
         else log("KEEP existing-local-ownership");
         mediaInformation(true);
         if (claim) for (String peer : peers) send(RoutingPackets.hijack(peer,"ManualRoute"), "manual-route-request");
+        BluetoothProfile a2dp = a2dpProxy();
+        BluetoothProfile headset = headsetProxy();
         applyAudioLink(audioLink.want(true,a2dp == null ? 0 : a2dp.getConnectionState(target)));
         if (reason.equals("call") && headset != null && headset.getConnectionState(target) == BluetoothProfile.STATE_DISCONNECTED)
             profileAction(headset, "connect");
@@ -651,11 +651,13 @@ public final class HandoffService extends Service {
                 log("PAUSE yielded-media package=" + player.getPackageName());
             }
         }
+        BluetoothProfile a2dp = a2dpProxy();
         applyAudioLink(audioLink.want(false,a2dp == null ? 0 : a2dp.getConnectionState(target)));
     }
 
     private void applyAudioLink(AudioLinkPolicy.Action action) {
         if (!mode.allowsRouting()) return;
+        BluetoothProfile a2dp = a2dpProxy();
         if (action == AudioLinkPolicy.Action.CONNECT) profileAction(a2dp,"connect");
         if (action == AudioLinkPolicy.Action.DISCONNECT) profileAction(a2dp,"disconnect");
     }
@@ -697,10 +699,7 @@ public final class HandoffService extends Service {
         handler.removeCallbacksAndMessages(null);
         if (session != null) session.stop();
         stopSessionWatch();
-        audio.removeOnModeChangedListener(modeListener);
-        unregisterReceiver(audioStateReceiver);
-        if (a2dp != null) adapter.closeProfileProxy(BluetoothProfile.A2DP, a2dp);
-        if (headset != null) adapter.closeProfileProxy(BluetoothProfile.HEADSET, headset);
+        if (audioMonitor != null) audioMonitor.stop();
         log("SERVICE stopped");
         super.onDestroy();
     }
