@@ -4,7 +4,7 @@
 
 LinkPods is an AirPods companion application for Android providing a responsive tablet split-pane / phone single-column native UI, custom-drawn sliders, current Android media volume controls, and decoupled data paths for earbud control and optional cross-device handoff.
 
-This repository contains only the **v1.0 / build101 / lp.pods source snapshot**—no legacy experimental history, APKs, private keys, or device logs are included. Phase 1 work for standalone earbud control (`CONTROL_ONLY`), routing side-effect isolation, and separated session status presentation is implemented in source and covered by host tests; physical-device validation of actual earbud behavior, bidirectional audio, and cross-device stability (starting with the `SM-X810` baseline matrix) is still pending. See [v1.0 Release Notes](docs/release/v1.0.md) and [Known Issues](docs/issues/README.md) for current limitations and acceptance criteria.
+The current version is the **v1.1 / build102 / lp.pods prerelease**. APKs and checksums are available from [GitHub Releases](https://github.com/NortonLi0202/LinkPods/releases/tag/v1.1). Git tracks source and required build resources; legacy experimental history, APKs, private keys, and device logs are excluded. Phase 1 work for standalone earbud control (`CONTROL_ONLY`), routing side-effect isolation, and separated session status presentation is implemented in source and covered by host tests; physical-device validation of actual earbud behavior, bidirectional audio, and cross-device stability (starting with the `SM-X810` baseline matrix) is still pending. See [v1.1 Release Notes](docs/release/v1.1.md) and [Known Issues](docs/issues/README.md) for current limitations and acceptance criteria.
 
 ## Features & Requirements
 

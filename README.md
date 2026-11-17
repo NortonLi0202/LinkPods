@@ -4,7 +4,7 @@
 
 LinkPods 是 Android 上的 AirPods 伴侣应用，提供平板分栏／手机单列的原生设置界面、自绘拖动控件、当前 Android 媒体音量，以及独立耳机控制与可选双向交接的数据路径。
 
-本仓库仅包含 **v1.0 / build101 / lp.pods 的源码快照**，不包含旧实验历史、APK、私钥或设备日志。第一阶段独立控制会话（`CONTROL_ONLY`）、路由副作用隔离与分栏状态界面已完成源码与主机测试接入；耳机实际控制听感、双向音频及跨设备稳定性真机验收仍在进行（首轮基线为 `SM-X810`）。已知限制与验收矩阵见 [v1.0 说明](docs/release/v1.0.md) 与 [已知问题](docs/issues/README.md)。
+当前版本为 **v1.1 / build102 / lp.pods 预发布**，APK 与校验文件见 [GitHub Release](https://github.com/NortonLi0202/LinkPods/releases/tag/v1.1)。Git 仅收录源码及必要构建资源，不收录旧实验历史、APK、私钥或设备日志。第一阶段独立控制会话（`CONTROL_ONLY`）、路由副作用隔离与分栏状态界面已完成源码与主机测试接入；耳机实际控制听感、双向音频及跨设备稳定性真机验收仍在进行（首轮基线为 `SM-X810`）。已知限制与验收矩阵见 [v1.1 说明](docs/release/v1.1.md) 与 [已知问题](docs/issues/README.md)。
 
 ## 功能与要求
 
