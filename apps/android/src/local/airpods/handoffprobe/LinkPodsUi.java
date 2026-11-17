@@ -43,6 +43,7 @@ final class LinkPodsUi {
     private PodControls.VolumeSlider volume;
     private final ArrayList<SettingRow> settings=new ArrayList<>();
     private EarbudSnapshot snapshot;
+    private SessionStatus sessionStatus;
     private ConnectionPolicy.Snapshot capabilities;
     private boolean mediaGranted;
     private TextView capabilitiesStatus;
@@ -97,7 +98,7 @@ final class LinkPodsUi {
         else if(SETTINGS.equals(page))appSettings();
         else advanced(page);
         activity.setContentView(root);root.requestApplyInsets();
-        if(snapshot!=null)bind(snapshot,target);else updateLocalVolume();
+        if(snapshot!=null)bind(snapshot,target,sessionStatus);else updateLocalVolume();
         bindCapabilities(capabilities,mediaGranted);
     }
     private void buildSidebar(int width){
@@ -172,17 +173,18 @@ final class LinkPodsUi {
     private void submit(int id,int value){boolean accepted=actions.setSetting(id,value);message(accepted?"已提交，等待耳机确认":"当前无法更改，请检查耳机控制通道");}
     private void message(String value){if(feedback!=null)feedback.setText(value);Toast.makeText(activity,value,Toast.LENGTH_SHORT).show();}
     void bind(EarbudSnapshot state,String address){
-        bind(state,address,null);
+        bind(state,address,sessionStatus);
     }
     void bind(EarbudSnapshot state,String address,SessionStatus status){
         if(!target.equals(address==null?"":address)){target=address==null?"":address;lastLeft=null;lastRight=null;lastCase=null;if(noise!=null)noise.resetCapabilities();}
-        snapshot=state;
+        snapshot=state;sessionStatus=status;
         if(title!=null&&HOME.equals(page))title.setText(actions.deviceName());
         if(deviceNameValue!=null)deviceNameValue.setText(actions.deviceName()+"  ›");
         if(sidebarDevice!=null)sidebarDevice.setText("◉  "+actions.deviceName());
         if(connection!=null)connection.setText("系统音频："+actions.connectionStatus());
         if(session!=null){
             String ctrl=status!=null&&status.serviceRunning?status.controlDescription:(state.status==null?(state.ready?"通道就绪":"未连接"):state.status);
+            if(state.status!=null&&state.status.contains("未确认")) ctrl=ctrl+"（"+state.status+"）";
             session.setText("耳机控制："+ctrl);
         }
         if(handoff!=null){
