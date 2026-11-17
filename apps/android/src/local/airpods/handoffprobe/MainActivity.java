@@ -87,6 +87,13 @@ public class MainActivity extends Activity {
         setTheme(dark?android.R.style.Theme_Material_NoActionBar:android.R.style.Theme_Material_Light_NoActionBar);
         super.onCreate(state);
         restoredTarget = state == null ? null : state.getString("selected_device");
+        if (state != null) {
+            String savedMode = state.getString("requested_mode");
+            if (savedMode != null) {
+                try { requestedMode = SessionMode.valueOf(savedMode); }
+                catch (IllegalArgumentException ignored) {}
+            }
+        }
         picker = new Spinner(this);
         ui = new LinkPodsUi(this, picker, new LinkPodsUi.Actions() {
             @Override public void openBluetooth() { startActivity(new Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)); }
@@ -174,6 +181,7 @@ public class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle state) {
         if(ui!=null)state.putString("ui_page",ui.page());
         BluetoothDevice target=selected();if(target!=null)state.putString("selected_device",target.getAddress());
+        state.putString("requested_mode",requestedMode.name());
         super.onSaveInstanceState(state);
     }
     @Override public void onBackPressed() {if(ui==null || !ui.back())super.onBackPressed();}
@@ -296,15 +304,24 @@ public class MainActivity extends Activity {
         log("已请求停止会话；仅清理本次应用实际启动的桥接。");
         refreshControls();
     }
-    private void confirmTemporaryRoot() {
+    private void confirmTemporaryRoot(final SessionMode launchMode) {
         new android.app.AlertDialog.Builder(this).setTitle("运行临时 Root")
             .setMessage("将先复用已有 Root；没有时，仅在系统精确匹配适配方案后运行漏洞。临时 Root 重启后失效。请选择耳机后继续。")
-            .setPositiveButton("继续",(dialog,which)->prepareEnvironment(true,true))
-            .setNegativeButton("仅连接耳机",(dialog,which)->startServicePrepared(requestedMode)).show();
+            .setPositiveButton("继续",(dialog,which)->prepareEnvironment(true,true,launchMode))
+            .setNegativeButton("仅连接耳机",(dialog,which)->startServicePrepared(launchMode)).show();
     }
     private void prepareEnvironment(boolean enable) { prepareEnvironment(enable,false); }
 
     private void prepareEnvironment(boolean enable,boolean allowTemporary) {
+        String requestedTarget=selected()==null?null:selected().getAddress();
+        SessionMode fixedMode=enable
+            ? SessionMode.forBridgePreparation(HandoffService.sessionStatus(requestedTarget))
+            : requestedMode;
+        if(enable) requestedMode=fixedMode;
+        prepareEnvironment(enable,allowTemporary,fixedMode);
+    }
+
+    private void prepareEnvironment(boolean enable,boolean allowTemporary,final SessionMode launchMode) {
         if (environmentRequests.pending()) { log("正在检查运行环境，请等待。"); return; }
         if (enable && (!hasPermission() || selected()==null)) { log("请先授权并选择耳机。"); return; }
         long request=environmentRequests.begin();
@@ -362,11 +379,11 @@ public class MainActivity extends Activity {
                     if(selected()==null || !selected().getAddress().equalsIgnoreCase(requestedTarget)) {
                         nativeBackendReady=false;queueBridgeStop(prepared);log("设备选择已变化，已请求清理本次桥接，请重新启用。");return;
                     }
-                    if(!allowTemporary && result.status==RootAccess.Status.UNSUPPORTED && prepared.temporarySupported) {confirmTemporaryRoot();return;}
+                    if(!allowTemporary && result.status==RootAccess.Status.UNSUPPORTED && prepared.temporarySupported) {confirmTemporaryRoot(launchMode);return;}
                     if (!result.ready()) log("仅尝试当前系统的控制通道，不启用原生桥接；通道成功不代表双向交接已验证。");
                     if(RootEnvironment.bridgeUsable(prepared))bridgeToStart=prepared;
                     else queueBridgeStop(prepared);
-                    startServicePrepared(requestedMode);
+                    startServicePrepared(launchMode);
                 }
             });
         });

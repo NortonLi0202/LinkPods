@@ -18,6 +18,8 @@ final class RoutingPolicy {
         return active && !previous ? Action.TAKE : Action.NONE;
     }
     boolean hasPlayback() { return playing.containsValue(Boolean.TRUE); }
+    boolean isPending() { return pending; }
+    void restorePendingIfPlaying() { if (hasPlayback()) pending = true; }
     void reset() { playing.clear(); pending = false; }
     boolean needsClaim(boolean owned, boolean localMedia) { return !owned || !localMedia; }
     void remove(String player) {

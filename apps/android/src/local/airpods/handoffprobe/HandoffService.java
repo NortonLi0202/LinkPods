@@ -115,10 +115,11 @@ public final class HandoffService extends Service {
         }
         SessionMode mode = service.mode;
         boolean ready = service.ready;
+        boolean watchActive = service.watching && service.mediaAccessGranted();
         ConnectionPolicy.Snapshot conn = service.connection.snapshot(targetAddress);
         String ctrl = ready ? (service.nativeBackendReady ? "桥接控制通道已连接" : "直连控制通道已连接") : conn.description;
         String handoff = mode == SessionMode.AUTO_HANDOFF
-            ? (service.watching ? "运行中（随播放交接）" : "已开启（等待媒体权限）")
+            ? (watchActive ? "运行中（随播放交接）" : "已开启（等待媒体权限）")
             : "关闭（纯控制模式）";
         return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff);
     }
@@ -296,6 +297,28 @@ public final class HandoffService extends Service {
         return START_NOT_STICKY;
     }
 
+    private boolean mediaAccessGranted() {
+        if (android.os.Build.VERSION.SDK_INT < 27) return true;
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        return nm == null || nm.isNotificationListenerAccessGranted(new ComponentName(this, PlaybackListener.class));
+    }
+
+    void restartSessionWatch() {
+        if (stopped || mode != SessionMode.AUTO_HANDOFF) return;
+        boolean keepPending = watching && policy.isPending();
+        if (watching) stopSessionWatch();
+        startSessionWatch();
+        if (watching && keepPending) policy.restorePendingIfPlaying();
+    }
+
+    void onMediaAccessLost() {
+        if (stopped) return;
+        if (watching || !players.isEmpty() || !playerCallbacks.isEmpty()) {
+            stopSessionWatch();
+            log("MEDIA_SESSION_WATCH access-lost");
+        }
+    }
+
     void startSessionWatch() {
         if (watching || stopped || mode != SessionMode.AUTO_HANDOFF) return;
         try {
@@ -305,6 +328,7 @@ public final class HandoffService extends Service {
             mediaSessions.addOnActiveSessionsChangedListener(sessionsChanged, listener, handler);
             watching = true;
             log("MEDIA_SESSION_WATCH ready");
+            if (ready) mediaInformation(policy.hasPlayback());
         } catch (SecurityException error) {
             stopSessionWatch();
             log("MEDIA_SESSION_WATCH access-required " + error);
@@ -353,6 +377,10 @@ public final class HandoffService extends Service {
             }
         }
         if (ready && !policy.hasPlayback()) mediaInformation(false);
+        if (!passive && (list == null || list.isEmpty()) && !mediaAccessGranted()) {
+            stopSessionWatch();
+            log("MEDIA_SESSION_WATCH access-lost");
+        }
     }
 
     private void playerState(MediaController controller, PlaybackState state) {

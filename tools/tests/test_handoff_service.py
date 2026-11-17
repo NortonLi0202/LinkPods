@@ -31,6 +31,7 @@ import java.util.*;
 public class Intent {
  private final Map<String,Object> extras=new HashMap<>();
  public Intent putExtra(String k,String v){extras.put(k,v);return this;}
+ public Intent putExtra(String k,boolean v){extras.put(k,v);return this;}
  public String getStringExtra(String k){return (String)extras.get(k);}
  public boolean getBooleanExtra(String k,boolean d){return extras.containsKey(k)?(Boolean)extras.get(k):d;}
  public int getIntExtra(String k,int d){return extras.containsKey(k)?(Integer)extras.get(k):d;}
@@ -40,6 +41,11 @@ public class Intent {
     'android/content/ComponentName.java': 'package android.content; public class ComponentName {public ComponentName(Context c,Class<?> t){}}',
     'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(String a){}}',
     'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i);}',
+    'android/service/notification/NotificationListenerService.java': '''package android.service.notification;
+public class NotificationListenerService {
+ public void onListenerConnected(){}
+ public void onListenerDisconnected(){}
+}''',
     'android/app/Service.java': '''package android.app;
 public class Service extends android.content.Context {
  public static final int START_NOT_STICKY=2;
@@ -55,8 +61,14 @@ public class Notification {public static class Builder {
  public Builder setContentText(String s){return this;} public Builder setOngoing(boolean b){return this;}
  public Notification build(){return new Notification();}}}''',
     'android/app/NotificationChannel.java': 'package android.app; public class NotificationChannel {public NotificationChannel(String a,String b,int c){}}',
-    'android/app/NotificationManager.java': '''package android.app; public class NotificationManager {
- public static final int IMPORTANCE_LOW=2; public void createNotificationChannel(NotificationChannel c){} public void notify(int i,Notification n){} }''',
+    'android/app/NotificationManager.java': '''package android.app;
+public class NotificationManager {
+ public static final int IMPORTANCE_LOW=2;
+ public boolean notificationAccessGranted=true;
+ public void createNotificationChannel(NotificationChannel c){}
+ public void notify(int i,Notification n){}
+ public boolean isNotificationListenerAccessGranted(android.content.ComponentName c){return notificationAccessGranted;}
+}''',
     'android/R.java': 'package android; public class R {public static class drawable {public static final int stat_sys_data_bluetooth=1;}}',
     'android/bluetooth/BluetoothAdapter.java': '''package android.bluetooth;
 public class BluetoothAdapter {
@@ -82,23 +94,34 @@ public class PlaybackState {public static final int STATE_PLAYING=3,STATE_BUFFER
     'android/media/session/MediaController.java': '''package android.media.session;
 import java.util.*;
 public class MediaController {
- public final Set<Callback> callbacks=new HashSet<>(); public int registered,unregistered;
+ public final Set<Callback> callbacks=new HashSet<>(); public int registered,unregistered,paused;
+ private int playbackState=3;
  private final MediaSession.Token token=new MediaSession.Token();
+ public MediaController(){}
+ public MediaController(int state){playbackState=state;}
  public String getPackageName(){return "host.player";}
  public MediaSession.Token getSessionToken(){return token;}
- public PlaybackState getPlaybackState(){return new PlaybackState(3);}
+ public PlaybackState getPlaybackState(){return new PlaybackState(playbackState);}
  public void registerCallback(Callback c,android.os.Handler h){callbacks.add(c);registered++;}
  public void unregisterCallback(Callback c){callbacks.remove(c);unregistered++;}
- public TransportControls getTransportControls(){return new TransportControls();}
+ public TransportControls getTransportControls(){return new TransportControls(this);}
  public static class Callback {public void onPlaybackStateChanged(PlaybackState s){}}
- public static class TransportControls {public void pause(){}}
+ public static class TransportControls {
+  private final MediaController owner;
+  TransportControls(MediaController o){owner=o;}
+  public void pause(){owner.paused++;}
+ }
 }''',
     'android/media/session/MediaSessionManager.java': '''package android.media.session;
 import java.util.*;
 public class MediaSessionManager {
- public List<MediaController> active=new ArrayList<>();public boolean rejectRegistration;public int removed;
+ public List<MediaController> active=new ArrayList<>();public boolean rejectRegistration;public int added,removed;
+ public OnActiveSessionsChangedListener lastListener;
  public List<MediaController> getActiveSessions(android.content.ComponentName c){return active;}
- public void addOnActiveSessionsChangedListener(OnActiveSessionsChangedListener l,android.content.ComponentName c,android.os.Handler h){if(rejectRegistration)throw new SecurityException("permission revoked");}
+ public void addOnActiveSessionsChangedListener(OnActiveSessionsChangedListener l,android.content.ComponentName c,android.os.Handler h){
+  if(rejectRegistration)throw new SecurityException("permission revoked");
+  added++;lastListener=l;
+ }
  public void removeOnActiveSessionsChangedListener(OnActiveSessionsChangedListener l){removed++;}
  public interface OnActiveSessionsChangedListener {void onActiveSessionsChanged(List<MediaController> l);}
 }''',
@@ -115,39 +138,53 @@ public class AudioManager {public static final int MODE_IN_CALL=2,MODE_IN_COMMUN
     'android/os/Build.java': 'package android.os; public class Build {public static class VERSION {public static final int SDK_INT=36;}}',
     'android/os/Looper.java': 'package android.os; public class Looper {public static Looper getMainLooper(){return new Looper();}}',
     'android/os/SystemClock.java': 'package android.os; public class SystemClock {public static long elapsedRealtime(){return 0;}}',
-    'android/os/Handler.java': '''package android.os; public class Handler {
+    'android/os/Handler.java': '''package android.os;
+public class Handler {
+ public final java.util.List<Runnable> delayed=new java.util.ArrayList<>();
  public Handler(Looper l){}public boolean post(Runnable r){r.run();return true;}
- public boolean postDelayed(Runnable r,long d){return true;}public void removeCallbacksAndMessages(Object t){} }''',
+ public boolean postDelayed(Runnable r,long d){delayed.add(r);return true;}
+ public void flushDelayed(){for(Runnable r:new java.util.ArrayList<>(delayed))r.run();delayed.clear();}
+ public void removeCallbacksAndMessages(Object t){delayed.clear();}
+}''',
     'android/util/Log.java': 'package android.util; public class Log {public static int i(String t,String m){return 0;}public static int e(String t,String m,Throwable e){return 0;}}',
     'org/lsposed/hiddenapibypass/HiddenApiBypass.java': 'package org.lsposed.hiddenapibypass; public class HiddenApiBypass {public static boolean addHiddenApiExemptions(String... s){return true;}}',
-    PACKAGE + 'PlaybackListener.java': 'package local.airpods.handoffprobe; class PlaybackListener {}',
     PACKAGE + 'RootEnvironment.java': '''package local.airpods.handoffprobe;
 class RootEnvironment {
  static final java.util.concurrent.ExecutorService WORK=java.util.concurrent.Executors.newSingleThreadExecutor();
+ static final java.util.List<Prepared> stoppedBridges=new java.util.ArrayList<>();
+ static boolean nextBridgeUsable=false,nextAcceptBridge=false;
  static class Lease {boolean sameInstance(Lease l){return this==l;}}
- static class Prepared {boolean bridgeOwned;String targetAddress,local,adapterId,missing,diagnostic;Lease lease;}
- static boolean bridgeUsable(Prepared p){return false;}static boolean acceptBridge(Prepared p){return false;}
- static void queueBridgeStop(Prepared p){}static void markBridgeStopping(Prepared p){}
- static boolean stopOwnedBridge(Prepared p){return true;}
+ static class Prepared {boolean bridgeOwned;String targetAddress="",local="",adapterId="",missing="",diagnostic="";Lease lease=new Lease();}
+ static boolean bridgeUsable(Prepared p){return nextBridgeUsable&&p!=null;}
+ static boolean acceptBridge(Prepared p){return nextAcceptBridge&&p!=null;}
+ static void queueBridgeStop(Prepared p){if(p!=null&&p.bridgeOwned)stoppedBridges.add(p);}
+ static void markBridgeStopping(Prepared p){}
+ static boolean stopOwnedBridge(Prepared p){if(p!=null&&p.bridgeOwned)stoppedBridges.add(p);return true;}
  static Prepared prepare(android.content.Context c,String a,boolean r,boolean t){throw new AssertionError("unexpected Root request");}
 }''',
     PACKAGE + 'AapProbe.java': '''package local.airpods.handoffprobe;
 class AapProbe {
  interface Logger {void write(String m);}enum Failure {COMPATIBILITY_REQUIRED,OTHER}
  interface Listener {void ready();void packet(byte[] b);void ended();default void failure(Failure f){}}
+ static final java.util.List<AapProbe> created=new java.util.ArrayList<>();
+ static boolean failStart=false;
+ final Listener listener;
  final java.util.List<byte[]> packets=new java.util.ArrayList<>();
  final java.util.List<Runnable> queued=new java.util.ArrayList<>();boolean holdWrites;
- AapProbe(android.bluetooth.BluetoothDevice d,Logger l,Listener x){}
+ int started,stopped;
+ AapProbe(android.bluetooth.BluetoothDevice d,Logger l,Listener x){listener=x;created.add(this);}
  void sendPacketAsync(byte[] b,java.util.function.Consumer<Boolean> done){sendPacketAsync(b,()->true,done);}
  void sendPacketAsync(byte[] b,java.util.function.BooleanSupplier guard,java.util.function.Consumer<Boolean> done){
   Runnable task=()->{boolean ok=guard.getAsBoolean();if(ok)packets.add(b);done.accept(ok);};
   if(holdWrites)queued.add(task);else task.run();
  }
  void flush(){for(Runnable task:new java.util.ArrayList<>(queued))task.run();queued.clear();}
- void requestState(){}void start(){throw new AssertionError("ready connection must be reused");}void stop(){}
+ void requestState(){}
+ void start(){started++;if(failStart)throw new AssertionError("ready connection must be reused");}
+ void stop(){stopped++;}
 }''',
     PACKAGE + 'HandoffLifecycleTest.java': '''package local.airpods.handoffprobe;
-import android.content.*;import android.media.session.*;import java.lang.reflect.*;import java.util.*;
+import android.app.*;import android.bluetooth.*;import android.content.*;import android.media.*;import android.media.session.*;import android.os.*;import java.lang.reflect.*;import java.util.*;
 public class HandoffLifecycleTest {
  static final String TARGET="AA:BB:CC:DD:EE:01",SELF="AA:BB:CC:DD:EE:02",PEER="AA:BB:CC:DD:EE:03";
  static void expect(boolean b,String why){if(!b)throw new AssertionError(why);}
@@ -155,9 +192,15 @@ public class HandoffLifecycleTest {
  static void set(Object o,String n,Object v)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);f.set(o,v);}
  static HandoffService service(MediaSessionManager manager)throws Exception{
   HandoffService s=new HandoffService();HandoffService.current=s;s.services.put(MediaSessionManager.class,manager);
-  set(s,"adapter",new android.bluetooth.BluetoothAdapter());return s;
+  s.services.put(AudioManager.class,new AudioManager());
+  s.services.put(BluetoothManager.class,new BluetoothManager());
+  s.services.put(NotificationManager.class,new NotificationManager());
+  set(s,"adapter",new BluetoothAdapter());
+  set(s,"audio",new AudioManager());
+  return s;
  }
  static void upgradeWithLocalIdentity(boolean initiallyKnown)throws Exception{
+  AapProbe.failStart=true;
   HandoffService s=service(new MediaSessionManager());
   set(s,"deviceConfig",DeviceConfig.create(TARGET,initiallyKnown?SELF:"",PEER));set(s,"selfMac",initiallyKnown?SELF:"");
   set(s,"peerMac",PEER);set(s,"ready",true);
@@ -211,6 +254,7 @@ public class HandoffLifecycleTest {
   expect(manager.removed==0,"partial watch has no registered active listener");
  }
  static void modeRoundTripInvalidatesQueuedRouting()throws Exception{
+  AapProbe.failStart=true;
   HandoffService s=service(new MediaSessionManager());set(s,"mode",SessionMode.AUTO_HANDOFF);
   set(s,"deviceConfig",DeviceConfig.create(TARGET,SELF,PEER));set(s,"selfMac",SELF);set(s,"peerMac",PEER);set(s,"ready",true);
   ConnectionPolicy connection=(ConnectionPolicy)get(s,"connection");connection.start(TARGET,false);connection.ready(connection.generation(),TARGET);
@@ -225,6 +269,190 @@ public class HandoffLifecycleTest {
   send.invoke(s,packet,"fresh-routing");probe.flush();
   expect(probe.packets.size()==1&&Arrays.equals(probe.packets.get(0),packet),"fresh routing after mode round trip must work");
  }
+ static void permissionRevokeAndRestoreResumesHandoff()throws Exception{
+  AapProbe.failStart=true;
+  MediaSessionManager manager=new MediaSessionManager();
+  NotificationManager nm=new NotificationManager();
+  HandoffService s=service(manager);s.services.put(NotificationManager.class,nm);
+  set(s,"deviceConfig",DeviceConfig.create(TARGET,SELF,PEER));set(s,"selfMac",SELF);set(s,"peerMac",PEER);set(s,"ready",true);
+  set(s,"target",new BluetoothDevice(TARGET));
+  ((Set<String>)get(s,"peers")).add(PEER);
+  ConnectionPolicy connection=(ConnectionPolicy)get(s,"connection");
+  connection.start(TARGET,false);connection.ready(connection.generation(),TARGET);
+  AapProbe probe=new AapProbe(null,m->{},null);set(s,"session",probe);
+  set(s,"mode",SessionMode.AUTO_HANDOFF);
+
+  PlaybackListener listener=new PlaybackListener();
+  listener.onListenerConnected();
+  expect(manager.added==1,"initial grant registers media listener once");
+  expect((Boolean)get(s,"watching"),"watching becomes true after initial grant");
+  expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("运行中"),"UI reports handoff running when watch active");
+
+  // Path 1: Android revokes access -> removes server listener and emits empty list.
+  nm.notificationAccessGranted=false;
+  manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
+  expect(!(Boolean)get(s,"watching"),"revoked empty-list callback clears watching state");
+  expect(manager.removed==1,"revoked empty-list callback removes old listener registration");
+  expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("等待媒体权限"),"UI reports waiting for media access after revocation");
+
+  // Re-grant -> onListenerConnected must register a fresh listener.
+  nm.notificationAccessGranted=true;
+  listener.onListenerConnected();
+  expect(manager.added==2,"re-grant registers a fresh media listener");
+  expect((Boolean)get(s,"watching"),"watching resumes after re-grant");
+  expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("运行中"),"UI reports running again after re-grant");
+
+  // Path 2: onListenerDisconnected revokes access, then re-grant + new player starts playback.
+  nm.notificationAccessGranted=false;
+  listener.onListenerDisconnected();
+  expect(!(Boolean)get(s,"watching"),"onListenerDisconnected clears watching state");
+  expect(manager.removed==2,"onListenerDisconnected removes active listener registration");
+  expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("等待媒体权限"),"UI reports waiting for media access after disconnect");
+
+  nm.notificationAccessGranted=true;
+  listener.onListenerConnected();
+  expect(manager.added==3,"second re-grant registers media listener again");
+
+  // Path 3: Even if watching stayed true during a race, onListenerConnected removes stale registration and re-registers.
+  listener.onListenerConnected();
+  expect(manager.removed==3&&manager.added==4,"onListenerConnected replaces existing registration cleanly");
+
+  // Path 4: Revoke while playing sends media-state false; restoring while still playing resends media-state true without TAKE.
+  MediaController activeBeforeRevoke=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.clear();manager.active.add(activeBeforeRevoke);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(activeBeforeRevoke));
+  probe.packets.clear();
+  nm.notificationAccessGranted=false;
+  manager.active.clear();
+  manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
+  byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
+  byte[] mediaTrue=RoutingPackets.mediaInformation(SELF,PEER,true);
+  byte[] ownershipTrue=RoutingPackets.ownership(true);
+  boolean sentFalseOnRevoke=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentFalseOnRevoke=true;
+  expect(sentFalseOnRevoke,"revocation while playing sends mediaInformation(false)");
+  probe.packets.clear();
+  nm.notificationAccessGranted=true;
+  manager.active.add(activeBeforeRevoke);
+  listener.onListenerConnected();
+  boolean sentTrueOnRestore=false,tookOnRestore=false;
+  for(byte[] p:probe.packets){
+   if(Arrays.equals(p,mediaTrue)) sentTrueOnRestore=true;
+   if(Arrays.equals(p,ownershipTrue)) tookOnRestore=true;
+  }
+  expect(sentTrueOnRestore,"re-grant while playing resyncs mediaInformation(true)");
+  expect(!tookOnRestore,"media state resync on restore must not trigger TAKE");
+  expect(activeBeforeRevoke.paused==0,"media state resync must not pause media");
+
+  // Fresh playback edge after recovery still triggers TAKE.
+  probe.packets.clear();
+  MediaController newPlayer=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.lastListener.onActiveSessionsChanged(Arrays.asList(activeBeforeRevoke,newPlayer));
+  expect(((Map<?,?>)get(s,"players")).size()==2,"new player is tracked after permission recovery");
+  boolean took=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) took=true;
+  expect(took,"new player playback after permission recovery triggers handoff TAKE");
+ }
+ static void restartPreservesPendingTakeUntilReady()throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();
+  MediaSessionManager manager=new MediaSessionManager();
+  NotificationManager nm=new NotificationManager();
+  HandoffService s=service(manager);s.services.put(NotificationManager.class,nm);
+  s.onCreate();
+  Intent start=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
+  s.onStartCommand(start,0,1);
+  expect(AapProbe.created.size()==1,"initial start creates one probe");
+  AapProbe probe=AapProbe.created.get(0);
+  // Control channel is not ready yet; peer discovered and player starts playing -> pending TAKE queued.
+  ((Set<String>)get(s,"peers")).add(PEER);
+  MediaController playing=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.add(playing);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(playing));
+  expect(((RoutingPolicy)get(s,"policy")).isPending(),"playback while unready queues pending TAKE");
+
+  // Rebuilding listener registration while watching=true must preserve pending TAKE for active playback.
+  PlaybackListener listener=new PlaybackListener();
+  listener.onListenerConnected();
+  expect(manager.removed==1&&manager.added==2,"restartSessionWatch replaces registration");
+  expect(((RoutingPolicy)get(s,"policy")).isPending(),"restartSessionWatch preserves pending TAKE when player still playing");
+
+  // Once control channel becomes ready, the preserved pending TAKE completes handoff.
+  probe.listener.ready();
+  boolean took=false;
+  byte[] ownershipTrue=RoutingPackets.ownership(true);
+  for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) took=true;
+  expect(took,"ready() after listener restart completes preserved pending TAKE");
+ }
+ static void downgradeReusesSessionWithoutAudioDisruption()throws Exception{
+  AapProbe.failStart=true;
+  MediaSessionManager manager=new MediaSessionManager();
+  MediaController activePlayer=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.add(activePlayer);
+  HandoffService s=service(manager);
+  set(s,"deviceConfig",DeviceConfig.create(TARGET,SELF,PEER));set(s,"selfMac",SELF);set(s,"peerMac",PEER);set(s,"ready",true);
+  ((Set<String>)get(s,"peers")).add(PEER);
+  ConnectionPolicy connection=(ConnectionPolicy)get(s,"connection");
+  connection.start(TARGET,false);connection.ready(connection.generation(),TARGET);
+  AapProbe probe=new AapProbe(null,m->{},null);set(s,"session",probe);
+  set(s,"mode",SessionMode.AUTO_HANDOFF);
+  s.startSessionWatch();
+  expect(activePlayer.callbacks.size()==1&&(Boolean)get(s,"watching"),"AUTO_HANDOFF starts with active watch");
+
+  Intent downgrade=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY");
+  s.onStartCommand(downgrade,0,1);
+  expect(get(s,"session")==probe&&probe.stopped==0,"downgrade reuses existing AACP probe without stopping it");
+  expect(!(Boolean)get(s,"watching")&&manager.removed==1,"downgrade stops media session watch");
+  expect(activePlayer.callbacks.isEmpty(),"downgrade unregisters player callbacks");
+  expect(activePlayer.paused==0,"downgrade never pauses playing media");
+  byte[] ownershipFalse=RoutingPackets.ownership(false);
+  for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipFalse),"downgrade must not send release ownership packet");
+  expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("关闭"),"UI reports handoff closed after downgrade");
+ }
+ static void bridgeLifecycle(String modeName)throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();RootEnvironment.stoppedBridges.clear();
+  MediaSessionManager manager=new MediaSessionManager();
+  HandoffService s=service(manager);
+  s.onCreate();
+  RootEnvironment.Prepared prepared=new RootEnvironment.Prepared();
+  prepared.bridgeOwned=true;prepared.targetAddress=TARGET;prepared.local=SELF;prepared.adapterId="sm-x810";
+  RootEnvironment.nextBridgeUsable=true;RootEnvironment.nextAcceptBridge=true;
+  expect(HandoffService.adoptPreparedBridge(prepared),"bridge adoption succeeds for valid prepared instance");
+
+  Intent start=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,modeName).putExtra("native_backend_ready",true);
+  s.onStartCommand(start,0,1);
+  expect(AapProbe.created.size()==1,"bridge start creates one AapProbe");
+  AapProbe first=AapProbe.created.get(0);
+  first.listener.ready();
+  SessionStatus st=HandoffService.sessionStatus(TARGET);
+  expect(st.channelReady&&st.controlDescription.contains("桥接"),modeName+" bridge ready reflected in sessionStatus");
+  boolean expectWatch="AUTO_HANDOFF".equals(modeName);
+  expect((Boolean)get(s,"watching")==expectWatch,modeName+" watch state matches session mode after bridge start");
+
+  // Bridge failure after one reconnect attempt must clean up owned bridge.
+  first.listener.ended();
+  ((Handler)get(s,"handler")).flushDelayed();
+  expect(AapProbe.created.size()==2,"bridge retries once before failing");
+  AapProbe retry=AapProbe.created.get(1);
+  retry.listener.ended();
+  expect(RootEnvironment.stoppedBridges.contains(prepared),modeName+" failed bridge cleans up owned bridge");
+  expect(!HandoffService.bridgePrepared(),modeName+" clears nativeBackendReady on failure");
+
+  // Second bridge session stopped via onDestroy must also clean up owned bridge and watch.
+  RootEnvironment.stoppedBridges.clear();
+  RootEnvironment.Prepared second=new RootEnvironment.Prepared();
+  second.bridgeOwned=true;second.targetAddress=TARGET;second.local=SELF;second.adapterId="sm-x810";
+  HandoffService.adoptPreparedBridge(second);
+  s.onStartCommand(start,0,2);
+  AapProbe active=AapProbe.created.get(AapProbe.created.size()-1);
+  active.listener.ready();
+  s.onDestroy();
+  expect(RootEnvironment.stoppedBridges.contains(second),modeName+" onDestroy cleans up owned bridge");
+  expect(active.stopped>=1,modeName+" onDestroy stops active probe");
+  expect(!(Boolean)get(s,"watching"),modeName+" onDestroy stops watching");
+ }
  public static void main(String[] args)throws Exception{
   switch(args[0]){
    case "identity":upgradeWithLocalIdentity(false);break;
@@ -232,6 +460,11 @@ public class HandoffLifecycleTest {
    case "watch-failure":failedWatchCleansPlayers();break;
    case "partial-stop":stopPartialWatch();break;
    case "mode-round-trip":modeRoundTripInvalidatesQueuedRouting();break;
+   case "permission-recovery":permissionRevokeAndRestoreResumesHandoff();break;
+   case "restart-pending-take":restartPreservesPendingTakeUntilReady();break;
+   case "mode-downgrade":downgradeReusesSessionWithoutAudioDisruption();break;
+   case "bridge-control-only":bridgeLifecycle("CONTROL_ONLY");break;
+   case "bridge-auto-handoff":bridgeLifecycle("AUTO_HANDOFF");break;
    default:throw new AssertionError("unknown scenario");
   }
   System.out.println("PASS: service lifecycle "+args[0]);
@@ -256,6 +489,21 @@ class HandoffLifecycleTests(unittest.TestCase):
     def test_mode_round_trip_invalidates_queued_routing(self):
         self.run_scenario('mode-round-trip')
 
+    def test_media_permission_revoked_and_restored_resumes_handoff(self):
+        self.run_scenario('permission-recovery')
+
+    def test_listener_restart_preserves_pending_take_until_ready(self):
+        self.run_scenario('restart-pending-take')
+
+    def test_mode_downgrade_reuses_session_without_disconnection(self):
+        self.run_scenario('mode-downgrade')
+
+    def test_bridge_lifecycle_in_control_only_mode(self):
+        self.run_scenario('bridge-control-only')
+
+    def test_bridge_lifecycle_in_auto_handoff_mode(self):
+        self.run_scenario('bridge-auto-handoff')
+
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None
         javac = shutil.which('javac', path=str(jdk) if jdk else None)
@@ -271,13 +519,12 @@ class HandoffLifecycleTests(unittest.TestCase):
                 target.write_text(content, encoding='utf-8')
                 files.append(str(target))
             package = ROOT / 'apps/android/src' / PACKAGE
-            names = ('HandoffService', 'SessionMode', 'RoutingPolicy',
-                     'AudioLinkPolicy', 'PeerRoutingPolicy', 'DeviceConfig', 'ConnectionPolicy',
-                     'RoutingPackets', 'AapPackets', 'SmartRouting', 'EarbudCommands',
-                     'EarbudSnapshot', 'AirPodsModels', 'AirPodsInformation', 'BackendPolicy')
+            names = ('HandoffService', 'PlaybackListener', 'SessionMode', 'SessionStatus',
+                     'RoutingPolicy', 'AudioLinkPolicy', 'PeerRoutingPolicy', 'DeviceConfig',
+                     'ConnectionPolicy', 'RoutingPackets', 'AapPackets', 'SmartRouting',
+                     'EarbudCommands', 'EarbudSnapshot', 'AirPodsModels', 'AirPodsInformation',
+                     'BackendPolicy')
             files += [str(package / (name + '.java')) for name in names]
-            if (package / 'SessionStatus.java').is_file():
-                files.append(str(package / 'SessionStatus.java'))
             compiled = subprocess.run([javac, '-encoding', 'UTF-8', '-d', str(output), *files],
                                       capture_output=True, text=True, timeout=30)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
