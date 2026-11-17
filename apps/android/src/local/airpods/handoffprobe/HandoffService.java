@@ -103,6 +103,25 @@ public final class HandoffService extends Service {
         return service!=null && service.nativeBackendReady;
     }
 
+    public static SessionStatus sessionStatus(String targetAddress) {
+        HandoffService service = current;
+        if (service == null || service.stopped) {
+            return SessionStatus.idle(targetAddress);
+        }
+        boolean matches = targetAddress != null && service.deviceConfig != null && targetAddress.equalsIgnoreCase(service.deviceConfig.target);
+        if (!matches) {
+            return SessionStatus.idle(targetAddress);
+        }
+        SessionMode mode = service.mode;
+        boolean ready = service.ready;
+        ConnectionPolicy.Snapshot conn = service.connection.snapshot(targetAddress);
+        String ctrl = ready ? (service.nativeBackendReady ? "桥接控制通道已连接" : "直连控制通道已连接") : conn.description;
+        String handoff = mode == SessionMode.AUTO_HANDOFF
+            ? (service.watching ? "运行中（随播放交接）" : "已开启（等待媒体权限）")
+            : "关闭（纯控制模式）";
+        return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff);
+    }
+
     /** Accept a validated request on the existing session; only a real reply confirms it. */
     public static boolean setEarbudSetting(String targetAddress,int id,int value) {
         HandoffService service=current;
