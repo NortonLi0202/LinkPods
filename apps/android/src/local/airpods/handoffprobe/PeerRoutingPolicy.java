@@ -4,6 +4,7 @@ import java.util.Map;
 /** Route setup chatter is not playback; a real media rising edge can reclaim. */
 final class PeerRoutingPolicy {
     private Boolean playing;
+    void reset() { playing = null; }
     boolean receive(Map<String,Object> fields, boolean localActive) {
         Object state=fields.get("hostStreamingState"), score=fields.get("otherDeviceAudioCategory");
         if (state instanceof String && score instanceof Number) {

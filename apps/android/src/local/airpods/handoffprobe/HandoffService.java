@@ -49,6 +49,9 @@ public final class HandoffService extends Service {
         if(pendingBridge.compareAndSet(prepared,null))
             RootEnvironment.queueBridgeStop(prepared);
     }
+    public static final String EXTRA_SESSION_MODE = "session_mode";
+    private volatile SessionMode mode = SessionMode.CONTROL_ONLY;
+    private volatile long routingModeGeneration;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final RoutingPolicy policy = new RoutingPolicy();
     private final PeerRoutingPolicy peerPolicy = new PeerRoutingPolicy();
@@ -77,6 +80,12 @@ public final class HandoffService extends Service {
     private String sourceMac;
     private int sourceType;
     private Boolean lastMediaState;
+
+    public SessionMode mode() { return mode; }
+    public static SessionMode currentMode() {
+        HandoffService service = current;
+        return service == null || service.stopped ? null : service.mode;
+    }
 
     /** Read-only observed connection state; no Root probes or session creation. */
     public static ConnectionPolicy.Snapshot capabilities(String targetAddress) {
@@ -136,15 +145,15 @@ public final class HandoffService extends Service {
             if (stopped || target == null || !target.equals(device)) return;
             int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE,-1);
             log("A2DP_STATE " + state);
-            applyAudioLink(audioLink.update(state));
+            if (mode.allowsRouting()) applyAudioLink(audioLink.update(state));
         }
     };
     private final Map<MediaSession.Token, MediaController> players = new HashMap<>();
     private final Map<MediaSession.Token, MediaController.Callback> playerCallbacks = new HashMap<>();
     private final MediaSessionManager.OnActiveSessionsChangedListener sessionsChanged = list -> watchPlayers(list, false);
-    private final AudioManager.OnModeChangedListener modeListener = mode -> {
-        log("AUDIO_MODE " + mode);
-        if (ready && (mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION)) take("call");
+    private final AudioManager.OnModeChangedListener modeListener = audioMode -> {
+        log("AUDIO_MODE " + audioMode);
+        if (ready && mode.allowsRouting() && (audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_IN_COMMUNICATION)) take("call");
     };
     private final BluetoothProfile.ServiceListener profiles = new BluetoothProfile.ServiceListener() {
         @Override public void onServiceConnected(int kind, BluetoothProfile proxy) {
@@ -152,7 +161,7 @@ public final class HandoffService extends Service {
             if (kind == BluetoothProfile.A2DP) a2dp = proxy;
             if (kind == BluetoothProfile.HEADSET) headset = proxy;
             log("PROFILE ready=" + kind);
-            if (kind == BluetoothProfile.A2DP && target != null)
+            if (kind == BluetoothProfile.A2DP && target != null && mode.allowsRouting())
                 applyAudioLink(audioLink.update(a2dp.getConnectionState(target)));
         }
         @Override public void onServiceDisconnected(int kind) {
@@ -168,20 +177,31 @@ public final class HandoffService extends Service {
         adapter = getSystemService(BluetoothManager.class).getAdapter();
         HiddenApiBypass.addHiddenApiExemptions("Landroid/bluetooth/");
         getSystemService(NotificationManager.class).createNotificationChannel(
-            new NotificationChannel("handoff", "LinkPods 自动交接", NotificationManager.IMPORTANCE_LOW));
+            new NotificationChannel("handoff", "LinkPods 控制服务", NotificationManager.IMPORTANCE_LOW));
         startForeground(42, new Notification.Builder(this, "handoff")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("LinkPods 自动交接")
-            .setContentText("保持控制通道，随媒体播放交接；可在应用内停止")
+            .setContentTitle("LinkPods 耳机控制")
+            .setContentText("保持耳机控制通道；可在应用内停止")
             .setOngoing(true).build());
         adapter.getProfileProxy(this, profiles, BluetoothProfile.A2DP);
         adapter.getProfileProxy(this, profiles, BluetoothProfile.HEADSET);
         IntentFilter audioFilter=new IntentFilter("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED");
         if(android.os.Build.VERSION.SDK_INT>=33)registerReceiver(audioStateReceiver,audioFilter,Context.RECEIVER_EXPORTED);
         else registerReceiver(audioStateReceiver,audioFilter);
-        startSessionWatch();
         audio.addOnModeChangedListener(getMainExecutor(), modeListener);
         log("SERVICE created");
+    }
+
+    private void updateForegroundNotification() {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null) return;
+        boolean handoff = mode == SessionMode.AUTO_HANDOFF;
+        Notification notification = new Notification.Builder(this, "handoff")
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentTitle(handoff ? "LinkPods 自动交接" : "LinkPods 耳机控制")
+            .setContentText(handoff ? "保持控制通道，随媒体播放交接；可在应用内停止" : "保持耳机控制通道；可在应用内停止")
+            .setOngoing(true).build();
+        nm.notify(42, notification);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -198,6 +218,34 @@ public final class HandoffService extends Service {
         }
         if (deviceConfig == null) earbudState.begin(requested.target);
         deviceConfig = merged;
+        selfMac = deviceConfig.local;
+        SessionMode requestedMode = SessionMode.CONTROL_ONLY;
+        String modeName = intent.getStringExtra(EXTRA_SESSION_MODE);
+        if (modeName != null) {
+            try { requestedMode = SessionMode.valueOf(modeName); }
+            catch (IllegalArgumentException ignored) {}
+        }
+        SessionMode previousMode = this.mode;
+        if (previousMode != requestedMode) ++routingModeGeneration;
+        this.mode = requestedMode;
+        if (previousMode != requestedMode) {
+            log("SESSION_MODE changed: " + previousMode + " -> " + requestedMode);
+            updateForegroundNotification();
+            if (requestedMode == SessionMode.AUTO_HANDOFF) {
+                startSessionWatch();
+                announcePeers();
+            } else {
+                stopSessionWatch();
+                policy.reset();
+                peerPolicy.reset();
+                audioLink.reset();
+                lastMediaState = null;
+                owns = null;
+            }
+        } else if (requestedMode == SessionMode.AUTO_HANDOFF && !watching) {
+            startSessionWatch();
+            announcePeers();
+        }
         boolean preparedBridge=false;
         if(intent.getBooleanExtra("native_backend_ready",false)) {
             RootEnvironment.Prepared handedOff=pendingBridge.getAndSet(null);
@@ -207,7 +255,6 @@ public final class HandoffService extends Service {
                 retainBridgeOwnership(handedOff);
             } else if(handedOff!=null)RootEnvironment.queueBridgeStop(handedOff);
         }
-        selfMac = deviceConfig.local;
         if (peerMac.isEmpty()) peerMac = deviceConfig.peer;
         target = adapter.getRemoteDevice(deviceConfig.target);
         ConnectionPolicy.Action next=connection.start(deviceConfig.target,preparedBridge);
@@ -226,12 +273,12 @@ public final class HandoffService extends Service {
             }
             applyConnection(next);
         }
-        if (intent.getBooleanExtra("yield_audio",false)) release("transport-baseline",true);
+        if (mode.allowsRouting() && intent.getBooleanExtra("yield_audio",false)) release("transport-baseline",true);
         return START_NOT_STICKY;
     }
 
     void startSessionWatch() {
-        if (watching || stopped) return;
+        if (watching || stopped || mode != SessionMode.AUTO_HANDOFF) return;
         try {
             mediaSessions = getSystemService(MediaSessionManager.class);
             ComponentName listener = new ComponentName(this, PlaybackListener.class);
@@ -239,7 +286,27 @@ public final class HandoffService extends Service {
             mediaSessions.addOnActiveSessionsChangedListener(sessionsChanged, listener, handler);
             watching = true;
             log("MEDIA_SESSION_WATCH ready");
-        } catch (SecurityException error) { log("MEDIA_SESSION_WATCH access-required " + error); }
+        } catch (SecurityException error) {
+            stopSessionWatch();
+            log("MEDIA_SESSION_WATCH access-required " + error);
+        }
+    }
+
+    void stopSessionWatch() {
+        boolean wasWatching = watching;
+        if (wasWatching && mediaSessions != null) {
+            mediaSessions.removeOnActiveSessionsChangedListener(sessionsChanged);
+        }
+        for (MediaSession.Token token : new HashSet<>(players.keySet())) {
+            MediaController controller = players.remove(token);
+            MediaController.Callback callback = playerCallbacks.remove(token);
+            if (controller != null && callback != null) {
+                controller.unregisterCallback(callback);
+            }
+            policy.remove(token.toString());
+        }
+        watching = false;
+        if (wasWatching) log("MEDIA_SESSION_WATCH stopped");
     }
 
     private void watchPlayers(List<MediaController> list, boolean passive) {
@@ -270,7 +337,7 @@ public final class HandoffService extends Service {
     }
 
     private void playerState(MediaController controller, PlaybackState state) {
-        if (stopped) return;
+        if (stopped || !mode.allowsRouting()) return;
         int value = state == null ? 0 : state.getState();
         log("PLAYER package=" + controller.getPackageName() + " token=" + controller.getSessionToken()
             + " state=" + value + " ready=" + ready);
@@ -281,6 +348,7 @@ public final class HandoffService extends Service {
     }
 
     private void finishPendingTake(String reason) {
+        if (!mode.allowsRouting()) return;
         if (policy.consumeTake(ready,!peers.isEmpty())) take(reason);
     }
 
@@ -395,6 +463,7 @@ public final class HandoffService extends Service {
                 log("BACKEND " + BackendPolicy.select(!nativeBackendReady,nativeBackendReady,nativeBackendReady,nativeBackendReady)
                     + " handoff=not-verified");
                 finishPendingTake("pending-player-play");
+                announcePeers();
             }); }
             @Override public void packet(byte[] data) { handler.post(() -> {
                 if(valid()) receive(data);
@@ -428,7 +497,7 @@ public final class HandoffService extends Service {
             Boolean previous = this.owns;
             this.owns = owns;
             log("OWNERSHIP " + owns);
-            if (!owns && !Boolean.FALSE.equals(previous)) release("ownership-loss", false);
+            if (mode.allowsRouting() && !owns && !Boolean.FALSE.equals(previous)) release("ownership-loss", false);
         }
         SmartRouting.Message message = SmartRouting.decode(data);
         if (message != null && !peerMac.isEmpty() && peerMac.equalsIgnoreCase(message.sender)) {
@@ -436,9 +505,11 @@ public final class HandoffService extends Service {
                 || (sourceType != 0 && selfMac.equalsIgnoreCase(sourceMac));
             boolean yield = peerPolicy.receive(message.fields,localActive);
             log("PEER_ROUTING fields=" + message.fields + " localActive=" + localActive + " yield=" + yield);
-            if (yield) release("peer-play-call-or-manual",true);
-            else if (Boolean.TRUE.equals(message.fields.get("audioRoutingSetOwnershipToFalse")))
-                log("IGNORE remote-retry-without-new-peer-play");
+            if (mode.allowsRouting()) {
+                if (yield) release("peer-play-call-or-manual",true);
+                else if (Boolean.TRUE.equals(message.fields.get("audioRoutingSetOwnershipToFalse")))
+                    log("IGNORE remote-retry-without-new-peer-play");
+            }
         }
         List<String> freshPeers = RoutingPackets.connectedDevices(data,data.length);
         boolean completePeers = RoutingPackets.header(data,data.length,0x2e) && data.length>=9
@@ -449,12 +520,7 @@ public final class HandoffService extends Service {
             if (peerMac.isEmpty() || !peerMac.equalsIgnoreCase(peer)) continue;
             if (!peer.equalsIgnoreCase(selfMac) && peers.add(peer)) {
                 log("REMOTE_PEER discovered");
-                if (BluetoothAdapter.checkBluetoothAddress(selfMac)) {
-                    send(RoutingPackets.announce(selfMac, peer), "announce");
-                    lastMediaState = null;
-                    mediaInformation(policy.hasPlayback());
-                    finishPendingTake("peer-ready-player-play");
-                }
+                announcePeers();
             }
         }
         if (RoutingPackets.header(data, data.length, 0x0e) && data.length >= 13) {
@@ -464,17 +530,41 @@ public final class HandoffService extends Service {
         }
     }
 
+    private void announcePeers() {
+        if (!mode.allowsRouting() || !ready || !BluetoothAdapter.checkBluetoothAddress(selfMac)) return;
+        for (String peer : peers) {
+            send(RoutingPackets.announce(selfMac, peer), "announce");
+        }
+        if (!peers.isEmpty()) {
+            lastMediaState = null;
+            mediaInformation(policy.hasPlayback());
+            finishPendingTake("peer-ready-player-play");
+        }
+    }
+
     private void send(byte[] data, String label) {
+        if (!mode.allowsRouting()) {
+            log("SEND skipped mode=" + mode + " label=" + label);
+            return;
+        }
         final AapProbe active=session;
         final long generation=earbudSessionGeneration;
         if(active==null){log("SEND " + label + " ok=false");return;}
-        active.sendPacketAsync(data,sent -> handler.post(() -> {
-            if(!stopped && active==session && generation==earbudSessionGeneration)
+        final long routingGeneration=routingModeGeneration;
+        active.sendPacketAsync(data,() -> !stopped && mode.allowsRouting()
+            && routingGeneration==routingModeGeneration && active==session && generation==earbudSessionGeneration,
+            sent -> handler.post(() -> {
+            if(!stopped && mode.allowsRouting() && routingGeneration==routingModeGeneration
+                    && active==session && generation==earbudSessionGeneration)
                 log("SEND " + label + " ok=" + sent);
         }));
     }
 
     private void take(String reason) {
+        if (!mode.allowsRouting()) {
+            log("TAKE skipped; mode=" + mode + " reason=" + reason);
+            return;
+        }
         log("TAKE reason=" + reason + " owns=" + owns + " source=" + sourceMac + " type=" + sourceType);
         boolean claim = policy.needsClaim(Boolean.TRUE.equals(owns),selfMac.equalsIgnoreCase(sourceMac) && sourceType != 0);
         if (claim) send(RoutingPackets.ownership(true), "ownership-true");
@@ -487,6 +577,7 @@ public final class HandoffService extends Service {
     }
 
     private void mediaInformation(boolean active) {
+        if (!mode.allowsRouting()) return;
         if (Boolean.valueOf(active).equals(lastMediaState)) return;
         if (BluetoothAdapter.checkBluetoothAddress(selfMac) && !peers.isEmpty()) {
             lastMediaState = active;
@@ -495,6 +586,10 @@ public final class HandoffService extends Service {
     }
 
     private void release(String reason, boolean acknowledge) {
+        if (!mode.allowsRouting()) {
+            log("RELEASE skipped mode=" + mode + " reason=" + reason);
+            return;
+        }
         policy.onRemoteRequest();
         owns = false;
         log("RELEASE reason=" + reason);
@@ -513,6 +608,7 @@ public final class HandoffService extends Service {
     }
 
     private void applyAudioLink(AudioLinkPolicy.Action action) {
+        if (!mode.allowsRouting()) return;
         if (action == AudioLinkPolicy.Action.CONNECT) profileAction(a2dp,"connect");
         if (action == AudioLinkPolicy.Action.DISCONNECT) profileAction(a2dp,"disconnect");
     }
@@ -549,8 +645,7 @@ public final class HandoffService extends Service {
         if (current == this) current = null;
         handler.removeCallbacksAndMessages(null);
         if (session != null) session.stop();
-        if (watching) mediaSessions.removeOnActiveSessionsChangedListener(sessionsChanged);
-        for (MediaSession.Token token : players.keySet()) players.get(token).unregisterCallback(playerCallbacks.get(token));
+        stopSessionWatch();
         audio.removeOnModeChangedListener(modeListener);
         unregisterReceiver(audioStateReceiver);
         if (a2dp != null) adapter.closeProfileProxy(BluetoothProfile.A2DP, a2dp);

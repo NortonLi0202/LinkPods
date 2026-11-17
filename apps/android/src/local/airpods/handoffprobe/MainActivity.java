@@ -50,6 +50,7 @@ public class MainActivity extends Activity {
     private String environmentStatus = "Root 尚未检测；直连无需此项";
     private boolean nativeBackendReady;
     private String preparedLocalAddress="";
+    private SessionMode requestedMode = SessionMode.CONTROL_ONLY;
 
     private DeviceConfig loadDeviceConfig() {
         android.content.SharedPreferences preferences = getSharedPreferences("devices", MODE_PRIVATE);
@@ -106,13 +107,11 @@ public class MainActivity extends Activity {
                 log(requested?"已请求刷新耳机设置与电量，等待耳机回报。":"控制通道未就绪，无法刷新耳机设置与电量。");
                 refreshControls();
             }
+            @Override public void connectEarbuds() { startControlOnly(); }
             @Override public void enableHandoff() { startAutomatic(); }
-            @Override public void stopHandoff() {
-                cancelEnvironment(); nativeBackendReady=false;
-                stopService(new Intent(MainActivity.this,HandoffService.class));
-                log("已请求停止会话；仅清理本次应用实际启动的桥接。");
-                refreshControls();
-            }
+            @Override public void disableHandoff() { MainActivity.this.disableHandoff(); }
+            @Override public void stopConnection() { stopSession(); }
+            @Override public void stopHandoff() { stopSession(); }
             @Override public void checkEnvironment() { prepareEnvironment(false); }
             @Override public void prepareBridge() { prepareEnvironment(true,false); }
             @Override public boolean setSetting(int id,int value) {
@@ -261,19 +260,46 @@ public class MainActivity extends Activity {
         return Build.VERSION.SDK_INT<27 || getSystemService(android.app.NotificationManager.class).isNotificationListenerAccessGranted(
             new android.content.ComponentName(this,PlaybackListener.class));
     }
+    private void startControlOnly() {
+        if(!hasPermission() || selected()==null){log("请先授权附近设备并选择耳机。");return;}
+        cancelEnvironment();
+        nativeBackendReady=false;preparedLocalAddress="";
+        requestedMode = SessionMode.CONTROL_ONLY;
+        log("启动耳机控制会话（CONTROL_ONLY）；不检测或请求 Root，无需媒体权限。");
+        startServicePrepared(SessionMode.CONTROL_ONLY);
+    }
     private void startAutomatic() {
         if(!hasPermission() || selected()==null){log("请先授权附近设备并选择耳机。");return;}
         cancelEnvironment();
         nativeBackendReady=false;preparedLocalAddress="";
+        requestedMode = SessionMode.AUTO_HANDOFF;
         if(!mediaAccessGranted())log("媒体状态权限未授权：可以使用耳机控制，自动交接还缺少播放状态。");
-        log("先直接连接耳机控制通道；不检测或请求 Root。");
-        startAutomaticPrepared();
+        log("启动自动交接（AUTO_HANDOFF）；先直接连接耳机控制通道，不检测或请求 Root。");
+        startServicePrepared(SessionMode.AUTO_HANDOFF);
+    }
+    private void disableHandoff() {
+        if (HandoffService.current == null) {
+            log("控制服务未运行。");
+            return;
+        }
+        cancelEnvironment();
+        nativeBackendReady = false;
+        preparedLocalAddress = "";
+        requestedMode = SessionMode.CONTROL_ONLY;
+        log("正在切换为纯控制模式（CONTROL_ONLY）；保留耳机控制，停止自动路由。");
+        startServicePrepared(SessionMode.CONTROL_ONLY);
+    }
+    private void stopSession() {
+        cancelEnvironment(); nativeBackendReady=false;
+        stopService(new Intent(MainActivity.this,HandoffService.class));
+        log("已请求停止会话；仅清理本次应用实际启动的桥接。");
+        refreshControls();
     }
     private void confirmTemporaryRoot() {
         new android.app.AlertDialog.Builder(this).setTitle("运行临时 Root")
             .setMessage("将先复用已有 Root；没有时，仅在系统精确匹配适配方案后运行漏洞。临时 Root 重启后失效。请选择耳机后继续。")
             .setPositiveButton("继续",(dialog,which)->prepareEnvironment(true,true))
-            .setNegativeButton("仅连接耳机",(dialog,which)->startAutomaticPrepared()).show();
+            .setNegativeButton("仅连接耳机",(dialog,which)->startServicePrepared(requestedMode)).show();
     }
     private void prepareEnvironment(boolean enable) { prepareEnvironment(enable,false); }
 
@@ -339,7 +365,7 @@ public class MainActivity extends Activity {
                     if (!result.ready()) log("仅尝试当前系统的控制通道，不启用原生桥接；通道成功不代表双向交接已验证。");
                     if(RootEnvironment.bridgeUsable(prepared))bridgeToStart=prepared;
                     else queueBridgeStop(prepared);
-                    startAutomaticPrepared();
+                    startServicePrepared(requestedMode);
                 }
             });
         });
@@ -363,7 +389,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void startAutomaticPrepared() {
+    private void startServicePrepared(SessionMode mode) {
         BluetoothDevice target = selected();
         if (target == null || !hasPermission()) {queueBridgeStop(bridgeToStart);bridgeToStart=null;return;}
         final DeviceConfig config;
@@ -380,7 +406,8 @@ public class MainActivity extends Activity {
         Intent service = new Intent(this, HandoffService.class)
             .putExtra("address", config.target)
             .putExtra("local_mac", config.local)
-            .putExtra("peer_address", config.peer);
+            .putExtra("peer_address", config.peer)
+            .putExtra(HandoffService.EXTRA_SESSION_MODE, mode.name());
         service.putExtra("native_backend_ready",nativeBackendReady);
         RootEnvironment.Prepared prepared=bridgeToStart;bridgeToStart=null;
         if(nativeBackendReady && (!RootEnvironment.bridgeUsable(prepared) || !HandoffService.adoptPreparedBridge(prepared))) {
@@ -391,7 +418,7 @@ public class MainActivity extends Activity {
             if(prepared!=null)HandoffService.discardPreparedBridge(prepared);
             failure("启动控制会话",error);return;
         }
-        log("自动交接服务已启动；请按实际出声验证。");
+        log(mode == SessionMode.AUTO_HANDOFF ? "自动交接服务已启动；请按实际出声验证。" : "耳机控制服务已启动（CONTROL_ONLY）；不触发音频路由。");
     }
 
     private void failure(String operation, Exception error) {
