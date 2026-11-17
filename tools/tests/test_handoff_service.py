@@ -258,8 +258,8 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None
-        javac = str(jdk / 'javac.exe') if jdk else shutil.which('javac')
-        java = str(jdk / 'java.exe') if jdk else shutil.which('java')
+        javac = shutil.which('javac', path=str(jdk) if jdk else None)
+        java = shutil.which('java', path=str(jdk) if jdk else None)
         if not javac or not java:
             self.skipTest('JDK required')
         with tempfile.TemporaryDirectory(prefix='linkpods-service-') as directory:

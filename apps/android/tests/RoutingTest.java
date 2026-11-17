@@ -48,6 +48,13 @@ public final class RoutingTest {
         expect(!queued.consumeTake(true,true), "pending takeover completes only once");
         queued.onPlayback("music",2); queued.onPlayback("music",3); queued.remove("music");
         expect(!queued.consumeTake(true,true), "removed session cancels stale takeover");
+        RoutingPolicy resetPolicy = new RoutingPolicy();
+        resetPolicy.onPlayback("music", 3);
+        expect(resetPolicy.hasPlayback(), "playback active before reset");
+        resetPolicy.reset();
+        expect(!resetPolicy.hasPlayback(), "playback cleared after reset");
+        expect(!resetPolicy.consumeTake(true, true), "pending take cleared after reset");
+        expect(resetPolicy.onPlayback("music", 3) == RoutingPolicy.Action.TAKE, "fresh playback edge can be detected after reset");
         expect(!p.needsClaim(true,true), "already-owned local media must not ask the phone to yield again");
         expect(p.needsClaim(false,true), "local source alone does not establish ownership");
         expect(p.needsClaim(true,false), "ownership without a local source still permits recovery");
