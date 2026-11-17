@@ -14,6 +14,14 @@ public final class EarbudUiPolicyTest {
         expect(EarbudUiPolicy.nearestSegment(149, 300, 3) == 1, "middle drag chooses middle mode");
         expect(EarbudUiPolicy.nearestSegment(400, 300, 3) == 2, "right drag clamps to last mode");
         expect(EarbudUiPolicy.nearestSegment(0, 0, 3) == 0, "unlaid-out control is safe");
+        int[] modes = {EarbudCommands.MODE_TRANSPARENCY, EarbudCommands.MODE_ANC};
+        String[] names = {"通透", "降噪"};
+        expect("尚未读取".equals(EarbudUiPolicy.listeningModeLabel(null, modes, names)),
+            "unknown observation is not rendered as a selectable mode");
+        expect("通透".equals(EarbudUiPolicy.listeningModeLabel(EarbudCommands.MODE_TRANSPARENCY, modes, names)),
+            "observed selectable mode keeps its label");
+        expect("未知或不支持的模式".equals(EarbudUiPolicy.listeningModeLabel(EarbudCommands.MODE_ADAPTIVE, modes, names)),
+            "mode outside the capability list is reported as unsupported, not as the first option");
         System.out.println("PASS: UI disables unknown/pending/disconnected writes and clamps mode drags");
     }
 }

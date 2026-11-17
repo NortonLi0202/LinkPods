@@ -91,17 +91,16 @@ public final class AirPodsInformation {
         index=serial.next;
 
         String version1="",version2="";
-        index=skipZeros(packet,index);
-        if(index<packet.length) {
-            Field first=readField(packet,index);
-            if(first==null) return null;
-            version1=first.value;
-            index=skipZeros(packet,first.next);
-            if(index<packet.length) {
-                Field second=readField(packet,index);
-                if(second==null) return null;
-                version2=second.value;
-            }
+        // Read the two version fields by position. An empty field is still a
+        // field: skipping it as padding would shift the next version or a
+        // trailing hardware field into this slot.
+        Field firstVersion=readField(packet,index);
+        if(firstVersion==null) return null;
+        version1=firstVersion.value;
+        if(firstVersion.next<packet.length) {
+            Field secondVersion=readField(packet,firstVersion.next);
+            if(secondVersion==null) return null;
+            version2=secondVersion.value;
         }
         return new AirPodsInformation(name.value,model.value,manufacturer.value,version1,version2);
     }

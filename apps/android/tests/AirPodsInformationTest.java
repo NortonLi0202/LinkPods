@@ -74,6 +74,20 @@ public final class AirPodsInformationTest {
             "versions follow the independently consumed serial field");
         expect(!SERIAL.equals(info.version1) && !SERIAL.equals(info.version2),
             "the serial field must never be exposed as a firmware version");
+
+        byte[] emptyFirstVersion=join(
+            frame(new byte[]{1},"prefix","AirPods","A2032","Apple Inc.",SERIAL,"","8B124"),
+            "HARDWARE".getBytes(StandardCharsets.UTF_8),new byte[]{0});
+        AirPodsInformation emptyFirst=AirPodsInformation.parse(emptyFirstVersion);
+        expect(emptyFirst!=null && "".equals(emptyFirst.version1) && "8B124".equals(emptyFirst.version2),
+            "empty first version keeps the second version in its positional field");
+
+        byte[] emptySecondVersion=join(
+            frame(new byte[]{1},"prefix","AirPods","A2032","Apple Inc.",SERIAL,"8B123",""),
+            "HARDWARE".getBytes(StandardCharsets.UTF_8),new byte[]{0});
+        AirPodsInformation emptySecond=AirPodsInformation.parse(emptySecondVersion);
+        expect(emptySecond!=null && "8B123".equals(emptySecond.version1) && "".equals(emptySecond.version2),
+            "empty second version does not shift a trailing field into the version slot");
         for(Field field:AirPodsInformation.class.getFields()) {
             if(field.getType()!=String.class) continue;
             try {
