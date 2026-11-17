@@ -13,4 +13,6 @@ v1.0 安装包包含 DFRoot v4.7 的路径重定位 ELF、GPL-2.0 诊断辅助�
 | Frida inject | https://github.com/frida/frida/releases | third_party/payloads 清单固定 SHA-256，大二进制只在本地；发布前复核发行许可 |
 | SDK、JDK、Node、Python | 外部构建工具 | 不复制入管理仓库 |
 
+多代型号移植对应 LibrePods 固定提交 `89356c08cea3db0b6b54792d9329d09a87cc85fa` 的 `android/app/src/main/java/me/kavishdevar/librepods/data/AirPods.kt` 与 `android/app/src/main/java/me/kavishdevar/librepods/bluetooth/AACPManager.kt`，仅移植型号注册表、能力位和 INFORMATION 兼容解析，保留 GPL-3.0-or-later 来源与许可声明；本地 Java 文件头及 [docs/airpods-models.md](docs/airpods-models.md) 记录同样来源。没有新增二进制、图片或未在固定注册表中的型号。
+
 维护方式参考 [GitHub CLI 贡献指南](https://github.com/cli/cli/blob/trunk/.github/CONTRIBUTING.md) 的范围明确的贡献、验证及问题说明。仅采用实际需要的流程，没有虚构组织治理、CI 和发布状态。
