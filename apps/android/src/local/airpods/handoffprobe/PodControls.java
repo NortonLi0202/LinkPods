@@ -189,7 +189,7 @@ final class PodControls {
             if(e.getActionMasked()==MotionEvent.ACTION_CANCEL)cancelTouch();return true;
         }
         @Override public boolean onKeyDown(int key,KeyEvent e) {
-            if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){int index=observedIndex();if(index<0)return true;submit(index+(key==KeyEvent.KEYCODE_DPAD_LEFT?-1:1));return true;}
+            if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){submit(EarbudUiPolicy.arrowTarget(observedIndex(),values.length,key==KeyEvent.KEYCODE_DPAD_LEFT));return true;}
             return super.onKeyDown(key,e);
         }
         @Override public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo n) {
