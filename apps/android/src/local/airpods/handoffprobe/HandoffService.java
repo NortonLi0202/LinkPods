@@ -49,6 +49,8 @@ public final class HandoffService extends Service {
         if(pendingBridge.compareAndSet(prepared,null))
             RootEnvironment.queueBridgeStop(prepared);
     }
+    public static final String EXTRA_SESSION_MODE = "session_mode";
+    private volatile SessionMode mode = SessionMode.CONTROL_ONLY;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final RoutingPolicy policy = new RoutingPolicy();
     private final PeerRoutingPolicy peerPolicy = new PeerRoutingPolicy();
@@ -77,6 +79,12 @@ public final class HandoffService extends Service {
     private String sourceMac;
     private int sourceType;
     private Boolean lastMediaState;
+
+    public SessionMode mode() { return mode; }
+    public static SessionMode currentMode() {
+        HandoffService service = current;
+        return service == null || service.stopped ? null : service.mode;
+    }
 
     /** Read-only observed connection state; no Root probes or session creation. */
     public static ConnectionPolicy.Snapshot capabilities(String targetAddress) {
@@ -168,20 +176,31 @@ public final class HandoffService extends Service {
         adapter = getSystemService(BluetoothManager.class).getAdapter();
         HiddenApiBypass.addHiddenApiExemptions("Landroid/bluetooth/");
         getSystemService(NotificationManager.class).createNotificationChannel(
-            new NotificationChannel("handoff", "LinkPods 自动交接", NotificationManager.IMPORTANCE_LOW));
+            new NotificationChannel("handoff", "LinkPods 控制服务", NotificationManager.IMPORTANCE_LOW));
         startForeground(42, new Notification.Builder(this, "handoff")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("LinkPods 自动交接")
-            .setContentText("保持控制通道，随媒体播放交接；可在应用内停止")
+            .setContentTitle("LinkPods 耳机控制")
+            .setContentText("保持耳机控制通道；可在应用内停止")
             .setOngoing(true).build());
         adapter.getProfileProxy(this, profiles, BluetoothProfile.A2DP);
         adapter.getProfileProxy(this, profiles, BluetoothProfile.HEADSET);
         IntentFilter audioFilter=new IntentFilter("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED");
         if(android.os.Build.VERSION.SDK_INT>=33)registerReceiver(audioStateReceiver,audioFilter,Context.RECEIVER_EXPORTED);
         else registerReceiver(audioStateReceiver,audioFilter);
-        startSessionWatch();
         audio.addOnModeChangedListener(getMainExecutor(), modeListener);
         log("SERVICE created");
+    }
+
+    private void updateForegroundNotification() {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null) return;
+        boolean handoff = mode == SessionMode.AUTO_HANDOFF;
+        Notification notification = new Notification.Builder(this, "handoff")
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentTitle(handoff ? "LinkPods 自动交接" : "LinkPods 耳机控制")
+            .setContentText(handoff ? "保持控制通道，随媒体播放交接；可在应用内停止" : "保持耳机控制通道；可在应用内停止")
+            .setOngoing(true).build();
+        nm.notify(42, notification);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -198,6 +217,27 @@ public final class HandoffService extends Service {
         }
         if (deviceConfig == null) earbudState.begin(requested.target);
         deviceConfig = merged;
+        SessionMode requestedMode = SessionMode.CONTROL_ONLY;
+        String modeName = intent.getStringExtra(EXTRA_SESSION_MODE);
+        if (modeName != null) {
+            try { requestedMode = SessionMode.valueOf(modeName); }
+            catch (IllegalArgumentException ignored) {}
+        }
+        SessionMode previousMode = this.mode;
+        this.mode = requestedMode;
+        if (previousMode != requestedMode) {
+            log("SESSION_MODE changed: " + previousMode + " -> " + requestedMode);
+            updateForegroundNotification();
+            if (requestedMode == SessionMode.AUTO_HANDOFF) {
+                startSessionWatch();
+            } else {
+                stopSessionWatch();
+                lastMediaState = null;
+                owns = null;
+            }
+        } else if (requestedMode == SessionMode.AUTO_HANDOFF && !watching) {
+            startSessionWatch();
+        }
         boolean preparedBridge=false;
         if(intent.getBooleanExtra("native_backend_ready",false)) {
             RootEnvironment.Prepared handedOff=pendingBridge.getAndSet(null);
@@ -226,12 +266,12 @@ public final class HandoffService extends Service {
             }
             applyConnection(next);
         }
-        if (intent.getBooleanExtra("yield_audio",false)) release("transport-baseline",true);
+        if (mode.allowsRouting() && intent.getBooleanExtra("yield_audio",false)) release("transport-baseline",true);
         return START_NOT_STICKY;
     }
 
     void startSessionWatch() {
-        if (watching || stopped) return;
+        if (watching || stopped || mode != SessionMode.AUTO_HANDOFF) return;
         try {
             mediaSessions = getSystemService(MediaSessionManager.class);
             ComponentName listener = new ComponentName(this, PlaybackListener.class);
@@ -240,6 +280,23 @@ public final class HandoffService extends Service {
             watching = true;
             log("MEDIA_SESSION_WATCH ready");
         } catch (SecurityException error) { log("MEDIA_SESSION_WATCH access-required " + error); }
+    }
+
+    void stopSessionWatch() {
+        if (!watching) return;
+        if (mediaSessions != null) {
+            mediaSessions.removeOnActiveSessionsChangedListener(sessionsChanged);
+        }
+        for (MediaSession.Token token : new HashSet<>(players.keySet())) {
+            MediaController controller = players.remove(token);
+            MediaController.Callback callback = playerCallbacks.remove(token);
+            if (controller != null && callback != null) {
+                controller.unregisterCallback(callback);
+            }
+            policy.remove(token.toString());
+        }
+        watching = false;
+        log("MEDIA_SESSION_WATCH stopped");
     }
 
     private void watchPlayers(List<MediaController> list, boolean passive) {
@@ -544,8 +601,7 @@ public final class HandoffService extends Service {
         if (current == this) current = null;
         handler.removeCallbacksAndMessages(null);
         if (session != null) session.stop();
-        if (watching) mediaSessions.removeOnActiveSessionsChangedListener(sessionsChanged);
-        for (MediaSession.Token token : players.keySet()) players.get(token).unregisterCallback(playerCallbacks.get(token));
+        stopSessionWatch();
         audio.removeOnModeChangedListener(modeListener);
         unregisterReceiver(audioStateReceiver);
         if (a2dp != null) adapter.closeProfileProxy(BluetoothProfile.A2DP, a2dp);

@@ -25,7 +25,7 @@ import java.util.ArrayList;
 final class LinkPodsUi {
     interface Actions {
         void openBluetooth(); void requestNearby(); void openMediaAccess(); void requestNotifications();
-        void refreshDevices(); void enableHandoff(); void stopHandoff(); void checkEnvironment(); void prepareBridge();
+        void refreshDevices(); void connectEarbuds(); void enableHandoff(); void disableHandoff(); void stopConnection(); void stopHandoff(); void checkEnvironment(); void prepareBridge();
         boolean setSetting(int id,int value);
         String deviceName(); String connectionStatus();
     }
@@ -154,10 +154,10 @@ final class LinkPodsUi {
     private void audioPage(){pageTitle(AUDIO);noiseGroup();volumeGroup();commonSwitches();LinearLayout g=group();setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"麦克风","暂未接入","麦克风");}
     private void pressPage(){pageTitle(PRESS);LinearLayout g=group();navigation(g,"左耳长按","暂未接入","左耳长按");navigation(g,"右耳长按","暂未接入","右耳长按");navigation(g,"按压速度","暂未接入","按压速度");help("按压设置当前暂不可用。");}
     private void connectionPage(){pageTitle("自动设备切换");help("启用后，LinkPods 根据此设备的播放状态协调耳机交接。请先在应用设置中选择耳机，并允许读取媒体播放状态。");
-        LinearLayout g=group();action(g,"启用自动交接",actions::enableHandoff);action(g,"停止自动交接",actions::stopHandoff);action(g,"准备兼容桥接",actions::prepareBridge);navigation(g,"设备与权限","",SETTINGS);attachStatus();help("启用时先直接连接耳机，直连可用就不请求 Root。明确缺少系统兼容能力时才尝试已有 Root 桥接；也可手动准备桥接。临时 Root 需要单独确认，实际声音与双向切换仍需确认。");}
-    private void appSettings(){pageTitle(SETTINGS);caption("设备");LinearLayout device=group();detach(picker);picker.setContentDescription("选择已配对的耳机");device.addView(picker,new LinearLayout.LayoutParams(-1,dp(56)));action(device,"允许附近设备权限",actions::requestNearby);action(device,"配对或管理耳机",actions::openBluetooth);action(device,"刷新设备与连接状态",actions::refreshDevices);
+        LinearLayout g=group();action(g,"连接耳机（仅控制）",actions::connectEarbuds);action(g,"启用自动交接",actions::enableHandoff);action(g,"关闭自动交接（保留控制）",actions::disableHandoff);action(g,"停止连接",actions::stopConnection);action(g,"准备兼容桥接",actions::prepareBridge);navigation(g,"设备与权限","",SETTINGS);attachStatus();help("启用时先直接连接耳机，直连可用就不请求 Root。明确缺少系统兼容能力时才尝试已有 Root 桥接；也可手动准备桥接。临时 Root 需要单独确认，实际声音与双向切换仍需确认。");}
+    private void appSettings(){pageTitle(SETTINGS);caption("设备");LinearLayout device=group();detach(picker);picker.setContentDescription("选择已配对的耳机");device.addView(picker,new LinearLayout.LayoutParams(-1,dp(56)));action(device,"连接耳机",actions::connectEarbuds);action(device,"停止连接",actions::stopConnection);action(device,"允许附近设备权限",actions::requestNearby);action(device,"配对或管理耳机",actions::openBluetooth);action(device,"刷新设备与连接状态",actions::refreshDevices);
         caption("权限");LinearLayout permissions=group();action(permissions,"允许读取媒体播放状态",actions::openMediaAccess);action(permissions,"允许服务通知",actions::requestNotifications);
-        caption("运行环境");LinearLayout runtime=group();action(runtime,"检查 Root 与运行环境",actions::checkEnvironment);action(runtime,"启用自动交接",actions::enableHandoff);action(runtime,"准备兼容桥接",actions::prepareBridge);action(runtime,"停止自动交接",actions::stopHandoff);attachStatus();
+        caption("运行环境");LinearLayout runtime=group();action(runtime,"检查 Root 与运行环境",actions::checkEnvironment);action(runtime,"连接耳机",actions::connectEarbuds);action(runtime,"启用自动交接",actions::enableHandoff);action(runtime,"准备兼容桥接",actions::prepareBridge);action(runtime,"停止连接",actions::stopConnection);attachStatus();
         caption("运行记录");LinearLayout logs=group();detach(logOutput);logOutput.setPadding(dp(16),dp(12),dp(16),dp(12));logs.addView(logOutput,new LinearLayout.LayoutParams(-1,-2));help("LinkPods 1.0 · 耳机控制与交接的设备验收仍在进行。");}
     private void attachStatus(){LinearLayout g=group();detach(environmentStatus);environmentStatus.setPadding(dp(20),dp(14),dp(20),dp(14));g.addView(environmentStatus,new LinearLayout.LayoutParams(-1,-2));capabilitiesStatus=text("",13,muted);capabilitiesStatus.setPadding(dp(20),0,dp(20),dp(14));g.addView(capabilitiesStatus);}
     void bindCapabilities(ConnectionPolicy.Snapshot state,boolean mediaAllowed) {
