@@ -20,6 +20,9 @@ review remains separate from this local implementation.
 The product uses the platform sans-serif font. No proprietary font is bundled.
 The AirPods Pro 3 illustration identifies the visual reference, and is not
 model detection or a claim that the connected device has a given capability.
+At runtime the illustration is shown only after the AACP INFORMATION model
+number identifies AirPods Pro 3; other and unknown models use the native text
+presentation. No additional product images were added for this adaptation.
 
 The native View/Canvas controls are a fresh Java implementation inspired by
 LibrePods' Apple-style NoiseControlSettings.kt, StyledSwitch.kt and

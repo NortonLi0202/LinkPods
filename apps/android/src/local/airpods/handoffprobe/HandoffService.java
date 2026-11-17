@@ -249,6 +249,7 @@ public final class HandoffService extends Service {
             updateForegroundNotification();
             if (requestedMode == SessionMode.AUTO_HANDOFF) {
                 startSessionWatch();
+                announcePeers();
             } else {
                 stopSessionWatch();
                 policy.reset();
@@ -259,6 +260,7 @@ public final class HandoffService extends Service {
             }
         } else if (requestedMode == SessionMode.AUTO_HANDOFF && !watching) {
             startSessionWatch();
+            announcePeers();
         }
         boolean preparedBridge=false;
         if(intent.getBooleanExtra("native_backend_ready",false)) {
@@ -475,6 +477,7 @@ public final class HandoffService extends Service {
                 log("BACKEND " + BackendPolicy.select(!nativeBackendReady,nativeBackendReady,nativeBackendReady,nativeBackendReady)
                     + " handoff=not-verified");
                 finishPendingTake("pending-player-play");
+                announcePeers();
             }); }
             @Override public void packet(byte[] data) { handler.post(() -> {
                 if(valid()) receive(data);
@@ -496,8 +499,13 @@ public final class HandoffService extends Service {
         boolean accepted=earbudState.receive(data);
         byte[] statePacket=AapPackets.normalize(data);
         if(statePacket.length>=6 && statePacket[0]==4 && statePacket[1]==0 && statePacket[2]==4
-                && statePacket[3]==0 && statePacket[5]==0 && (statePacket[4]==4 || statePacket[4]==9))
+                && statePacket[3]==0 && statePacket[5]==0
+                && (statePacket[4]==4 || statePacket[4]==9 || statePacket[4]==0x1d))
             log("EARBUD_STATE opcode="+(statePacket[4]&255)+" len="+statePacket.length+" accepted="+accepted);
+        if(accepted && statePacket[4]==0x1d && deviceConfig!=null) {
+            EarbudSnapshot identity=earbudState.snapshot(deviceConfig.target,SystemClock.elapsedRealtime());
+            log("EARBUD_MODEL "+identity.modelNumber+" known="+identity.modelKnown());
+        }
         Boolean owns = RoutingPackets.ownershipEvent(data, data.length);
         if (owns != null) {
             Boolean previous = this.owns;
@@ -526,18 +534,25 @@ public final class HandoffService extends Service {
             if (peerMac.isEmpty() || !peerMac.equalsIgnoreCase(peer)) continue;
             if (!peer.equalsIgnoreCase(selfMac) && peers.add(peer)) {
                 log("REMOTE_PEER discovered");
-                if (BluetoothAdapter.checkBluetoothAddress(selfMac) && mode.allowsRouting()) {
-                    send(RoutingPackets.announce(selfMac, peer), "announce");
-                    lastMediaState = null;
-                    mediaInformation(policy.hasPlayback());
-                    finishPendingTake("peer-ready-player-play");
-                }
+                announcePeers();
             }
         }
         if (RoutingPackets.header(data, data.length, 0x0e) && data.length >= 13) {
             sourceMac = RoutingPackets.audioSourceMac(data);
             sourceType = data[12] & 255;
             log("AUDIO_SOURCE mac=" + sourceMac + " type=" + sourceType + " local=" + selfMac.equalsIgnoreCase(sourceMac));
+        }
+    }
+
+    private void announcePeers() {
+        if (!mode.allowsRouting() || !ready || !BluetoothAdapter.checkBluetoothAddress(selfMac)) return;
+        for (String peer : peers) {
+            send(RoutingPackets.announce(selfMac, peer), "announce");
+        }
+        if (!peers.isEmpty()) {
+            lastMediaState = null;
+            mediaInformation(policy.hasPlayback());
+            finishPendingTake("peer-ready-player-play");
         }
     }
 

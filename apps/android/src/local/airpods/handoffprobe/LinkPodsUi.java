@@ -39,6 +39,8 @@ final class LinkPodsUi {
     private final int bg,side,group,ink,muted,line,blue;
     private LinearLayout root,body,sidebar;
     private TextView title,connection,session,handoff,batteries,modeStatus,volumeValue,feedback,sidebarDevice,deviceNameValue;
+    private LinearLayout artwork;
+    private TextView genericArtwork,modelStatus;
     private PodControls.NoiseSelector noise;
     private PodControls.VolumeSlider volume;
     private final ArrayList<SettingRow> settings=new ArrayList<>();
@@ -90,7 +92,7 @@ final class LinkPodsUi {
         body=new LinearLayout(activity){@Override protected void onMeasure(int ws,int hs){int available=View.MeasureSpec.getSize(ws);super.onMeasure(View.MeasureSpec.makeMeasureSpec(Math.min(dp(620),available),View.MeasureSpec.EXACTLY),hs);}};
         body.setOrientation(LinearLayout.VERTICAL);body.setPadding(dp(width<400?16:24),dp(4),dp(width<400?16:24),dp(28));
         FrameLayout.LayoutParams content=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);frame.addView(body,content);
-        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;session=null;handoff=null;modeStatus=null;feedback=null;capabilitiesStatus=null;
+        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;session=null;handoff=null;modeStatus=null;feedback=null;capabilitiesStatus=null;artwork=null;genericArtwork=null;modelStatus=null;
         if(HOME.equals(page))home();
         else if(AUDIO.equals(page))audioPage();
         else if(PRESS.equals(page))pressPage();
@@ -129,10 +131,13 @@ final class LinkPodsUi {
     private void action(LinearLayout g,String name,Runnable task){LinearLayout r=row(g);TextView t=text(name,16,blue);r.addView(t,new LinearLayout.LayoutParams(-1,-2));clickable(r,task);}
     private void pageTitle(String name){TextView t=text(name,28,ink);t.setTypeface(null,Typeface.BOLD);t.setPadding(dp(4),dp(14),0,dp(22));body.addView(t);t.setAccessibilityHeading(true);}
     private void hero(){
-        LinearLayout illustration=new LinearLayout(activity);illustration.setGravity(Gravity.CENTER);illustration.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-        for(String name:new String[]{"lp_earbuds","lp_case"}){ImageView image=new ImageView(activity);image.setScaleType(ImageView.ScaleType.FIT_CENTER);int id=activity.getResources().getIdentifier(name,"drawable",activity.getPackageName());if(id!=0)image.setImageResource(id);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(174),1);p.setMargins(dp(6),0,dp(6),0);illustration.addView(image,p);}
-        LinearLayout.LayoutParams imageParams=new LinearLayout.LayoutParams(-1,dp(190));imageParams.topMargin=dp(12);body.addView(illustration,imageParams);
+        artwork=new LinearLayout(activity);artwork.setGravity(Gravity.CENTER);artwork.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        for(String name:new String[]{"lp_earbuds","lp_case"}){ImageView image=new ImageView(activity);image.setScaleType(ImageView.ScaleType.FIT_CENTER);int id=activity.getResources().getIdentifier(name,"drawable",activity.getPackageName());if(id!=0)image.setImageResource(id);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(174),1);p.setMargins(dp(6),0,dp(6),0);artwork.addView(image,p);}
+        LinearLayout.LayoutParams imageParams=new LinearLayout.LayoutParams(-1,dp(190));imageParams.topMargin=dp(12);body.addView(artwork,imageParams);
+        genericArtwork=text("AirPods",26,ink);genericArtwork.setGravity(Gravity.CENTER);genericArtwork.setTypeface(null,Typeface.BOLD);genericArtwork.setPadding(dp(8),dp(30),dp(8),dp(22));body.addView(genericArtwork,new LinearLayout.LayoutParams(-1,dp(110)));
+        artwork.setVisibility(View.GONE);
         batteries=text("左耳 --   ·   右耳 --   ·   充电盒 --",13,muted);batteries.setGravity(Gravity.CENTER);batteries.setPadding(0,dp(6),0,dp(8));body.addView(batteries);
+        modelStatus=text("型号尚未识别",13,muted);modelStatus.setGravity(Gravity.CENTER);modelStatus.setPadding(dp(8),0,dp(8),dp(4));body.addView(modelStatus);
         connection=text("系统音频："+actions.connectionStatus(),12,muted);connection.setGravity(Gravity.CENTER);connection.setPadding(dp(8),dp(2),dp(8),dp(3));body.addView(connection);
         session=text("耳机控制：未连接",12,muted);session.setGravity(Gravity.CENTER);session.setPadding(dp(8),0,dp(8),dp(3));body.addView(session);
         handoff=text("自动交接：关闭",12,muted);handoff.setGravity(Gravity.CENTER);handoff.setPadding(dp(8),0,dp(8),dp(18));body.addView(handoff);
@@ -190,13 +195,22 @@ final class LinkPodsUi {
         if(handoff!=null){
             handoff.setText("自动交接："+(status!=null?status.handoffDescription:"关闭"));
         }
+        if(modelStatus!=null){modelStatus.setText(state.modelIdentityLabel());modelStatus.setContentDescription("耳机型号："+state.modelIdentityLabel());}
+        if(artwork!=null&&genericArtwork!=null){
+            boolean pro3=state.isPro3();
+            artwork.setVisibility(pro3?View.VISIBLE:View.GONE);
+            genericArtwork.setVisibility(pro3?View.GONE:View.VISIBLE);
+            genericArtwork.setText(state.modelKnown()?state.model.name:"AirPods");
+        }
         if(state.ready||state.leftBattery!=null)lastLeft=state.leftBattery;
         if(state.ready||state.rightBattery!=null)lastRight=state.rightBattery;
         if(state.ready||state.caseBattery!=null)lastCase=state.caseBattery;
         if(batteries!=null){batteries.setText("左耳 "+battery(lastLeft)+"   ·   右耳 "+battery(lastRight)+"   ·   充电盒 "+battery(lastCase)+(state.ready?"":"  · 未更新"));batteries.setContentDescription("左耳电量"+batterySpoken(lastLeft)+"，右耳电量"+batterySpoken(lastRight)+"，充电盒电量"+batterySpoken(lastCase)+(state.ready?"":"，当前未更新"));}
-        if(noise!=null){Integer mode=state.value(EarbudCommands.LISTENING_MODE);boolean pending=state.pending.contains(EarbudCommands.LISTENING_MODE);noise.bind(mode,EarbudUiPolicy.canWrite(state.ready,mode,pending),pending,state.supportsListeningMode(EarbudCommands.MODE_ADAPTIVE),state.supportsListeningMode(EarbudCommands.MODE_OFF));
-            modeStatus.setText(pending?"已发送，等待耳机确认；当前仍显示已读取模式":mode==null?"尚未读取耳机模式":state.status!=null&&state.status.contains("未确认")?state.status:"自适应与关闭仅在耳机曾回报该模式后显示");}
-        for(SettingRow r:settings){Boolean value=state.enabled(r.id);boolean pending=state.pending.contains(r.id);r.toggle.bind(value,value!=null&&EarbudUiPolicy.canWrite(state.ready,state.value(r.id),pending));r.detail.setText(pending?"等待耳机确认":value==null?"尚未读取":!state.ready?"控制通道未就绪":value?"已开启":"已关闭");}
+        if(noise!=null){boolean listeningSupported=state.supportsSetting(EarbudCommands.LISTENING_MODE);Integer mode=state.value(EarbudCommands.LISTENING_MODE);boolean pending=state.pending.contains(EarbudCommands.LISTENING_MODE);
+            noise.setVisibility(listeningSupported?View.VISIBLE:View.GONE);
+            noise.bind(mode,EarbudUiPolicy.canWrite(state.ready,mode,pending),pending,state.supportsListeningMode(EarbudCommands.MODE_ADAPTIVE),state.supportsListeningMode(EarbudCommands.MODE_OFF));
+            modeStatus.setText(!listeningSupported?"此型号不支持噪声控制":pending?"已发送，等待耳机确认；当前仍显示已读取模式":mode==null?"尚未读取耳机模式":state.status!=null&&state.status.contains("未确认")?state.status:"自适应与关闭仅在耳机曾回报该模式后显示");}
+        for(SettingRow r:settings){Boolean value=state.enabled(r.id);boolean pending=state.pending.contains(r.id);boolean supported=state.supportsSetting(r.id);r.toggle.bind(value,supported&&value!=null&&EarbudUiPolicy.canWrite(state.ready,state.value(r.id),pending));r.detail.setText(!supported?"此型号不支持":pending?"等待耳机确认":value==null?"尚未读取":!state.ready?"控制通道未就绪":value?"已开启":"已关闭");}
         updateLocalVolume();
     }
     private String battery(Integer value){return value==null?"--":value+"%";}
