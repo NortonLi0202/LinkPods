@@ -16,15 +16,15 @@ public final class ConnectionPolicyTest {
         expect(!p.fallbackUsed(),"bridge failure never requests another preparation");
         expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.FAILED,"unsuccessful bridge reconnect stops after one retry");
     }
-    static void modeSwitchPreservesExistingSession(){
+    static void repeatedStartForSameTargetPreservesExistingSession(){
         ConnectionPolicy p=new ConnectionPolicy();
         action(p.start(TARGET,false),ConnectionPolicy.Action.CONNECT_DIRECT);
         long g=p.generation();
         p.ready(g,TARGET);
         expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.DIRECT_READY,"direct connected");
         action(p.start(TARGET,false),ConnectionPolicy.Action.NONE);
-        expect(p.generation()==g,"generation preserved across same-target mode switch");
-        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.DIRECT_READY,"phase stays DIRECT_READY on mode update");
+        expect(p.generation()==g,"generation preserved across repeated start for same target");
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.DIRECT_READY,"phase stays DIRECT_READY on repeated start");
     }
     public static void main(String[] args){
         ConnectionPolicy p=new ConnectionPolicy();
@@ -73,7 +73,7 @@ public final class ConnectionPolicyTest {
         expect(p.snapshot("11:22:33:44:55:66").phase==ConnectionPolicy.Phase.IDLE,"foreign target gets no capability");
 
         unsuccessfulBridgeReconnectStopsAfterOneRetry();
-        modeSwitchPreservesExistingSession();
+        repeatedStartForSameTargetPreservesExistingSession();
         p=new ConnectionPolicy();p.start(TARGET,false);long g=p.generation();p.ended(g,TARGET,true);
         action(p.bridgePrepared(g,TARGET,true,"","",""),ConnectionPolicy.Action.NONE);
         expect(p.snapshot(TARGET).description.contains("适配器"),"ready result needs selected adapter");

@@ -25,6 +25,13 @@ public final class SessionModeTest {
         mode = SessionMode.CONTROL_ONLY;
         expect(!mode.allowsRouting(), "downgraded CONTROL_ONLY mode blocks routing");
 
+        // Bridge preparation preserves running session mode or falls back to CONTROL_ONLY
+        expect(SessionMode.forBridgePreparation(null) == SessionMode.CONTROL_ONLY, "null status defaults to CONTROL_ONLY");
+        expect(SessionMode.forBridgePreparation(SessionStatus.idle("AA:BB:CC:DD:EE:FF")) == SessionMode.CONTROL_ONLY, "idle status defaults to CONTROL_ONLY");
+        expect(SessionMode.forBridgePreparation(new SessionStatus("AA:BB:CC:DD:EE:FF", SessionMode.AUTO_HANDOFF, true, true, "ready", "running")) == SessionMode.AUTO_HANDOFF, "running AUTO_HANDOFF status preserved for bridge preparation");
+        expect(SessionMode.forBridgePreparation(new SessionStatus("AA:BB:CC:DD:EE:FF", SessionMode.CONTROL_ONLY, true, true, "ready", "off")) == SessionMode.CONTROL_ONLY, "running CONTROL_ONLY status preserved for bridge preparation");
+        expect(SessionMode.forBridgePreparation(new SessionStatus("AA:BB:CC:DD:EE:FF", SessionMode.AUTO_HANDOFF, false, false, "idle", "off")) == SessionMode.CONTROL_ONLY, "stopped service status defaults to CONTROL_ONLY");
+
         System.out.println("PASS: session mode permissions and routing isolation invariants");
     }
 }
