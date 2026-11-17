@@ -22,4 +22,7 @@ final class PeerRoutingPolicy {
         }
         return false;
     }
+    void reset() {
+        playing = null;
+    }
 }

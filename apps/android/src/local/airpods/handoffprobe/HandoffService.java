@@ -507,7 +507,7 @@ public final class HandoffService extends Service {
             if (peerMac.isEmpty() || !peerMac.equalsIgnoreCase(peer)) continue;
             if (!peer.equalsIgnoreCase(selfMac) && peers.add(peer)) {
                 log("REMOTE_PEER discovered");
-                if (BluetoothAdapter.checkBluetoothAddress(selfMac)) {
+                if (BluetoothAdapter.checkBluetoothAddress(selfMac) && mode.allowsRouting()) {
                     send(RoutingPackets.announce(selfMac, peer), "announce");
                     lastMediaState = null;
                     mediaInformation(policy.hasPlayback());
@@ -590,6 +590,10 @@ public final class HandoffService extends Service {
     }
 
     private void profileAction(BluetoothProfile profile, String method) {
+        if (!mode.allowsRouting()) {
+            log("PROFILE " + method + " skipped; mode=" + mode);
+            return;
+        }
         if (profile == null) { log("PROFILE " + method + " unavailable"); return; }
         try {
             Object result = profile.getClass().getMethod(method, BluetoothDevice.class).invoke(profile, target);

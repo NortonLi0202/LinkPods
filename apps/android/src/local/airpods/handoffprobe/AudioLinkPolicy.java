@@ -14,4 +14,7 @@ final class AudioLinkPolicy {
         if (!wanted && (state == 1 || state == 2)) return Action.DISCONNECT;
         return Action.NONE;
     }
+    void reset() {
+        wanted = null;
+    }
 }
