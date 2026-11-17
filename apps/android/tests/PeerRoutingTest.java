@@ -34,6 +34,10 @@ public final class PeerRoutingTest {
         SmartRouting.Message manualMessage=SmartRouting.decode(manual);
         expect(manualMessage != null && "ManualRoute".equals(manualMessage.fields.get("reason")),"manual route request is complete OPACK with correct frame length");
         expect(Long.valueOf(301).equals(manualMessage.fields.get("remotescore")),"changing reason preserves object-reference indices");
+        PeerRoutingPolicy resetPeer = new PeerRoutingPolicy();
+        resetPeer.receive(report("example.media.player", false, 301), true);
+        resetPeer.reset();
+        expect(!resetPeer.receive(report("example.media.player", true, 301), true), "reset clears armed rising-edge, play without armed edge does not yield");
         System.out.println("PASS: stale retry versus real phone replay/call/manual routing and sanitized OPACK decoding");
     }
     static byte[] hex(String s) { byte[] b=new byte[s.length()/2]; for(int i=0;i<b.length;i++)b[i]=(byte)Integer.parseInt(s.substring(2*i,2*i+2),16);return b; }
