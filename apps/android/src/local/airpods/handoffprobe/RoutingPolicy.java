@@ -30,8 +30,4 @@ final class RoutingPolicy {
         return true;
     }
     Action onRemoteRequest() { pending = false; return Action.RELEASE; }
-    void reset() {
-        playing.clear();
-        pending = false;
-    }
 }
