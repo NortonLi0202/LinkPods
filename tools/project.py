@@ -215,7 +215,7 @@ def test(root):
     with tempfile.TemporaryDirectory(prefix='handoff-host-tests-') as output:
         sources = [package / (name + '.java') for name in ('RoutingPackets', 'RoutingPolicy', 'AudioLinkPolicy', 'PeerRoutingPolicy', 'SmartRouting', 'DeviceConfig', 'RootAccess', 'BackendPolicy', 'RequestGate', 'RootProtocol', 'RootTarget', 'RootWorkQueue', 'EarbudCommands', 'EarbudSnapshot', 'EarbudUiPolicy')]
         sources += [package / 'AapPackets.java']
-        sources += [package / (name+'.java') for name in ('ConnectionPolicy','BridgeAdapterRegistry','BridgeRuntimeLease','SessionMode')]
+        sources += [package / (name+'.java') for name in ('ConnectionPolicy','BridgeAdapterRegistry','BridgeRuntimeLease','SessionMode','SessionStatus')]
         sources += [source / 'tests' / (name + '.java') for name in tests]
         run([javac, '-encoding', 'UTF-8', '-d', output, *sources], root)
         for name in tests:

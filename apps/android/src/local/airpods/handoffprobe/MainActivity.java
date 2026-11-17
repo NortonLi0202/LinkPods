@@ -161,7 +161,8 @@ public class MainActivity extends Activity {
         BluetoothDevice target=hasPermission()?selected():null;
         String address=target==null?"":target.getAddress();
         EarbudSnapshot observed=target==null?EarbudSnapshot.empty(address,"请在应用设置中选择耳机"):HandoffService.earbudSnapshot(address);
-        ui.bind(observed,address);
+        SessionStatus session=HandoffService.sessionStatus(address);
+        ui.bind(observed,address,session);
         ui.bindCapabilities(HandoffService.capabilities(address),mediaAccessGranted());
     }
     @Override protected void onResume() {
