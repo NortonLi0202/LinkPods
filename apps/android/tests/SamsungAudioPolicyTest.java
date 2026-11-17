@@ -34,11 +34,11 @@ public final class SamsungAudioPolicyTest {
                 == SamsungAudioSnapshot.ConnectionState.UNKNOWN, "missing target forces UNKNOWN");
     }
 
-    static void testDeviceAvailabilityNeverImpliesActiveRoute() {
+    static void testDeviceAvailabilityNeverImpliesActiveRouteAndDistinguishesUnsupportedApi() {
         List<SamsungAudioPolicy.OutputDevice> devices = Collections.singletonList(
                 new SamsungAudioPolicy.OutputDevice(TARGET_LOWER, "AirPods Pro", true, true));
 
-        SamsungAudioSnapshot insufficient = SamsungAudioPolicy.evaluate(
+        SamsungAudioSnapshot unsupportedSource = SamsungAudioPolicy.evaluate(
                 TARGET,
                 true,
                 true, SamsungAudioPolicy.PROFILE_CONNECTED,
@@ -49,14 +49,41 @@ public final class SamsungAudioPolicyTest {
                 SamsungAudioPolicy.RouteEvidence.none(),
                 1234L);
 
-        expect(insufficient.a2dpState == SamsungAudioSnapshot.ConnectionState.CONNECTED,
+        expect(unsupportedSource.a2dpState == SamsungAudioSnapshot.ConnectionState.CONNECTED,
                 "A2DP connected tracked independently");
-        expect(insufficient.headsetState == SamsungAudioSnapshot.ConnectionState.DISCONNECTED,
+        expect(unsupportedSource.headsetState == SamsungAudioSnapshot.ConnectionState.DISCONNECTED,
                 "headset disconnected tracked independently");
-        expect(insufficient.mediaOutputAvailable, "matching output device marks mediaOutputAvailable=true");
-        expect(insufficient.routeState == SamsungAudioSnapshot.RouteState.UNKNOWN,
+        expect(unsupportedSource.mediaOutputAvailable, "matching output device marks mediaOutputAvailable=true");
+        expect(!unsupportedSource.routeEvidenceSupported,
+                "API < 33 non-call mode marks routeEvidenceSupported=false");
+        expect(unsupportedSource.routeState == SamsungAudioSnapshot.RouteState.UNKNOWN,
                 "device presence alone without route evidence must stay UNKNOWN, not ROUTE_OBSERVED");
-        expect(insufficient.lastUpdateElapsedMs == 1234L, "elapsed timestamp preserved");
+        expect(unsupportedSource.routeDetail.contains("不提供系统媒体路由查询"),
+                "unsupported route evidence source explains unavailability");
+        expect(SamsungAudioPolicy.formatRouteSummary(unsupportedSource).contains("接口不可用"),
+                "route summary distinguishes unsupported API from supported-but-unknown");
+        expect(unsupportedSource.lastUpdateElapsedMs == 1234L, "elapsed timestamp preserved");
+
+        SamsungAudioPolicy.RouteEvidence supportedButEmpty = new SamsungAudioPolicy.RouteEvidence(
+                true, false, false, false, false, false);
+        SamsungAudioSnapshot supportedUnknown = SamsungAudioPolicy.evaluate(
+                TARGET,
+                true,
+                true, SamsungAudioPolicy.PROFILE_CONNECTED,
+                true, SamsungAudioPolicy.PROFILE_DISCONNECTED,
+                devices,
+                "", "",
+                SamsungAudioPolicy.AUDIO_MODE_NORMAL,
+                supportedButEmpty,
+                1500L);
+        expect(supportedUnknown.routeEvidenceSupported,
+                "API 33+ route query source marks routeEvidenceSupported=true");
+        expect(supportedUnknown.routeState == SamsungAudioSnapshot.RouteState.UNKNOWN,
+                "supported API with empty route evidence stays UNKNOWN");
+        expect(supportedUnknown.routeDetail.contains("路由证据不足"),
+                "supported-but-unknown route explains insufficient evidence");
+        expect(SamsungAudioPolicy.formatRouteSummary(supportedUnknown).contains("路由：未知"),
+                "route summary shows 未知 when API is supported but route is unconfirmed");
     }
 
     static void testOtherRouteYieldsDeviceAvailableNotObserved() {
@@ -65,9 +92,8 @@ public final class SamsungAudioPolicyTest {
                 new SamsungAudioPolicy.OutputDevice(TARGET, "AirPods Pro", true, true));
 
         SamsungAudioPolicy.RouteEvidence speakerRouted = new SamsungAudioPolicy.RouteEvidence(
-                false, false,
-                true, false,
-                false, false);
+                true, true, false,
+                false, false, false);
 
         SamsungAudioSnapshot snapshot = SamsungAudioPolicy.evaluate(
                 TARGET,
@@ -81,31 +107,34 @@ public final class SamsungAudioPolicyTest {
                 2000L);
 
         expect(snapshot.mediaOutputAvailable, "target still available as media output");
+        expect(snapshot.routeEvidenceSupported, "route evidence source is supported");
         expect(snapshot.routeState == SamsungAudioSnapshot.RouteState.DEVICE_AVAILABLE,
                 "when another route is observed, available target resolves to DEVICE_AVAILABLE");
+        expect(snapshot.routeDetail.contains("其他音频设备"),
+                "device available detail explains another device is currently routed");
     }
 
     static void testObservedRoutesAndCallModes() {
         List<SamsungAudioPolicy.OutputDevice> devices = Collections.singletonList(
                 new SamsungAudioPolicy.OutputDevice(TARGET, "AirPods Pro", true, true));
 
-        SamsungAudioPolicy.RouteEvidence playbackEvidence = new SamsungAudioPolicy.RouteEvidence(
-                true, true, false, false, false, false);
-        SamsungAudioSnapshot mediaPlayback = SamsungAudioPolicy.evaluate(
+        SamsungAudioPolicy.RouteEvidence mediaEvidence = new SamsungAudioPolicy.RouteEvidence(
+                true, true, true, false, false, false);
+        SamsungAudioSnapshot mediaRoute = SamsungAudioPolicy.evaluate(
                 TARGET, true,
                 true, SamsungAudioPolicy.PROFILE_CONNECTED,
                 true, SamsungAudioPolicy.PROFILE_DISCONNECTED,
                 devices, "", "",
                 SamsungAudioPolicy.AUDIO_MODE_NORMAL,
-                playbackEvidence,
+                mediaEvidence,
                 3000L);
-        expect(mediaPlayback.routeState == SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED,
-                "active playback device match resolves to ROUTE_OBSERVED");
-        expect(mediaPlayback.routeDetail.contains("试听确认"),
+        expect(mediaRoute.routeState == SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED,
+                "media attributes device match resolves to ROUTE_OBSERVED");
+        expect(mediaRoute.routeDetail.contains("试听确认"),
                 "observed route detail still clarifies actual sound needs listening verification");
 
         SamsungAudioPolicy.RouteEvidence commEvidence = new SamsungAudioPolicy.RouteEvidence(
-                false, false, false, false, true, true);
+                false, false, false, true, true, true);
         SamsungAudioSnapshot callRoute = SamsungAudioPolicy.evaluate(
                 TARGET, true,
                 true, SamsungAudioPolicy.PROFILE_CONNECTED,
@@ -114,6 +143,8 @@ public final class SamsungAudioPolicyTest {
                 SamsungAudioPolicy.AUDIO_MODE_IN_COMMUNICATION,
                 commEvidence,
                 4000L);
+        expect(callRoute.routeEvidenceSupported,
+                "call mode communication device counts as supported route evidence even when media API is unavailable");
         expect(callRoute.routeState == SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED,
                 "communication route in call mode resolves to ROUTE_OBSERVED");
         expect(callRoute.communicationDeviceMatchesTarget,
@@ -126,8 +157,8 @@ public final class SamsungAudioPolicyTest {
     static void testTargetIsolationAndPermissionLoss() {
         List<SamsungAudioPolicy.OutputDevice> foreignOnly = Collections.singletonList(
                 new SamsungAudioPolicy.OutputDevice(OTHER, "Other Buds", true, true));
-        SamsungAudioPolicy.RouteEvidence foreignPlayback = new SamsungAudioPolicy.RouteEvidence(
-                true, false, true, false, false, false);
+        SamsungAudioPolicy.RouteEvidence foreignRoute = new SamsungAudioPolicy.RouteEvidence(
+                true, true, false, false, false, false);
 
         SamsungAudioSnapshot mismatched = SamsungAudioPolicy.evaluate(
                 TARGET, true,
@@ -136,7 +167,7 @@ public final class SamsungAudioPolicyTest {
                 foreignOnly,
                 "Other Buds", OTHER,
                 SamsungAudioPolicy.AUDIO_MODE_NORMAL,
-                foreignPlayback,
+                foreignRoute,
                 5000L);
         expect(!mismatched.mediaOutputAvailable, "foreign Bluetooth output does not mark target available");
         expect(!mismatched.communicationDeviceMatchesTarget, "foreign communication device does not match target");
@@ -158,13 +189,14 @@ public final class SamsungAudioPolicyTest {
         expect(noPermission.headsetState == SamsungAudioSnapshot.ConnectionState.UNKNOWN,
                 "missing permission hides headset state as UNKNOWN");
         expect(!noPermission.mediaOutputAvailable, "missing permission reports mediaOutputAvailable=false");
+        expect(!noPermission.routeEvidenceSupported, "missing permission reports routeEvidenceSupported=false");
         expect(noPermission.routeState == SamsungAudioSnapshot.RouteState.UNKNOWN,
                 "missing permission reports routeState=UNKNOWN");
     }
 
     public static void main(String[] args) {
         testConnectionNormalization();
-        testDeviceAvailabilityNeverImpliesActiveRoute();
+        testDeviceAvailabilityNeverImpliesActiveRouteAndDistinguishesUnsupportedApi();
         testOtherRouteYieldsDeviceAvailableNotObserved();
         testObservedRoutesAndCallModes();
         testTargetIsolationAndPermissionLoss();

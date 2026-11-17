@@ -219,6 +219,9 @@ final class SamsungAudioMonitor {
         if (!normalized.equals(targetAddress)) {
             targetAddress = normalized;
         }
+        if (started) {
+            requestProxiesIfPermitted();
+        }
         refresh();
     }
 
@@ -360,33 +363,13 @@ final class SamsungAudioMonitor {
         if (audio == null) {
             return SamsungAudioPolicy.RouteEvidence.none();
         }
-        boolean playbackAvailable = false;
-        boolean playbackMatches = false;
-        try {
-            List<AudioPlaybackConfiguration> configs = audio.getActivePlaybackConfigurations();
-            if (configs != null) {
-                for (AudioPlaybackConfiguration config : configs) {
-                    if (config == null) {
-                        continue;
-                    }
-                    AudioAttributes attrs = config.getAudioAttributes();
-                    if (attrs != null && !isMediaLikeUsage(attrs.getUsage())) {
-                        continue;
-                    }
-                    AudioDeviceInfo device = config.getAudioDeviceInfo();
-                    if (device != null) {
-                        playbackAvailable = true;
-                        if (SamsungAudioPolicy.matchesAddress(target, safeAddress(device))) {
-                            playbackMatches = true;
-                        }
-                    }
-                }
-            }
-        } catch (RuntimeException ignored) {}
-
+        // AudioPlaybackConfiguration.getAudioDeviceInfo() is deprecated in API 36 and left
+        // unpopulated in Android framework builds, so it is not used as routing evidence.
+        // On API 32 outside call/communication mode, Android provides no media route query API.
+        boolean mediaEvidenceSupported = Build.VERSION.SDK_INT >= 33;
         boolean attrsAvailable = false;
         boolean attrsMatches = false;
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (mediaEvidenceSupported) {
             try {
                 List<AudioDeviceInfo> routed = audio.getAudioDevicesForAttributes(MEDIA_ATTRIBUTES);
                 if (routed != null && !routed.isEmpty()) {
@@ -400,15 +383,16 @@ final class SamsungAudioMonitor {
             } catch (RuntimeException ignored) {}
         }
 
-        boolean commRouteAvailable = commDevice != null && SamsungAudioPolicy.isCallMode(audioMode);
+        boolean commEvidenceSupported = SamsungAudioPolicy.isCallMode(audioMode);
+        boolean commRouteAvailable = commEvidenceSupported && commDevice != null;
         boolean commRouteMatches = commRouteAvailable
                 && SamsungAudioPolicy.matchesAddress(target, safeAddress(commDevice));
 
         return new SamsungAudioPolicy.RouteEvidence(
-                playbackAvailable,
-                playbackMatches,
+                mediaEvidenceSupported,
                 attrsAvailable,
                 attrsMatches,
+                commEvidenceSupported,
                 commRouteAvailable,
                 commRouteMatches);
     }
@@ -436,12 +420,6 @@ final class SamsungAudioMonitor {
         } catch (RuntimeException ignored) {
             return "";
         }
-    }
-
-    private static boolean isMediaLikeUsage(int usage) {
-        return usage == AudioAttributes.USAGE_MEDIA
-                || usage == AudioAttributes.USAGE_GAME
-                || usage == AudioAttributes.USAGE_UNKNOWN;
     }
 
     private static boolean isMediaBluetoothOutput(int type) {

@@ -24,6 +24,7 @@ public final class SamsungAudioSnapshot {
     public final String communicationDevice;
     public final boolean communicationDeviceMatchesTarget;
     public final int audioMode;
+    public final boolean routeEvidenceSupported;
     public final RouteState routeState;
     public final String routeDetail;
     public final long lastUpdateElapsedMs;
@@ -37,6 +38,7 @@ public final class SamsungAudioSnapshot {
             String communicationDevice,
             boolean communicationDeviceMatchesTarget,
             int audioMode,
+            boolean routeEvidenceSupported,
             RouteState routeState,
             String routeDetail,
             long lastUpdateElapsedMs) {
@@ -48,6 +50,7 @@ public final class SamsungAudioSnapshot {
         this.communicationDevice = communicationDevice == null ? "" : communicationDevice;
         this.communicationDeviceMatchesTarget = communicationDeviceMatchesTarget;
         this.audioMode = audioMode;
+        this.routeEvidenceSupported = routeEvidenceSupported;
         this.routeState = routeState == null ? RouteState.UNKNOWN : routeState;
         this.routeDetail = routeDetail == null ? "" : routeDetail;
         this.lastUpdateElapsedMs = lastUpdateElapsedMs;
@@ -71,6 +74,7 @@ public final class SamsungAudioSnapshot {
                 "",
                 false,
                 SamsungAudioPolicy.AUDIO_MODE_INVALID,
+                false,
                 RouteState.UNKNOWN,
                 detail,
                 elapsedMs);

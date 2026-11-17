@@ -35,26 +35,30 @@ public final class SamsungAudioPolicy {
     }
 
     public static final class RouteEvidence {
-        public final boolean playbackRouteAvailable;
-        public final boolean playbackMatchesTarget;
+        public final boolean mediaEvidenceSupported;
         public final boolean mediaAttributesRouteAvailable;
         public final boolean mediaAttributesMatchesTarget;
+        public final boolean communicationEvidenceSupported;
         public final boolean communicationRouteAvailable;
         public final boolean communicationMatchesTarget;
 
         public RouteEvidence(
-                boolean playbackRouteAvailable,
-                boolean playbackMatchesTarget,
+                boolean mediaEvidenceSupported,
                 boolean mediaAttributesRouteAvailable,
                 boolean mediaAttributesMatchesTarget,
+                boolean communicationEvidenceSupported,
                 boolean communicationRouteAvailable,
                 boolean communicationMatchesTarget) {
-            this.playbackRouteAvailable = playbackRouteAvailable;
-            this.playbackMatchesTarget = playbackMatchesTarget;
+            this.mediaEvidenceSupported = mediaEvidenceSupported;
             this.mediaAttributesRouteAvailable = mediaAttributesRouteAvailable;
             this.mediaAttributesMatchesTarget = mediaAttributesMatchesTarget;
+            this.communicationEvidenceSupported = communicationEvidenceSupported;
             this.communicationRouteAvailable = communicationRouteAvailable;
             this.communicationMatchesTarget = communicationMatchesTarget;
+        }
+
+        public boolean hasAnySupportedSource() {
+            return mediaEvidenceSupported || communicationEvidenceSupported;
         }
 
         public static RouteEvidence none() {
@@ -129,12 +133,11 @@ public final class SamsungAudioPolicy {
             return SamsungAudioSnapshot.RouteState.UNKNOWN;
         }
         RouteEvidence safe = evidence == null ? RouteEvidence.none() : evidence;
-        if (safe.playbackMatchesTarget || safe.communicationMatchesTarget || safe.mediaAttributesMatchesTarget) {
+        if (safe.communicationMatchesTarget || safe.mediaAttributesMatchesTarget) {
             return SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED;
         }
         boolean otherRouteObserved =
-                (safe.playbackRouteAvailable && !safe.playbackMatchesTarget)
-                || (safe.mediaAttributesRouteAvailable && !safe.mediaAttributesMatchesTarget)
+                (safe.mediaAttributesRouteAvailable && !safe.mediaAttributesMatchesTarget)
                 || (safe.communicationRouteAvailable && !safe.communicationMatchesTarget);
         if (mediaOutputAvailable && otherRouteObserved) {
             return SamsungAudioSnapshot.RouteState.DEVICE_AVAILABLE;
@@ -156,9 +159,6 @@ public final class SamsungAudioPolicy {
         }
         RouteEvidence safe = evidence == null ? RouteEvidence.none() : evidence;
         if (routeState == SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED) {
-            if (safe.playbackMatchesTarget) {
-                return "已观察到活动播放路由指向此耳机（实际出声需试听确认）";
-            }
             if (safe.communicationMatchesTarget) {
                 return "已观察到通话设备路由指向此耳机（实际出声需试听确认）";
             }
@@ -167,8 +167,13 @@ public final class SamsungAudioPolicy {
         if (routeState == SamsungAudioSnapshot.RouteState.DEVICE_AVAILABLE) {
             return "设备可用，当前系统路由指向其他音频设备";
         }
+        if (!safe.hasAnySupportedSource()) {
+            return mediaOutputAvailable
+                    ? "设备在可用输出列表中；当前 Android 版本在此模式下不提供系统媒体路由查询（不可用）"
+                    : "未在可用输出列表中发现目标耳机；当前 Android 版本在此模式下不提供系统媒体路由查询（不可用）";
+        }
         if (mediaOutputAvailable) {
-            return "设备在可用输出列表中，但路由证据不足";
+            return "设备在可用输出列表中，但路由证据不足（未知）";
         }
         return "未观察到目标输出路由";
     }
@@ -197,6 +202,7 @@ public final class SamsungAudioPolicy {
         boolean commMatches = permissionGranted && hasTarget && matchesAddress(target, communicationDeviceAddress);
         String commLabel = communicationDeviceLabel == null ? "" : communicationDeviceLabel.trim();
         RouteEvidence safeEvidence = evidence == null ? RouteEvidence.none() : evidence;
+        boolean evidenceSupported = permissionGranted && hasTarget && safeEvidence.hasAnySupportedSource();
         SamsungAudioSnapshot.RouteState routeState =
                 resolveRouteState(target, permissionGranted, mediaOutputAvailable, safeEvidence);
         String detail = describeRoute(target, permissionGranted, mediaOutputAvailable, safeEvidence, routeState);
@@ -209,6 +215,7 @@ public final class SamsungAudioPolicy {
                 commLabel,
                 commMatches,
                 audioMode,
+                evidenceSupported,
                 routeState,
                 detail,
                 elapsedMs);
@@ -301,6 +308,15 @@ public final class SamsungAudioPolicy {
             return "未选择耳机";
         }
         String available = snapshot.mediaOutputAvailable ? "可用" : "不可用";
+        if (snapshot.routeState == SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED) {
+            return "输出设备：" + available + " · 路由：" + routeLabel(snapshot.routeState) + "（需试听确认）";
+        }
+        if (snapshot.routeState == SamsungAudioSnapshot.RouteState.DEVICE_AVAILABLE) {
+            return "输出设备：" + available + " · 路由：" + routeLabel(snapshot.routeState);
+        }
+        if (!snapshot.routeEvidenceSupported) {
+            return "输出设备：" + available + " · 路由：接口不可用（需试听确认）";
+        }
         return "输出设备：" + available + " · 路由：" + routeLabel(snapshot.routeState);
     }
 }

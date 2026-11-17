@@ -20,10 +20,11 @@ public class Context {
  public static final int MODE_PRIVATE=0,MODE_APPEND=32768,RECEIVER_EXPORTED=2;
  public final Map<Class<?>,Object> services=new HashMap<>();
  public int registeredReceivers,unregisteredReceivers;
+ public boolean bluetoothPermissionGranted=true;
  public <T>T getSystemService(Class<T> type){return type.cast(services.get(type));}
  public Context getApplicationContext(){return this;}
  public java.util.concurrent.Executor getMainExecutor(){return Runnable::run;}
- public int checkSelfPermission(String p){return android.content.pm.PackageManager.PERMISSION_GRANTED;}
+ public int checkSelfPermission(String p){return bluetoothPermissionGranted?android.content.pm.PackageManager.PERMISSION_GRANTED:-1;}
  public void registerReceiver(BroadcastReceiver r,IntentFilter f){registeredReceivers++;}
  public void registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){registeredReceivers++;}
  public void unregisterReceiver(BroadcastReceiver r){unregisteredReceivers++;}
@@ -84,17 +85,18 @@ public class NotificationManager {
     'android/bluetooth/BluetoothAdapter.java': '''package android.bluetooth;
 public class BluetoothAdapter {
  public static final String ACTION_STATE_CHANGED="android.bluetooth.adapter.action.STATE_CHANGED";
+ public int proxyRequests;
  public static boolean checkBluetoothAddress(String s){return s!=null&&s.matches("[0-9A-F]{2}(:[0-9A-F]{2}){5}");}
  public BluetoothDevice getRemoteDevice(String a){return new BluetoothDevice(a);}
  public void closeProfileProxy(int k,BluetoothProfile p){}
- public boolean getProfileProxy(android.content.Context c,BluetoothProfile.ServiceListener l,int k){return true;}
+ public boolean getProfileProxy(android.content.Context c,BluetoothProfile.ServiceListener l,int k){proxyRequests++;return true;}
  public boolean isEnabled(){return true;}
 }''',
     'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth;
 public class BluetoothDevice {public static final String EXTRA_DEVICE="device";public final String address;public BluetoothDevice(String a){address=a;}public String getAddress(){return address;}}''',
     'android/bluetooth/BluetoothA2dp.java': 'package android.bluetooth; public class BluetoothA2dp {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED";}',
     'android/bluetooth/BluetoothHeadset.java': 'package android.bluetooth; public class BluetoothHeadset {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED",ACTION_AUDIO_STATE_CHANGED="android.bluetooth.headset.profile.action.AUDIO_STATE_CHANGED";}',
-    'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; public class BluetoothManager {public BluetoothAdapter getAdapter(){return new BluetoothAdapter();}}',
+    'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; public class BluetoothManager {public final BluetoothAdapter adapter=new BluetoothAdapter();public BluetoothAdapter getAdapter(){return adapter;}}',
     'android/bluetooth/BluetoothProfile.java': '''package android.bluetooth;
 public interface BluetoothProfile {
  int A2DP=2,HEADSET=1,STATE_DISCONNECTED=0; String EXTRA_STATE="state";
@@ -520,17 +522,26 @@ public class HandoffLifecycleTest {
   AapProbe.failStart=false;AapProbe.created.clear();
   AudioManager audio=new AudioManager();
   audio.outputs=new AudioDeviceInfo[]{new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods Pro")};
+  BluetoothManager btManager=new BluetoothManager();
   HandoffService s=service(new MediaSessionManager());
   s.services.put(AudioManager.class,audio);
+  s.services.put(BluetoothManager.class,btManager);
+  s.bluetoothPermissionGranted=false;
   s.onCreate();
+  expect(btManager.adapter.proxyRequests==0,"no profile proxies requested before BLUETOOTH_CONNECT grant");
   expect(audio.deviceCallbacks==1&&audio.playbackCallbacks==1&&audio.modeListeners==1&&audio.commListeners==1,
    "onCreate registers SamsungAudioMonitor listeners once");
   expect(s.registeredReceivers==1,"onCreate registers Bluetooth audio receiver once");
+  s.bluetoothPermissionGranted=true;
   Intent start=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY");
   s.onStartCommand(start,0,1);
+  expect(btManager.adapter.proxyRequests==2,"setTargetAddress requests A2DP and HEADSET proxies once permitted");
+  s.onStartCommand(start,0,2);
+  expect(btManager.adapter.proxyRequests==2,"repeated start does not re-request profile proxies");
   SamsungAudioSnapshot initial=HandoffService.audioSnapshot(TARGET);
   expect(initial.mediaOutputAvailable,"service audio snapshot sees available A2DP output device");
+  expect(initial.routeEvidenceSupported,"SDK 36 supports media attributes route evidence");
   expect(initial.routeState==SamsungAudioSnapshot.RouteState.UNKNOWN,
    "service audio snapshot does not infer ROUTE_OBSERVED from getDevices alone");
   audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods Pro"));
