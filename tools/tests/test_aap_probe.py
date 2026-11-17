@@ -57,7 +57,41 @@ import java.lang.reflect.*;
 import java.util.concurrent.*;
 public class AapSchedulerTest {
  static void expect(boolean ok,String reason){if(!ok)throw new AssertionError(reason);}
+ static void sendGuarded(AapProbe probe,byte[] packet,java.util.function.BooleanSupplier allowed,
+   java.util.function.Consumer<Boolean> result)throws Exception {
+  try {AapProbe.class.getDeclaredMethod("sendPacketAsync",byte[].class,
+    java.util.function.BooleanSupplier.class,java.util.function.Consumer.class).invoke(probe,packet,allowed,result);}
+  catch(NoSuchMethodException oldApi){probe.sendPacketAsync(packet,result);}
+ }
+ static void staleRoutingDoesNotBlockSettings()throws Exception {
+  AapProbe probe=new AapProbe(new BluetoothDevice(),message -> {});
+  Field socketField=AapProbe.class.getDeclaredField("socket");socketField.setAccessible(true);
+  Field writerField=AapProbe.class.getDeclaredField("writer");writerField.setAccessible(true);
+  BluetoothSocket socket=new BluetoothSocket();socketField.set(probe,socket);
+  ExecutorService writer=(ExecutorService)writerField.get(probe);
+  CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1),done=new CountDownLatch(2);
+  java.util.concurrent.atomic.AtomicLong generation=new java.util.concurrent.atomic.AtomicLong(1);
+  java.util.concurrent.atomic.AtomicBoolean routed=new java.util.concurrent.atomic.AtomicBoolean(true);
+  try {
+   writer.execute(() -> {entered.countDown();try {release.await();}catch(InterruptedException e){Thread.currentThread().interrupt();}});
+   expect(entered.await(3,TimeUnit.SECONDS),"writer held before queuing routing packet");
+   long queued=generation.get();
+   sendGuarded(probe,new byte[]{4,0,4,0,9,0,6,1,0,0,0},() -> generation.get()==queued,
+     sent -> {routed.set(sent);done.countDown();});
+   probe.sendPacketAsync(AapPackets.notifications(),sent -> {expect(sent,"normal control write survives mode change");done.countDown();});
+   generation.incrementAndGet();generation.incrementAndGet(); // Leave AUTO_HANDOFF and return before writer runs.
+   release.countDown();
+   expect(done.await(3,TimeUnit.SECONDS),"stale routing and normal setting completions delivered");
+   expect(!routed.get(),"queued routing must reject stale mode generation even after routing re-enabled");
+   expect(socket.writes==1,"only the ordinary control write may reach the socket");
+   long current=generation.get();CountDownLatch fresh=new CountDownLatch(1);
+   sendGuarded(probe,AapPackets.notifications(),() -> generation.get()==current,
+     sent -> {expect(sent,"fresh routing generation must still write");fresh.countDown();});
+   expect(fresh.await(3,TimeUnit.SECONDS)&&socket.writes==2,"fresh routing write delivered");
+  } finally {release.countDown();probe.stop();}
+ }
  public static void main(String[] args) throws Exception {
+  staleRoutingDoesNotBlockSettings();
   expect(AapProbe.classifyFailure(new java.io.IOException("EPROTONOSUPPORT"))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"explicit protocol capability failure");
   expect(AapProbe.classifyFailure(new java.lang.reflect.InvocationTargetException(new java.io.IOException("Operation not supported")))==AapProbe.Failure.COMPATIBILITY_REQUIRED,"unwrap socket factory cause");
   for(String message:new String[]{"connect failed: EPROTONOSUPPORT (93)","[EOPNOTSUPP]", "error: protocol not supported.","(operation not supported)"})

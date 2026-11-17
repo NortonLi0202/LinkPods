@@ -51,6 +51,7 @@ public final class HandoffService extends Service {
     }
     public static final String EXTRA_SESSION_MODE = "session_mode";
     private volatile SessionMode mode = SessionMode.CONTROL_ONLY;
+    private volatile long routingModeGeneration;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final RoutingPolicy policy = new RoutingPolicy();
     private final PeerRoutingPolicy peerPolicy = new PeerRoutingPolicy();
@@ -217,6 +218,7 @@ public final class HandoffService extends Service {
         }
         if (deviceConfig == null) earbudState.begin(requested.target);
         deviceConfig = merged;
+        selfMac = deviceConfig.local;
         SessionMode requestedMode = SessionMode.CONTROL_ONLY;
         String modeName = intent.getStringExtra(EXTRA_SESSION_MODE);
         if (modeName != null) {
@@ -224,12 +226,14 @@ public final class HandoffService extends Service {
             catch (IllegalArgumentException ignored) {}
         }
         SessionMode previousMode = this.mode;
+        if (previousMode != requestedMode) ++routingModeGeneration;
         this.mode = requestedMode;
         if (previousMode != requestedMode) {
             log("SESSION_MODE changed: " + previousMode + " -> " + requestedMode);
             updateForegroundNotification();
             if (requestedMode == SessionMode.AUTO_HANDOFF) {
                 startSessionWatch();
+                announcePeers();
             } else {
                 stopSessionWatch();
                 policy.reset();
@@ -240,6 +244,7 @@ public final class HandoffService extends Service {
             }
         } else if (requestedMode == SessionMode.AUTO_HANDOFF && !watching) {
             startSessionWatch();
+            announcePeers();
         }
         boolean preparedBridge=false;
         if(intent.getBooleanExtra("native_backend_ready",false)) {
@@ -250,7 +255,6 @@ public final class HandoffService extends Service {
                 retainBridgeOwnership(handedOff);
             } else if(handedOff!=null)RootEnvironment.queueBridgeStop(handedOff);
         }
-        selfMac = deviceConfig.local;
         if (peerMac.isEmpty()) peerMac = deviceConfig.peer;
         target = adapter.getRemoteDevice(deviceConfig.target);
         ConnectionPolicy.Action next=connection.start(deviceConfig.target,preparedBridge);
@@ -282,12 +286,15 @@ public final class HandoffService extends Service {
             mediaSessions.addOnActiveSessionsChangedListener(sessionsChanged, listener, handler);
             watching = true;
             log("MEDIA_SESSION_WATCH ready");
-        } catch (SecurityException error) { log("MEDIA_SESSION_WATCH access-required " + error); }
+        } catch (SecurityException error) {
+            stopSessionWatch();
+            log("MEDIA_SESSION_WATCH access-required " + error);
+        }
     }
 
     void stopSessionWatch() {
-        if (!watching) return;
-        if (mediaSessions != null) {
+        boolean wasWatching = watching;
+        if (wasWatching && mediaSessions != null) {
             mediaSessions.removeOnActiveSessionsChangedListener(sessionsChanged);
         }
         for (MediaSession.Token token : new HashSet<>(players.keySet())) {
@@ -299,7 +306,7 @@ public final class HandoffService extends Service {
             policy.remove(token.toString());
         }
         watching = false;
-        log("MEDIA_SESSION_WATCH stopped");
+        if (wasWatching) log("MEDIA_SESSION_WATCH stopped");
     }
 
     private void watchPlayers(List<MediaController> list, boolean passive) {
@@ -456,6 +463,7 @@ public final class HandoffService extends Service {
                 log("BACKEND " + BackendPolicy.select(!nativeBackendReady,nativeBackendReady,nativeBackendReady,nativeBackendReady)
                     + " handoff=not-verified");
                 finishPendingTake("pending-player-play");
+                announcePeers();
             }); }
             @Override public void packet(byte[] data) { handler.post(() -> {
                 if(valid()) receive(data);
@@ -512,18 +520,25 @@ public final class HandoffService extends Service {
             if (peerMac.isEmpty() || !peerMac.equalsIgnoreCase(peer)) continue;
             if (!peer.equalsIgnoreCase(selfMac) && peers.add(peer)) {
                 log("REMOTE_PEER discovered");
-                if (BluetoothAdapter.checkBluetoothAddress(selfMac)) {
-                    send(RoutingPackets.announce(selfMac, peer), "announce");
-                    lastMediaState = null;
-                    mediaInformation(policy.hasPlayback());
-                    finishPendingTake("peer-ready-player-play");
-                }
+                announcePeers();
             }
         }
         if (RoutingPackets.header(data, data.length, 0x0e) && data.length >= 13) {
             sourceMac = RoutingPackets.audioSourceMac(data);
             sourceType = data[12] & 255;
             log("AUDIO_SOURCE mac=" + sourceMac + " type=" + sourceType + " local=" + selfMac.equalsIgnoreCase(sourceMac));
+        }
+    }
+
+    private void announcePeers() {
+        if (!mode.allowsRouting() || !ready || !BluetoothAdapter.checkBluetoothAddress(selfMac)) return;
+        for (String peer : peers) {
+            send(RoutingPackets.announce(selfMac, peer), "announce");
+        }
+        if (!peers.isEmpty()) {
+            lastMediaState = null;
+            mediaInformation(policy.hasPlayback());
+            finishPendingTake("peer-ready-player-play");
         }
     }
 
@@ -535,8 +550,12 @@ public final class HandoffService extends Service {
         final AapProbe active=session;
         final long generation=earbudSessionGeneration;
         if(active==null){log("SEND " + label + " ok=false");return;}
-        active.sendPacketAsync(data,sent -> handler.post(() -> {
-            if(!stopped && mode.allowsRouting() && active==session && generation==earbudSessionGeneration)
+        final long routingGeneration=routingModeGeneration;
+        active.sendPacketAsync(data,() -> !stopped && mode.allowsRouting()
+            && routingGeneration==routingModeGeneration && active==session && generation==earbudSessionGeneration,
+            sent -> handler.post(() -> {
+            if(!stopped && mode.allowsRouting() && routingGeneration==routingModeGeneration
+                    && active==session && generation==earbudSessionGeneration)
                 log("SEND " + label + " ok=" + sent);
         }));
     }
