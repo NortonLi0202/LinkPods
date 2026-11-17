@@ -154,19 +154,16 @@ final class AapProbe {
                 } else if (type == 4 && length >= 6) {
                     int command = le16(buffer, 4);
                     if (command == 0x1d) {
-                        String fields = new String(buffer,6,length-6,java.nio.charset.StandardCharsets.ISO_8859_1);
-                        java.util.Set<String> versions = new java.util.LinkedHashSet<>();
-                        for (String field : fields.split("\u0000")) {
-                            if (field.matches("[0-9]{1,2}[A-Z][0-9]{2,6}[a-z]?")) versions.add(field);
-                            if (field.matches("A[0-9]{4}")) logger.write("AAP_MODEL " + field);
-                        }
-                        logger.write("AAP_FIRMWARE_CANDIDATES " + versions);
-                        String[] parts=fields.split("\u0000");
-                        for (int i=0;i+3<parts.length;i++) {
-                            if (parts[i].equals("Apple Inc.")) {
-                                logger.write("AAP_FIRMWARE version1=" + parts[i+2] + " version2=" + parts[i+3]);
-                                break;
-                            }
+                        logger.write(String.format(Locale.ROOT,
+                            "AAP_INFORMATION opcode=0x%04X len=%d",command,length));
+                        AirPodsInformation information=AirPodsInformation.parse(
+                            java.util.Arrays.copyOf(buffer,length));
+                        if (information==null) logger.write("AAP_MODEL unknown-layout");
+                        else {
+                            logger.write("AAP_MODEL " + information.modelNumber);
+                            if (!information.version1.isEmpty() || !information.version2.isEmpty())
+                                logger.write("AAP_FIRMWARE version1=" + information.version1
+                                    + " version2=" + information.version2);
                         }
                     }
                     if (packets <= 15 || command == 0x10 || command == 0x11 || command == 0x2e || command == 0x0e) {
