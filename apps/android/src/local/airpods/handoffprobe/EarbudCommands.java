@@ -40,6 +40,8 @@ public final class EarbudCommands {
         private boolean ready;
         private Integer left,right,box;
         private String status="控制服务未运行";
+        private AirPodsModels.Model model;
+        private String modelNumber="",reportedName="",version1="",version2="";
         private final Map<Integer,Integer> observed=new HashMap<>();
         private final Map<Integer,Request> pending=new HashMap<>();
         private final Set<Integer> observedModes=new HashSet<>();
@@ -50,6 +52,7 @@ public final class EarbudCommands {
         synchronized void begin(String address) {
             target=address==null ? "" : address;
             ready=false;left=null;right=null;box=null;
+            clearIdentity();
             observed.clear();pending.clear();observedModes.clear();
             status="正在连接耳机控制通道";
         }
@@ -57,16 +60,32 @@ public final class EarbudCommands {
             // Disconnected snapshots may retain old readings, but a new live session must
             // wait for fresh component reports before presenting battery values as current.
             left=null;right=null;box=null;
+            clearIdentity();
             ready=true;status="控制通道已连接，等待耳机状态";
         }
         synchronized void disconnected() {
-            ready=false;observed.clear();pending.clear();observedModes.clear();
+            ready=false;
+            clearIdentity();
+            observed.clear();pending.clear();observedModes.clear();
             status="控制通道已断开，电量为上次读数";
+        }
+        private void clearIdentity() {
+            model=null;modelNumber="";reportedName="";version1="";version2="";
         }
         synchronized boolean receive(byte[] packet) {
             packet=AapPackets.normalize(packet);
             if(!ready || packet==null || packet.length<6 || packet[0]!=4 || packet[1]!=0
                 || packet[2]!=4 || packet[3]!=0 || packet[5]!=0) return false;
+            if(packet[4]==0x1d) {
+                AirPodsInformation information=AirPodsInformation.parse(packet);
+                if(information==null) return false;
+                model=AirPodsModels.find(information.modelNumber);
+                modelNumber=information.modelNumber;
+                reportedName=information.name;
+                version1=information.version1;
+                version2=information.version2;
+                return true;
+            }
             if(packet[4]==9) {
                 // Scalar control messages carry exactly 5 payload bytes; multi-byte settings
                 // are deliberately outside this whitelist, so unknown trailing data is rejected.
@@ -101,6 +120,7 @@ public final class EarbudCommands {
         synchronized byte[] queue(String address,int id,int value,long now) {
             expire(now);
             if(!matches(address) || !ready || !observed.containsKey(id) || pending.containsKey(id)) return null;
+            if(!AirPodsModels.supportsSetting(model,id)) return null;
             if(id==LISTENING_MODE && !supportedMode(value)) return null;
             byte[] bytes=encode(id,value);
             if(bytes==null) return null;
@@ -115,6 +135,7 @@ public final class EarbudCommands {
             return address!=null && !target.isEmpty() && target.equalsIgnoreCase(address);
         }
         private boolean supportedMode(int mode) {
+            if(!AirPodsModels.supportsListeningMode(model,mode)) return false;
             return observed.containsKey(LISTENING_MODE) &&
                 (mode==MODE_ANC || mode==MODE_TRANSPARENCY || observedModes.contains(mode));
         }
@@ -129,7 +150,8 @@ public final class EarbudCommands {
             expire(now);
             Set<Integer> modes=new HashSet<>(observedModes);
             if(observed.containsKey(LISTENING_MODE)) { modes.add(MODE_ANC);modes.add(MODE_TRANSPARENCY); }
-            return new EarbudSnapshot(target,ready,left,right,box,status,observed,pending.keySet(),modes);
+            return new EarbudSnapshot(target,ready,left,right,box,status,observed,pending.keySet(),modes,
+                model,modelNumber,reportedName,version1,version2);
         }
     }
 }
