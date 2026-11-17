@@ -527,6 +527,10 @@ public final class HandoffService extends Service {
     }
 
     private void take(String reason) {
+        if (!mode.allowsRouting()) {
+            log("TAKE skipped; mode=" + mode + " reason=" + reason);
+            return;
+        }
         log("TAKE reason=" + reason + " owns=" + owns + " source=" + sourceMac + " type=" + sourceType);
         boolean claim = policy.needsClaim(Boolean.TRUE.equals(owns),selfMac.equalsIgnoreCase(sourceMac) && sourceType != 0);
         if (claim) send(RoutingPackets.ownership(true), "ownership-true");

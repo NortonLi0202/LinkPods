@@ -109,7 +109,7 @@ public class MainActivity extends Activity {
             }
             @Override public void connectEarbuds() { startControlOnly(); }
             @Override public void enableHandoff() { startAutomatic(); }
-            @Override public void disableHandoff() { disableHandoff(); }
+            @Override public void disableHandoff() { MainActivity.this.disableHandoff(); }
             @Override public void stopConnection() { stopSession(); }
             @Override public void stopHandoff() { stopSession(); }
             @Override public void checkEnvironment() { prepareEnvironment(false); }
@@ -282,6 +282,9 @@ public class MainActivity extends Activity {
             log("控制服务未运行。");
             return;
         }
+        cancelEnvironment();
+        nativeBackendReady = false;
+        preparedLocalAddress = "";
         requestedMode = SessionMode.CONTROL_ONLY;
         log("正在切换为纯控制模式（CONTROL_ONLY）；保留耳机控制，停止自动路由。");
         startServicePrepared(SessionMode.CONTROL_ONLY);
