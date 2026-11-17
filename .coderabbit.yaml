@@ -20,7 +20,7 @@ reviews:
   path_instructions:
     - path: "apps/android/**"
       instructions: |
-        按 AGENTS.md、README.md 和 docs/release/v1.0.md 的项目约定审查。
+        按 AGENTS.md、README.md 和 docs/release/v1.1.md 的项目约定审查。
         重点检查 Android 生命周期、服务与回调清理、线程切换和 Root 会话隔离。
         耳机状态必须区分未知、待确认、已回报和超时；检查重连后的旧状态与异步回调串线。
         协议解析需检查长度、边界和异常数据；写入耳机设置须保留白名单与目标检查。

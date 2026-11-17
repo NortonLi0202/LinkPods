@@ -61,6 +61,9 @@ try {
     }
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeDex 'classes.dex'),'classes.dex') | Out-Null
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeRoot 'lib\hiddenapibypass-LICENSE.txt'),'assets/licenses/hiddenapibypass-Apache-2.0.txt') | Out-Null
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeRoot 'lib\frida-COPYING.txt'),'assets/licenses/frida-wxWindows-3.1.txt') | Out-Null
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeRoot 'lib\frida-COPYING.LIB.txt'),'assets/licenses/frida-LGPL-2.0.txt') | Out-Null
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeProject 'THIRD_PARTY.md'),'assets/licenses/THIRD_PARTY.md') | Out-Null
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeRoot 'LICENSE'),'assets/licenses/LinkPods-GPL-3.0.txt') | Out-Null
     if (Test-Path -LiteralPath (Join-Path $probeRoot 'UI_ASSET_NOTICES.md')) {
         [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($probeZip,(Join-Path $probeRoot 'UI_ASSET_NOTICES.md'),'assets/licenses/LibrePods-UI-sources.txt') | Out-Null
@@ -72,7 +75,7 @@ try {
 } finally { $probeZip.Dispose() }
 $probeAligned = Join-Path $probeBuild 'aligned.apk'
 Invoke-ProbeTool (Join-Path $probeTools 'zipalign.exe') @('-f','-p','4',$probeUnsigned,$probeAligned)
-$probeApk = Join-Path $probeBuild 'LinkPods-v1.0.apk'
+$probeApk = Join-Path $probeBuild 'LinkPods-v1.1.apk'
 $probeOldStorePass=$env:LINKPODS_STORE_PASSWORD
 $probeOldKeyPass=$env:LINKPODS_KEY_PASSWORD
 try {
@@ -86,7 +89,7 @@ try {
 Invoke-ProbeTool (Join-Path $probeTools 'apksigner.bat') @('verify','--verbose',$probeApk)
 Invoke-ProbeTool 'python' @((Join-Path $probeProject 'tools\standalone_payload.py'),'--verify-apk',$probeApk)
 $probeBadging = & (Join-Path $probeTools 'aapt.exe') dump badging $probeApk
-if ($LASTEXITCODE -ne 0 -or !($probeBadging -match "package: name='lp.pods' versionCode='101' versionName='1.0'") -or ($probeBadging -match 'application-debuggable')) {
+if ($LASTEXITCODE -ne 0 -or !($probeBadging -match "package: name='lp.pods' versionCode='102' versionName='1.1'") -or ($probeBadging -match 'application-debuggable')) {
     throw 'Release APK metadata validation failed'
 }
 $probeBadging

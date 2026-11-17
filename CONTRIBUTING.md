@@ -43,7 +43,7 @@ python tools/project.py check --with-local-inputs
 & .\apps\android\build.ps1 -SdkPath '<Android SDK目录>'
 ```
 
-输出 apps/android/build/release/LinkPods-v1.0.apk：lp.pods、1.0/code101、minSdk32、ARM64、debuggable=false。构建包含交叉编译、签名和载荷验证，不安装或运行 Root。Windows aapt2 使用临时目录输出 .flat 后链接，避免该资源集的 zip 输出崩溃。
+输出 apps/android/build/release/LinkPods-v1.1.apk：lp.pods、1.1/code102、minSdk32、ARM64、debuggable=false。构建包含交叉编译、签名和载荷验证，不安装或运行 Root。Windows aapt2 使用临时目录输出 .flat 后链接，避免该资源集的 zip 输出崩溃。
 
 图片及控件参考来源见 apps/android/UI_ASSET_NOTICES.md，通知随 APK 打包。原生高光和回弹是近似实现，不包含真实背景折射。
 
