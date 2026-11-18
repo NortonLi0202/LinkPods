@@ -11,3 +11,17 @@
 - 不删除唯一源码、证据或签名身份，不 reset 上游研究工作树。当前构建使用 third_party/sources，不依赖旧研究目录。
 - 常规变更运行 python tools/project.py check；修改行为运行相关主机测试。完整构建先检查 --with-local-inputs。
 - 不虚构许可、CI、公开发布、维护者和验收结果；不得擅自对外发布或发送消息。
+
+## Agent skills
+
+### Issue tracker
+
+在 GitHub Issues 读取、创建或更新任务时，参考 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+为议题分诊或按标签筛选任务时，使用 `docs/agents/triage-labels.md` 中的默认标签映射。
+
+### Domain docs
+
+本仓库采用单上下文布局。探索领域术语或架构决策前，参考 `docs/agents/domain.md`。
