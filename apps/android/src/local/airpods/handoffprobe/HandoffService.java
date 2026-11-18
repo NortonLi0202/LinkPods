@@ -96,7 +96,8 @@ public final class HandoffService extends Service {
                 policy.seed(entry.getKey(), entry.getValue());
             }
             if (keepPending) policy.restorePendingIfPlaying();
-            if (controlSession.isReady()) mediaInformation(policy.hasPlayback());
+            if (controlSession.isReady()) mediaInformation(hasActiveHostStream());
+            if (keepPending) finishPendingTake("watch-restart-player-play");
         }
         @Override public void onPlayerStateChanged(String playerId, String packageName, int state) {
             if (stopped || !mode.allowsRouting()) return;
@@ -106,21 +107,21 @@ public final class HandoffService extends Service {
             if (policy.onPlayback(playerId, state) == RoutingPolicy.Action.TAKE) {
                 finishPendingTake("player-play");
             }
-            if (ready && !policy.hasPlayback()) mediaInformation(false);
+            syncInactiveMediaState();
         }
         @Override public void onPlayerRemoved(String playerId) {
             if (stopped || !mode.allowsRouting()) return;
             policy.remove(playerId);
-            if (controlSession.isReady() && !policy.hasPlayback()) mediaInformation(false);
+            syncInactiveMediaState();
         }
         @Override public void onSessionsSynced() {
             if (stopped || !mode.allowsRouting()) return;
-            if (controlSession.isReady() && !policy.hasPlayback()) mediaInformation(false);
+            syncInactiveMediaState();
         }
         @Override public void onWatchStopped(boolean accessLost) {
             policy.reset();
-            if (accessLost && !stopped && mode.allowsRouting() && controlSession.isReady()) {
-                mediaInformation(false);
+            if (accessLost && !stopped && mode.allowsRouting()) {
+                syncInactiveMediaState();
             }
         }
     };
@@ -219,7 +220,9 @@ public final class HandoffService extends Service {
         }
         @Override public void onAudioModeChanged(int audioMode) {
             log("AUDIO_MODE " + audioMode);
-            if (controlSession.isReady() && mode.allowsRouting() && (audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_IN_COMMUNICATION)) take("call");
+            if (!controlSession.isReady() || !mode.allowsRouting()) return;
+            if (isCallAudioMode(audioMode)) take("call");
+            else if (!policy.hasPlayback()) mediaInformation(false);
         }
     };
 
@@ -342,8 +345,27 @@ public final class HandoffService extends Service {
         if (playbackWatch != null) playbackWatch.onAccessLost();
     }
 
+    private static boolean isCallAudioMode(int audioMode) {
+        return audioMode == AudioManager.MODE_IN_CALL
+            || audioMode == AudioManager.MODE_IN_COMMUNICATION;
+    }
+
+    private boolean inCallAudioMode() {
+        return audio != null && isCallAudioMode(audio.getMode());
+    }
+
+    private boolean hasActiveHostStream() {
+        return policy.hasPlayback() || inCallAudioMode();
+    }
+
+    private void syncInactiveMediaState() {
+        if (controlSession.isReady() && !hasActiveHostStream()) {
+            mediaInformation(false);
+        }
+    }
+
     private void finishPendingTake(String reason) {
-        if (!mode.allowsRouting()) return;
+        if (!mode.allowsRouting() || !watch().isWatching()) return;
         if (policy.consumeTake(controlSession.isReady(),!peers.isEmpty())) take(reason);
     }
 
@@ -500,7 +522,7 @@ public final class HandoffService extends Service {
         }
         if (!peers.isEmpty()) {
             lastMediaState = null;
-            mediaInformation(policy.hasPlayback());
+            mediaInformation(hasActiveHostStream());
             finishPendingTake("peer-ready-player-play");
         }
     }

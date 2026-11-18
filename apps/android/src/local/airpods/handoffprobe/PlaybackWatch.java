@@ -113,8 +113,15 @@ final class PlaybackWatch {
     }
 
     void onAccessLost() {
+        boolean hadPendingRestart = preservePendingOnRestart;
         preservePendingOnRestart = false;
-        if (!hasRegistrationState()) return;
+        if (!hasRegistrationState()) {
+            if (hadPendingRestart) {
+                listener.onWatchStopped(true);
+                logger.write("MEDIA_SESSION_WATCH access-lost");
+            }
+            return;
+        }
         stopInternal(true);
         logger.write("MEDIA_SESSION_WATCH access-lost");
     }
@@ -190,9 +197,9 @@ final class PlaybackWatch {
             if (!isTrackable(controller)) continue;
             MediaSession.Token token = controller.getSessionToken();
             if (token == null || players.containsKey(token)) continue;
-            // Read the baseline before registering callbacks so pre-snapshot transitions cannot queue behind it.
-            seeded.put(token.toString(), playbackStateValue(controller.getPlaybackState()));
+            // Register callback before reading the baseline so a PAUSED->PLAYING transition cannot slip past Android 12L registration.
             registerPlayer(batch, token, controller);
+            seeded.put(token.toString(), playbackStateValue(controller.getPlaybackState()));
         }
     }
 
@@ -200,7 +207,6 @@ final class PlaybackWatch {
         if (!isCurrentBatch(batch)) return;
         Set<MediaSession.Token> present = new HashSet<>();
         List<MediaController> added = new ArrayList<>();
-        List<Integer> addedStates = new ArrayList<>();
         if (list != null) {
             for (MediaController controller : list) {
                 if (!isTrackable(controller)) continue;
@@ -208,21 +214,18 @@ final class PlaybackWatch {
                 if (token == null) continue;
                 present.add(token);
                 if (players.containsKey(token)) continue;
-                int initialState = playbackStateValue(controller.getPlaybackState());
                 registerPlayer(batch, token, controller);
                 added.add(controller);
-                addedStates.add(initialState);
             }
         }
-        for (int i = 0; i < added.size(); i++) {
+        for (MediaController controller : added) {
             if (!isCurrentBatch(batch)) return;
-            MediaController controller = added.get(i);
             MediaSession.Token token = controller.getSessionToken();
             if (token == null || players.get(token) != controller) continue;
             listener.onPlayerStateChanged(
                     token.toString(),
                     safePackageName(controller),
-                    addedStates.get(i));
+                    playbackStateValue(controller.getPlaybackState()));
         }
         for (MediaSession.Token token : new HashSet<>(players.keySet())) {
             if (!isCurrentBatch(batch)) return;

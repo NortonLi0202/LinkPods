@@ -37,6 +37,7 @@ public class MediaController {
  public final Set<Callback> callbacks=new HashSet<>();
  public Callback lastCallback;
  public int registered,unregistered,paused;
+ public java.util.function.Consumer<Callback> onRegister;
  private final String pkg;
  private int playbackState;
  private final MediaSession.Token token=new MediaSession.Token();
@@ -45,7 +46,10 @@ public class MediaController {
  public MediaSession.Token getSessionToken(){return token;}
  public PlaybackState getPlaybackState(){return new PlaybackState(playbackState);}
  public void setPlaybackState(int state){playbackState=state;}
- public void registerCallback(Callback c,android.os.Handler h){callbacks.add(c);lastCallback=c;registered++;}
+ public void registerCallback(Callback c,android.os.Handler h){
+  callbacks.add(c);lastCallback=c;registered++;
+  if(onRegister!=null)onRegister.accept(c);
+ }
  public void unregisterCallback(Callback c){if(callbacks.remove(c))unregistered++;}
  public TransportControls getTransportControls(){return new TransportControls(this);}
  public static class Callback {public void onPlaybackStateChanged(PlaybackState s){}}
@@ -203,6 +207,38 @@ public class PlaybackWatchTest {
   second.setPlaybackState(PlaybackState.STATE_PLAYING);
   second.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
   expect(events.stateChanges.size()==1,"live PLAYING callback matching controller state is forwarded");
+
+  // Transition between callback registration and reading initial state:
+  // 1) PAUSED -> PLAYING during registration must not miss PLAYING in initial seed.
+  watch.stop();
+  events.seeded.clear();
+  MediaController transitionToPlay=new MediaController("late.start",PlaybackState.STATE_PAUSED);
+  transitionToPlay.onRegister=cb->transitionToPlay.setPlaybackState(PlaybackState.STATE_PLAYING);
+  manager.active.clear();
+  manager.active.add(transitionToPlay);
+  expect(watch.start(),"watch starts during PAUSED->PLAYING race");
+  expect(Integer.valueOf(PlaybackState.STATE_PLAYING).equals(
+    events.seeded.get(0).get(transitionToPlay.getSessionToken().toString())),
+   "register-before-read captures PAUSED->PLAYING transition during startup");
+
+  // 2) Queued PLAYING callback followed by PAUSE before read must not trigger PLAYING event.
+  watch.stop();
+  events.seeded.clear();
+  events.stateChanges.clear();
+  MediaController transitionToPause=new MediaController("quick.pause",PlaybackState.STATE_PLAYING);
+  final MediaController.Callback[] queuedPlay=new MediaController.Callback[1];
+  transitionToPause.onRegister=cb->{
+   queuedPlay[0]=cb;
+   transitionToPause.setPlaybackState(PlaybackState.STATE_PAUSED);
+  };
+  manager.active.clear();
+  manager.active.add(transitionToPause);
+  expect(watch.start(),"watch starts during PLAYING->PAUSED race");
+  expect(Integer.valueOf(PlaybackState.STATE_PAUSED).equals(
+    events.seeded.get(0).get(transitionToPause.getSessionToken().toString())),
+   "initial seed observes final PAUSED state");
+  queuedPlay[0].onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  expect(events.stateChanges.isEmpty(),"stale queued PLAYING callback after PAUSE does not fire");
  }
 
  static void accessLostAndPauseActive(){
@@ -232,23 +268,40 @@ public class PlaybackWatchTest {
   int stopsBeforeRecoverableFailure=events.stopped.size();
   expect(!watch.restart(),"recoverable restart failure returns false");
   expect(events.stopped.size()==stopsBeforeRecoverableFailure,"recoverable restart failure does not emit onWatchStopped");
+  // Access lost while waiting to rebind must still emit onWatchStopped(true) once, and duplicate onAccessLost is a no-op.
+  nm.notificationAccessGranted=false;
+  watch.onAccessLost();
+  expect(events.stopped.size()==stopsBeforeRecoverableFailure+1&&events.stopped.get(events.stopped.size()-1),
+   "onAccessLost after recoverable restart failure emits onWatchStopped(true)");
+  watch.onAccessLost();
+  expect(events.stopped.size()==stopsBeforeRecoverableFailure+1,"repeated onAccessLost is a no-op");
+  nm.notificationAccessGranted=true;
+  manager.rejectRegistration=false;
+  expect(watch.start(),"watch recovers after access-lost");
+
+  // Second recoverable restart failure followed by direct restart recovery preserves restarted=true.
+  manager.rejectRegistration=true;
+  expect(!watch.restart(),"second recoverable restart failure returns false");
   manager.rejectRegistration=false;
   expect(watch.restart(),"subsequent restart succeeds");
   expect(events.seededRestartFlags.get(events.seededRestartFlags.size()-1),"recovery after recoverable restart failure preserves restarted=true");
 
   // Revocation via empty session list triggers accessLost=true.
+  int stopsBeforeEmptyRevoke=events.stopped.size();
   nm.notificationAccessGranted=false;
   manager.active.clear();
   manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
   expect(!watch.isWatching()&&!watch.isActive(),"empty list without access stops watch");
-  expect(events.stopped.size()==1&&events.stopped.get(0),"empty list without access emits onWatchStopped(true)");
+  expect(events.stopped.size()==stopsBeforeEmptyRevoke+1&&events.stopped.get(stopsBeforeEmptyRevoke),
+   "empty list without access emits onWatchStopped(true)");
 
   // Re-grant and lose via onAccessLost() directly.
   nm.notificationAccessGranted=true;
   expect(watch.restart(),"re-grant restart succeeds");
   nm.notificationAccessGranted=false;
   watch.onAccessLost();
-  expect(events.stopped.size()==2&&events.stopped.get(1),"onAccessLost emits onWatchStopped(true)");
+  expect(events.stopped.size()==stopsBeforeEmptyRevoke+2&&events.stopped.get(stopsBeforeEmptyRevoke+1),
+   "onAccessLost emits onWatchStopped(true)");
   expect(logs.stream().anyMatch(line->line.equals("MEDIA_SESSION_WATCH access-lost")),"onAccessLost logs access-lost");
 
   // Restart when access is still revoked while watching tears down with accessLost=true.
@@ -256,7 +309,8 @@ public class PlaybackWatchTest {
   expect(watch.start(),"start succeeds again");
   nm.notificationAccessGranted=false;
   expect(!watch.restart(),"restart fails when access revoked");
-  expect(events.stopped.size()==3&&events.stopped.get(2),"failed restart after revoke emits onWatchStopped(true)");
+  expect(events.stopped.size()==stopsBeforeEmptyRevoke+3&&events.stopped.get(stopsBeforeEmptyRevoke+2),
+   "failed restart after revoke emits onWatchStopped(true)");
 
   // Telecom-only session update still triggers onSessionsSynced().
   nm.notificationAccessGranted=true;

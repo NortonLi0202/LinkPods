@@ -115,7 +115,7 @@ public interface BluetoothProfile {
 }''',
     'android/media/session/MediaSession.java': 'package android.media.session; public class MediaSession {public static class Token {}}',
     'android/media/session/PlaybackState.java': '''package android.media.session;
-public class PlaybackState {public static final int STATE_PLAYING=3,STATE_BUFFERING=6,STATE_CONNECTING=8;
+public class PlaybackState {public static final int STATE_PAUSED=2,STATE_PLAYING=3,STATE_BUFFERING=6,STATE_CONNECTING=8;
  private final int state;public PlaybackState(int s){state=s;}public int getState(){return state;}}''',
     'android/media/session/MediaController.java': '''package android.media.session;
 import java.util.*;
@@ -271,11 +271,12 @@ public class HandoffLifecycleTest {
  static void set(Object o,String n,Object v)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);f.set(o,v);}
  static HandoffService service(MediaSessionManager manager)throws Exception{
   HandoffService s=new HandoffService();s.baseAttached=true;HandoffService.current=s;s.services.put(MediaSessionManager.class,manager);
-  s.services.put(AudioManager.class,new AudioManager());
+  AudioManager audio=new AudioManager();
+  s.services.put(AudioManager.class,audio);
   s.services.put(BluetoothManager.class,new BluetoothManager());
   s.services.put(NotificationManager.class,new NotificationManager());
   set(s,"adapter",new BluetoothAdapter());
-  set(s,"audio",new AudioManager());
+  set(s,"audio",audio);
   return s;
  }
  static void upgradeWithLocalIdentity(boolean initiallyKnown)throws Exception{
@@ -445,6 +446,47 @@ public class HandoffLifecycleTest {
   byte[] ownershipTrue=RoutingPackets.ownership(true);
   for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) took=true;
   expect(took,"ready() after listener restart completes preserved pending TAKE");
+
+  // Recoverable rebind failure while ready: do NOT execute pending TAKE while unwatched;
+  // execute on recovery only if playback is still active, or clear if playback stopped.
+  manager.active.clear();
+  MediaController paused=new MediaController(0);
+  manager.active.add(paused);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(paused));
+  // Create a fresh pending TAKE by starting playback on a new player, then simulate rebind failure before ready, or test directly:
+  probe.packets.clear();
+  ((RoutingPolicy)get(s,"policy")).onPlayback("rebind.player",3);
+  manager.rejectRegistration=true;
+  listener.onListenerConnected();
+  for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipTrue),"failed rebind must not execute preserved pending TAKE");
+  // Even if onReady fires while unwatched during failed rebind, TAKE must wait until rebind completes.
+  probe.listener.ready();
+  for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipTrue),"onReady while unwatched after failed rebind must not execute stale TAKE");
+  // Recover with player actually playing -> preserved TAKE now executes immediately on already-ready channel.
+  manager.rejectRegistration=false;
+  playing.setPlaybackState(PlaybackState.STATE_PLAYING);
+  manager.active.clear();manager.active.add(playing);
+  listener.onListenerConnected();
+  boolean tookOnRecovery=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) tookOnRecovery=true;
+  expect(tookOnRecovery,"successful rebind recovery executes preserved TAKE when player is still playing");
+
+  // If player paused before rebind recovery, preserved pending TAKE must NOT execute on recovery and must be cleared.
+  playing.setPlaybackState(PlaybackState.STATE_PAUSED);
+  playing.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  ((Set<String>)get(s,"peers")).clear();
+  playing.setPlaybackState(PlaybackState.STATE_PLAYING);
+  playing.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  expect(((RoutingPolicy)get(s,"policy")).isPending(),"fresh pending TAKE queued before second rebind failure");
+  probe.packets.clear();
+  manager.rejectRegistration=true;
+  listener.onListenerConnected();
+  ((Set<String>)get(s,"peers")).add(PEER);
+  playing.setPlaybackState(PlaybackState.STATE_PAUSED);
+  manager.rejectRegistration=false;
+  listener.onListenerConnected();
+  expect(!((RoutingPolicy)get(s,"policy")).isPending(),"rebind recovery when player already paused clears pending TAKE");
+  for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipTrue),"rebind recovery when player already paused clears TAKE without executing");
  }
  static void downgradeReusesSessionWithoutAudioDisruption()throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();
@@ -491,20 +533,32 @@ public class HandoffLifecycleTest {
   for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) freshTook=true;
   expect(freshTook,"fresh callback after re-upgrade triggers TAKE for same controller");
 
-  // Telecom-only session update after a call-triggered TAKE syncs mediaInformation(false) when no media players exist.
+  // Telecom-only session update must NOT send mediaInformation(false) while still in MODE_IN_CALL,
+  // and MUST send mediaInformation(false) once the call ends with no media playback.
   probe.packets.clear();
   manager.active.clear();
   manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
   MediaController telecom=new MediaController("com.android.server.telecom",PlaybackState.STATE_PLAYING);
-  ((AudioManager)s.services.get(AudioManager.class)).mode=AudioManager.MODE_IN_CALL;
+  AudioManager serviceAudio=(AudioManager)get(s,"audio");
+  serviceAudio.mode=AudioManager.MODE_IN_CALL;
   SamsungAudioMonitor.Listener monitorListener=(SamsungAudioMonitor.Listener)get(s,"audioMonitorListener");
   monitorListener.onAudioModeChanged(AudioManager.MODE_IN_CALL);
   probe.packets.clear();
   manager.lastListener.onActiveSessionsChanged(Collections.singletonList(telecom));
   byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
-  boolean sentNoOnTelecom=false;
-  for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentNoOnTelecom=true;
-  expect(sentNoOnTelecom,"telecom-only session list after call TAKE syncs mediaInformation(false)");
+  for(byte[] p:probe.packets) expect(!Arrays.equals(p,mediaFalse),"telecom-only list during MODE_IN_CALL must not send mediaInformation(false)");
+  serviceAudio.mode=AudioManager.MODE_NORMAL;
+  monitorListener.onAudioModeChanged(AudioManager.MODE_NORMAL);
+  boolean sentNoAfterCall=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentNoAfterCall=true;
+  expect(sentNoAfterCall,"ending call with no media playback sends mediaInformation(false)");
+  // Also verify telecom-only list after call ends syncs mediaInformation(false) when lastMediaState was still true.
+  set(s,"lastMediaState",Boolean.TRUE);
+  probe.packets.clear();
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(telecom));
+  boolean sentNoOnTelecomAfterCall=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentNoOnTelecomAfterCall=true;
+  expect(sentNoOnTelecomAfterCall,"telecom-only session list after call ends syncs mediaInformation(false)");
  }
  static void bridgeLifecycle(String modeName)throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();RootEnvironment.stoppedBridges.clear();
