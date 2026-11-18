@@ -9,17 +9,26 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = 'local/airpods/handoffprobe/'
 STUBS = {
+    'android/Manifest.java': '''package android;
+public class Manifest { public static class permission {
+ public static final String BLUETOOTH_CONNECT="android.permission.BLUETOOTH_CONNECT";
+}}''',
+    'android/content/pm/PackageManager.java': 'package android.content.pm; public class PackageManager {public static final int PERMISSION_GRANTED=0;}',
     'android/content/Context.java': '''package android.content;
 import java.io.*; import java.util.*;
 public class Context {
  public static final int MODE_PRIVATE=0,MODE_APPEND=32768,RECEIVER_EXPORTED=2;
  public final Map<Class<?>,Object> services=new HashMap<>();
+ public int registeredReceivers,unregisteredReceivers;
+ public BroadcastReceiver lastReceiver;
+ public boolean bluetoothPermissionGranted=true;
  public <T>T getSystemService(Class<T> type){return type.cast(services.get(type));}
  public Context getApplicationContext(){return this;}
  public java.util.concurrent.Executor getMainExecutor(){return Runnable::run;}
- public void registerReceiver(BroadcastReceiver r,IntentFilter f){}
- public void registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){}
- public void unregisterReceiver(BroadcastReceiver r){}
+ public int checkSelfPermission(String p){return bluetoothPermissionGranted?android.content.pm.PackageManager.PERMISSION_GRANTED:-1;}
+ public void registerReceiver(BroadcastReceiver r,IntentFilter f){registeredReceivers++;lastReceiver=r;}
+ public void registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){registeredReceivers++;lastReceiver=r;}
+ public void unregisterReceiver(BroadcastReceiver r){unregisteredReceivers++;}
  public FileOutputStream openFileOutput(String name,int mode)throws IOException{throw new IOException("host logging disabled");}
  public SharedPreferences getSharedPreferences(String name,int mode){return new SharedPreferences();}
 }''',
@@ -29,7 +38,11 @@ public class SharedPreferences {public Editor edit(){return new Editor();}
     'android/content/Intent.java': '''package android.content;
 import java.util.*;
 public class Intent {
+ private String action;
  private final Map<String,Object> extras=new HashMap<>();
+ public Intent(){}
+ public Intent(String a){action=a;}
+ public String getAction(){return action;}
  public Intent putExtra(String k,String v){extras.put(k,v);return this;}
  public Intent putExtra(String k,boolean v){extras.put(k,v);return this;}
  public String getStringExtra(String k){return (String)extras.get(k);}
@@ -39,7 +52,7 @@ public class Intent {
  public <T>T getParcelableExtra(String k,Class<T> t){return t.cast(extras.get(k));}
 }''',
     'android/content/ComponentName.java': 'package android.content; public class ComponentName {public ComponentName(Context c,Class<?> t){}}',
-    'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(String a){}}',
+    'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(){}public IntentFilter(String a){}public void addAction(String a){}}',
     'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i);}',
     'android/service/notification/NotificationListenerService.java': '''package android.service.notification;
 public class NotificationListenerService {
@@ -71,16 +84,29 @@ public class NotificationManager {
 }''',
     'android/R.java': 'package android; public class R {public static class drawable {public static final int stat_sys_data_bluetooth=1;}}',
     'android/bluetooth/BluetoothAdapter.java': '''package android.bluetooth;
+import java.util.*;
 public class BluetoothAdapter {
+ public static final String ACTION_STATE_CHANGED="android.bluetooth.adapter.action.STATE_CHANGED";
+ public int proxyRequests;
+ public boolean enabled=true;
+ public BluetoothProfile.ServiceListener lastA2dpListener,lastHeadsetListener;
+ public final List<BluetoothProfile> closedProxies=new ArrayList<>();
  public static boolean checkBluetoothAddress(String s){return s!=null&&s.matches("[0-9A-F]{2}(:[0-9A-F]{2}){5}");}
  public BluetoothDevice getRemoteDevice(String a){return new BluetoothDevice(a);}
- public void closeProfileProxy(int k,BluetoothProfile p){}
- public boolean getProfileProxy(android.content.Context c,BluetoothProfile.ServiceListener l,int k){return true;}
- public boolean isEnabled(){return true;}
+ public void closeProfileProxy(int k,BluetoothProfile p){if(p!=null)closedProxies.add(p);}
+ public boolean getProfileProxy(android.content.Context c,BluetoothProfile.ServiceListener l,int k){
+  proxyRequests++;
+  if(k==BluetoothProfile.A2DP)lastA2dpListener=l;
+  if(k==BluetoothProfile.HEADSET)lastHeadsetListener=l;
+  return true;
+ }
+ public boolean isEnabled(){return enabled;}
 }''',
     'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth;
-public class BluetoothDevice {public static final String EXTRA_DEVICE="device";public final String address;public BluetoothDevice(String a){address=a;}}''',
-    'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; public class BluetoothManager {public BluetoothAdapter getAdapter(){return new BluetoothAdapter();}}',
+public class BluetoothDevice {public static final String EXTRA_DEVICE="device";public final String address;public BluetoothDevice(String a){address=a;}public String getAddress(){return address;}}''',
+    'android/bluetooth/BluetoothA2dp.java': 'package android.bluetooth; public class BluetoothA2dp {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED";}',
+    'android/bluetooth/BluetoothHeadset.java': 'package android.bluetooth; public class BluetoothHeadset {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED",ACTION_AUDIO_STATE_CHANGED="android.bluetooth.headset.profile.action.AUDIO_STATE_CHANGED";}',
+    'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; public class BluetoothManager {public final BluetoothAdapter adapter=new BluetoothAdapter();public BluetoothAdapter getAdapter(){return adapter;}}',
     'android/bluetooth/BluetoothProfile.java': '''package android.bluetooth;
 public interface BluetoothProfile {
  int A2DP=2,HEADSET=1,STATE_DISCONNECTED=0; String EXTRA_STATE="state";
@@ -126,13 +152,62 @@ public class MediaSessionManager {
  public interface OnActiveSessionsChangedListener {void onActiveSessionsChanged(List<MediaController> l);}
 }''',
     'android/media/AudioManager.java': '''package android.media;
-public class AudioManager {public static final int MODE_IN_CALL=2,MODE_IN_COMMUNICATION=3;
+import java.util.*;
+public class AudioManager {
+ public static final int GET_DEVICES_OUTPUTS=2,MODE_NORMAL=0,MODE_IN_CALL=2,MODE_IN_COMMUNICATION=3;
  public interface OnModeChangedListener {void onModeChanged(int mode);}
- public void addOnModeChangedListener(java.util.concurrent.Executor e,OnModeChangedListener l){}
- public void removeOnModeChangedListener(OnModeChangedListener l){} }''',
+ public interface OnCommunicationDeviceChangedListener {void onCommunicationDeviceChanged(AudioDeviceInfo device);}
+ public static abstract class AudioPlaybackCallback {public void onPlaybackConfigChanged(List<AudioPlaybackConfiguration> configs){}}
+ public AudioDeviceInfo[] outputs=new AudioDeviceInfo[0];
+ public AudioDeviceInfo communicationDevice;
+ public List<AudioPlaybackConfiguration> playbacks=Collections.emptyList();
+ public List<AudioDeviceInfo> attributesDevices=Collections.emptyList();
+ public int mode=MODE_NORMAL,deviceCallbacks,playbackCallbacks,modeListeners,commListeners;
+ public AudioDeviceInfo[] getDevices(int f){return outputs;}
+ public int getMode(){return mode;}
+ public AudioDeviceInfo getCommunicationDevice(){return communicationDevice;}
+ public List<AudioPlaybackConfiguration> getActivePlaybackConfigurations(){return playbacks;}
+ public List<AudioDeviceInfo> getAudioDevicesForAttributes(AudioAttributes a){return attributesDevices;}
+ public void registerAudioDeviceCallback(AudioDeviceCallback c,android.os.Handler h){deviceCallbacks++;}
+ public void unregisterAudioDeviceCallback(AudioDeviceCallback c){deviceCallbacks--;}
+ public void registerAudioPlaybackCallback(AudioPlaybackCallback c,android.os.Handler h){playbackCallbacks++;}
+ public void unregisterAudioPlaybackCallback(AudioPlaybackCallback c){playbackCallbacks--;}
+ public void addOnModeChangedListener(java.util.concurrent.Executor e,OnModeChangedListener l){modeListeners++;}
+ public void removeOnModeChangedListener(OnModeChangedListener l){modeListeners--;}
+ public void addOnCommunicationDeviceChangedListener(java.util.concurrent.Executor e,OnCommunicationDeviceChangedListener l){commListeners++;}
+ public void removeOnCommunicationDeviceChangedListener(OnCommunicationDeviceChangedListener l){commListeners--;}
+}''',
     'android/media/MediaMetadata.java': 'package android.media; public class MediaMetadata {}',
-    'android/media/AudioAttributes.java': 'package android.media; public class AudioAttributes {}',
-    'android/media/AudioPlaybackConfiguration.java': 'package android.media; public class AudioPlaybackConfiguration {}',
+    'android/media/AudioAttributes.java': '''package android.media;
+public class AudioAttributes {
+ public static final int USAGE_UNKNOWN=0,USAGE_MEDIA=1,USAGE_GAME=14,CONTENT_TYPE_MUSIC=2;
+ private final int usage;
+ public AudioAttributes(){this(USAGE_MEDIA);}
+ public AudioAttributes(int u){usage=u;}
+ public int getUsage(){return usage;}
+ public static class Builder {
+  private int usage=USAGE_MEDIA;
+  public Builder setUsage(int u){usage=u;return this;}
+  public Builder setContentType(int c){return this;}
+  public AudioAttributes build(){return new AudioAttributes(usage);}
+ }
+}''',
+    'android/media/AudioDeviceInfo.java': '''package android.media;
+public class AudioDeviceInfo {
+ public static final int TYPE_BUILTIN_EARPIECE=1,TYPE_BUILTIN_SPEAKER=2,TYPE_WIRED_HEADSET=3,TYPE_WIRED_HEADPHONES=4,TYPE_BLUETOOTH_SCO=7,TYPE_BLUETOOTH_A2DP=8,TYPE_USB_DEVICE=11,TYPE_USB_HEADSET=22,TYPE_HEARING_AID=23,TYPE_BLE_HEADSET=26,TYPE_BLE_SPEAKER=27,TYPE_BLE_BROADCAST=30;
+ public final int type; public final String address,name;
+ public AudioDeviceInfo(int t,String a,String n){type=t;address=a;name=n;}
+ public int getType(){return type;}
+ public String getAddress(){return address;}
+ public CharSequence getProductName(){return name;}
+}''',
+    'android/media/AudioDeviceCallback.java': 'package android.media; public abstract class AudioDeviceCallback {public void onAudioDevicesAdded(AudioDeviceInfo[] a){}public void onAudioDevicesRemoved(AudioDeviceInfo[] r){}}',
+    'android/media/AudioPlaybackConfiguration.java': '''package android.media;
+public class AudioPlaybackConfiguration {
+ public AudioAttributes attrs; public AudioDeviceInfo device;
+ public AudioAttributes getAudioAttributes(){return attrs;}
+ public AudioDeviceInfo getAudioDeviceInfo(){return device;}
+}''',
     'android/view/KeyEvent.java': 'package android.view; public class KeyEvent {}',
     'android/os/IBinder.java': 'package android.os; public interface IBinder {}',
     'android/os/Build.java': 'package android.os; public class Build {public static class VERSION {public static final int SDK_INT=36;}}',
@@ -453,6 +528,77 @@ public class HandoffLifecycleTest {
   expect(active.stopped>=1,modeName+" onDestroy stops active probe");
   expect(!(Boolean)get(s,"watching"),modeName+" onDestroy stops watching");
  }
+ static void audioSnapshotObservation()throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();
+  AudioManager audio=new AudioManager();
+  audio.outputs=new AudioDeviceInfo[]{new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods Pro")};
+  BluetoothManager btManager=new BluetoothManager();
+  HandoffService s=service(new MediaSessionManager());
+  s.services.put(AudioManager.class,audio);
+  s.services.put(BluetoothManager.class,btManager);
+  s.bluetoothPermissionGranted=false;
+  s.onCreate();
+  expect(btManager.adapter.proxyRequests==0,"no profile proxies requested before BLUETOOTH_CONNECT grant");
+  expect(audio.deviceCallbacks==1&&audio.playbackCallbacks==1&&audio.modeListeners==1&&audio.commListeners==1,
+   "onCreate registers SamsungAudioMonitor listeners once");
+  expect(s.registeredReceivers==1,"onCreate registers Bluetooth audio receiver once");
+  s.bluetoothPermissionGranted=true;
+  Intent start=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY");
+  s.onStartCommand(start,0,1);
+  expect(btManager.adapter.proxyRequests==2,"setTargetAddress requests A2DP and HEADSET proxies once permitted");
+  s.onStartCommand(start,0,2);
+  expect(btManager.adapter.proxyRequests==2,"repeated start does not re-request profile proxies");
+  BluetoothProfile.ServiceListener oldA2dpListener=btManager.adapter.lastA2dpListener;
+  BluetoothProfile p1=d->2;
+  oldA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p1);
+  expect(HandoffService.audioSnapshot(TARGET).a2dpState==SamsungAudioSnapshot.ConnectionState.CONNECTED,
+   "connected P1 reports A2DP state");
+  oldA2dpListener.onServiceDisconnected(BluetoothProfile.A2DP);
+  expect(btManager.adapter.closedProxies.contains(p1),
+   "onServiceDisconnected closes disconnected proxy P1 before retry");
+  expect(btManager.adapter.proxyRequests==3,
+   "onServiceDisconnected automatically re-requests replacement A2DP proxy P2 when started, enabled, and permitted");
+  expect(HandoffService.audioSnapshot(TARGET).a2dpState==SamsungAudioSnapshot.ConnectionState.UNKNOWN,
+   "disconnected proxy reports A2DP state as UNKNOWN until P2 connects");
+  BluetoothProfile p2=d->2;
+  BluetoothProfile.ServiceListener secondA2dpListener=btManager.adapter.lastA2dpListener;
+  secondA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p2);
+  int closedBeforeStale=btManager.adapter.closedProxies.size();
+  oldA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p1);
+  expect(btManager.adapter.closedProxies.size()==closedBeforeStale+1,
+   "stale onServiceConnected for P1 is immediately closed and cannot replace P2");
+  oldA2dpListener.onServiceDisconnected(BluetoothProfile.A2DP);
+  expect(HandoffService.audioSnapshot(TARGET).a2dpState==SamsungAudioSnapshot.ConnectionState.CONNECTED,
+   "stale onServiceDisconnected from P1 cannot clear active P2");
+  btManager.adapter.enabled=false;
+  secondA2dpListener.onServiceDisconnected(BluetoothProfile.A2DP);
+  expect(btManager.adapter.proxyRequests==3,
+   "onServiceDisconnected does not re-request proxy while adapter is disabled");
+  btManager.adapter.enabled=true;
+  s.lastReceiver.onReceive(s,new Intent(BluetoothAdapter.ACTION_STATE_CHANGED));
+  expect(btManager.adapter.proxyRequests==4,
+   "ACTION_STATE_CHANGED when adapter re-enables requests replacement A2DP proxy P3");
+  BluetoothProfile p3=d->2;
+  btManager.adapter.lastA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p3);
+  SamsungAudioSnapshot initial=HandoffService.audioSnapshot(TARGET);
+  expect(initial.mediaOutputAvailable,"service audio snapshot sees available A2DP output device");
+  expect(initial.routeEvidenceSupported,"SDK 36 supports media attributes route evidence");
+  expect(initial.routeState==SamsungAudioSnapshot.RouteState.UNKNOWN,
+   "service audio snapshot does not infer ROUTE_OBSERVED from getDevices alone");
+  audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods Pro"));
+  SamsungAudioSnapshot routed=HandoffService.audioSnapshot(TARGET);
+  expect(routed.routeState==SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED,
+   "service audio snapshot sees ROUTE_OBSERVED when media attributes route matches target");
+  s.onDestroy();
+  expect(btManager.adapter.closedProxies.contains(p3),
+   "onDestroy closes replacement proxy P3");
+  expect(audio.deviceCallbacks==0&&audio.playbackCallbacks==0&&audio.modeListeners==0&&audio.commListeners==0,
+   "onDestroy unregisters all SamsungAudioMonitor listeners");
+  expect(s.unregisteredReceivers==1,"onDestroy unregisters Bluetooth receiver");
+  expect(HandoffService.audioSnapshot(TARGET).routeState==SamsungAudioSnapshot.RouteState.UNKNOWN,
+   "stopped service returns unavailable audio snapshot");
+ }
  public static void main(String[] args)throws Exception{
   switch(args[0]){
    case "identity":upgradeWithLocalIdentity(false);break;
@@ -465,6 +611,7 @@ public class HandoffLifecycleTest {
    case "mode-downgrade":downgradeReusesSessionWithoutAudioDisruption();break;
    case "bridge-control-only":bridgeLifecycle("CONTROL_ONLY");break;
    case "bridge-auto-handoff":bridgeLifecycle("AUTO_HANDOFF");break;
+   case "audio-snapshot":audioSnapshotObservation();break;
    default:throw new AssertionError("unknown scenario");
   }
   System.out.println("PASS: service lifecycle "+args[0]);
@@ -504,6 +651,9 @@ class HandoffLifecycleTests(unittest.TestCase):
     def test_bridge_lifecycle_in_auto_handoff_mode(self):
         self.run_scenario('bridge-auto-handoff')
 
+    def test_service_audio_snapshot_and_monitor_cleanup(self):
+        self.run_scenario('audio-snapshot')
+
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None
         javac = shutil.which('javac', path=str(jdk) if jdk else None)
@@ -520,6 +670,7 @@ class HandoffLifecycleTests(unittest.TestCase):
                 files.append(str(target))
             package = ROOT / 'apps/android/src' / PACKAGE
             names = ('HandoffService', 'PlaybackListener', 'SessionMode', 'SessionStatus',
+                     'SamsungAudioMonitor', 'SamsungAudioSnapshot', 'SamsungAudioPolicy',
                      'RoutingPolicy', 'AudioLinkPolicy', 'PeerRoutingPolicy', 'DeviceConfig',
                      'ConnectionPolicy', 'RoutingPackets', 'AapPackets', 'SmartRouting',
                      'EarbudCommands', 'EarbudSnapshot', 'AirPodsModels', 'AirPodsInformation',

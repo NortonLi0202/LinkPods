@@ -5,11 +5,7 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
-import android.bluetooth.BluetoothProfile;
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -33,12 +29,10 @@ public class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ArrayList<BluetoothDevice> devices = new ArrayList<>();
     private BluetoothAdapter adapter;
-    private BluetoothProfile a2dp;
+    private SamsungAudioMonitor localAudioMonitor;
     private Spinner picker;
     private TextView status;
     private TextView output;
-    private boolean receiverRegistered;
-    private boolean proxyRequested;
     private volatile boolean destroyed;
     private final java.util.concurrent.atomic.AtomicReference<RootEnvironment.Prepared> pendingPrepared=
         new java.util.concurrent.atomic.AtomicReference<>();
@@ -59,14 +53,11 @@ public class MainActivity extends Activity {
         return DeviceConfig.restore(values);
     }
 
-    private final BroadcastReceiver receiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context context, Intent intent) {
-            BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-            BluetoothDevice target = selected();
-            if (target == null || device == null || !target.equals(device)) return;
-            int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1);
-            log("A2DP 事件：" + stateName(state));
+    private final SamsungAudioMonitor.Listener audioMonitorListener = new SamsungAudioMonitor.Listener() {
+        @Override public void onAudioSnapshotChanged(SamsungAudioSnapshot snapshot) {
+            if (destroyed || ui == null) return;
             refreshStatus();
+            refreshControls();
         }
     };
 
@@ -130,12 +121,18 @@ public class MainActivity extends Activity {
             @Override public String connectionStatus() { return audioConnectionLabel(); }
         }, state == null ? null : state.getString("ui_page"));
         status=ui.environmentStatus; output=ui.logOutput;
+        localAudioMonitor = new SamsungAudioMonitor(this, handler, audioMonitorListener);
+        localAudioMonitor.start();
         if(Build.VERSION.SDK_INT>=33) {
             backCallback=()->{if(ui==null || !ui.back())finish();};
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,backCallback);
         }
         picker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent,View view,int position,long id) {
+                BluetoothDevice currentTarget = hasPermission() ? selected() : null;
+                if (localAudioMonitor != null) {
+                    localAudioMonitor.setTargetAddress(currentTarget == null ? "" : currentTarget.getAddress());
+                }
                 refreshStatus(); refreshControls();
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { refreshControls(); }
@@ -150,18 +147,20 @@ public class MainActivity extends Activity {
         try { String name=target.getName();return name==null || name.trim().isEmpty()?"AirPods":name; }
         catch(SecurityException ignored){return "AirPods";}
     }
+    private SamsungAudioSnapshot currentAudioSnapshot(String address) {
+        if (HandoffService.current != null) {
+            return HandoffService.audioSnapshot(address);
+        }
+        if (localAudioMonitor != null) {
+            return localAudioMonitor.snapshot(address);
+        }
+        return SamsungAudioSnapshot.empty(address, hasPermission(), 0L);
+    }
     private String audioConnectionLabel() {
-        if(!hasPermission())return "蓝牙：等待附近设备权限";
+        if(!hasPermission())return "等待附近设备权限";
         BluetoothDevice target=selected();
-        if(target==null)return "蓝牙：请在 LinkPods 设置中选择耳机";
-        if(a2dp==null)return "蓝牙：音频状态尚未读取";
-        try {
-            int state=a2dp.getConnectionState(target);
-            if(state==BluetoothProfile.STATE_CONNECTED)return "蓝牙音频已连接";
-            if(state==BluetoothProfile.STATE_CONNECTING)return "蓝牙音频正在连接";
-            if(state==BluetoothProfile.STATE_DISCONNECTING)return "蓝牙音频正在断开";
-            return "蓝牙音频未连接";
-        } catch(SecurityException ignored){return "蓝牙：等待附近设备权限";}
+        if(target==null)return "请在 LinkPods 设置中选择耳机";
+        return SamsungAudioPolicy.formatA2dpSummary(currentAudioSnapshot(target.getAddress()));
     }
     private void refreshControls() {
         if(ui==null)return;
@@ -170,6 +169,7 @@ public class MainActivity extends Activity {
         EarbudSnapshot observed=target==null?EarbudSnapshot.empty(address,"请在应用设置中选择耳机"):HandoffService.earbudSnapshot(address);
         SessionStatus session=HandoffService.sessionStatus(address);
         ui.bind(observed,address,session);
+        ui.bindAudio(currentAudioSnapshot(address));
         ui.bindCapabilities(HandoffService.capabilities(address),mediaAccessGranted());
     }
     @Override protected void onResume() {
@@ -222,26 +222,10 @@ public class MainActivity extends Activity {
             list.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
             picker.setAdapter(list);
             if (!devices.isEmpty()) picker.setSelection(chosen);
-            if (!receiverRegistered) {
-                IntentFilter filter = new IntentFilter("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED");
-                if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
-                else registerReceiver(receiver, filter);
-                receiverRegistered = true;
-            }
-            if (!proxyRequested) {
-                proxyRequested = adapter.getProfileProxy(this, new BluetoothProfile.ServiceListener() {
-                    @Override public void onServiceConnected(int profile, BluetoothProfile proxy) {
-                        if (destroyed) { adapter.closeProfileProxy(profile, proxy); return; }
-                        a2dp = proxy;
-                        log("A2DP 服务就绪；这不代表耳机已连接。");
-                        refreshStatus();
-                    }
-                    @Override public void onServiceDisconnected(int profile) {
-                        a2dp = null;
-                        proxyRequested = false;
-                        log("A2DP 服务断开。");
-                    }
-                }, BluetoothProfile.A2DP);
+            if (localAudioMonitor != null) {
+                localAudioMonitor.refreshPermission();
+                BluetoothDevice initial = selected();
+                localAudioMonitor.setTargetAddress(initial == null ? "" : initial.getAddress());
             }
             log("已读取配对设备；请核对下拉列表中的 AirPods。");
             refreshStatus();
@@ -257,12 +241,14 @@ public class MainActivity extends Activity {
     private void refreshStatus() {
         if (!hasPermission()) { status.setText("等待附近设备权限"); return; }
         BluetoothDevice target = selected();
-        if (target == null || a2dp == null) { status.setText(environmentStatus + "\n" + audioConnectionLabel()); return; }
-        try {
-            int state = a2dp.getConnectionState(target);
-            status.setText(environmentStatus + "\n" + target.getName() + "\nA2DP：" + stateName(state)
-                + (state == BluetoothProfile.STATE_CONNECTED ? "\n已建立音频连接，声音请用试听确认。" : ""));
-        } catch (Exception error) { failure("查询状态", error); }
+        if (target == null) { status.setText(environmentStatus + "\n" + audioConnectionLabel()); return; }
+        SamsungAudioSnapshot audio = currentAudioSnapshot(target.getAddress());
+        status.setText(environmentStatus + "\n" + selectedName()
+            + "\nA2DP：" + SamsungAudioPolicy.connectionLabel(audio.a2dpState)
+            + " · 通话：" + SamsungAudioPolicy.connectionLabel(audio.headsetState)
+            + "\n" + SamsungAudioPolicy.formatRouteSummary(audio)
+            + (audio.routeState == SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED
+                ? "\n已观察到系统路由，实际声音请用试听确认。" : ""));
     }
 
     private boolean mediaAccessGranted() {
@@ -454,23 +440,12 @@ public class MainActivity extends Activity {
         } catch (Exception error) { Log.e(TAG, "保存运行日志失败", error); }
     }
 
-    private static String stateName(int state) {
-        switch (state) {
-            case BluetoothProfile.STATE_CONNECTED: return "CONNECTED";
-            case BluetoothProfile.STATE_CONNECTING: return "CONNECTING";
-            case BluetoothProfile.STATE_DISCONNECTING: return "DISCONNECTING";
-            case BluetoothProfile.STATE_DISCONNECTED: return "DISCONNECTED";
-            default: return "UNKNOWN(" + state + ")";
-        }
-    }
-
     @Override public void onDestroy() {
         destroyed = true;
         if(Build.VERSION.SDK_INT>=33 && backCallback!=null)getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
         cancelEnvironment();
         handler.removeCallbacksAndMessages(null);
-        if (receiverRegistered) unregisterReceiver(receiver);
-        if (adapter != null && a2dp != null) adapter.closeProfileProxy(BluetoothProfile.A2DP, a2dp);
+        if (localAudioMonitor != null) localAudioMonitor.stop();
         super.onDestroy();
     }
 }

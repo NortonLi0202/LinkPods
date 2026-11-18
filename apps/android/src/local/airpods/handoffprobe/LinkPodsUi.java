@@ -38,7 +38,7 @@ final class LinkPodsUi {
     private final boolean dark;
     private final int bg,side,group,ink,muted,line,blue;
     private LinearLayout root,body,sidebar;
-    private TextView title,connection,session,handoff,batteries,modeStatus,volumeValue,feedback,sidebarDevice,deviceNameValue;
+    private TextView title,connection,audioCallStatus,audioRouteStatus,session,handoff,batteries,modeStatus,volumeValue,feedback,sidebarDevice,deviceNameValue;
     private LinearLayout artwork;
     private TextView genericArtwork,modelStatus;
     private PodControls.NoiseSelector noise;
@@ -46,9 +46,10 @@ final class LinkPodsUi {
     private final ArrayList<SettingRow> settings=new ArrayList<>();
     private EarbudSnapshot snapshot;
     private SessionStatus sessionStatus;
+    private SamsungAudioSnapshot audioSnapshot;
     private ConnectionPolicy.Snapshot capabilities;
     private boolean mediaGranted;
-    private TextView capabilitiesStatus;
+    private TextView capabilitiesStatus,audioDetails;
     private Integer lastLeft,lastRight,lastCase;
     private String target="",page=HOME;
     private boolean tablet;
@@ -92,7 +93,7 @@ final class LinkPodsUi {
         body=new LinearLayout(activity){@Override protected void onMeasure(int ws,int hs){int available=View.MeasureSpec.getSize(ws);super.onMeasure(View.MeasureSpec.makeMeasureSpec(Math.min(dp(620),available),View.MeasureSpec.EXACTLY),hs);}};
         body.setOrientation(LinearLayout.VERTICAL);body.setPadding(dp(width<400?16:24),dp(4),dp(width<400?16:24),dp(28));
         FrameLayout.LayoutParams content=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);frame.addView(body,content);
-        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;session=null;handoff=null;modeStatus=null;feedback=null;capabilitiesStatus=null;artwork=null;genericArtwork=null;modelStatus=null;
+        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;audioCallStatus=null;audioRouteStatus=null;session=null;handoff=null;modeStatus=null;feedback=null;capabilitiesStatus=null;audioDetails=null;artwork=null;genericArtwork=null;modelStatus=null;
         if(HOME.equals(page))home();
         else if(AUDIO.equals(page))audioPage();
         else if(PRESS.equals(page))pressPage();
@@ -101,6 +102,7 @@ final class LinkPodsUi {
         else advanced(page);
         activity.setContentView(root);root.requestApplyInsets();
         if(snapshot!=null)bind(snapshot,target,sessionStatus);else updateLocalVolume();
+        bindAudio(audioSnapshot);
         bindCapabilities(capabilities,mediaGranted);
     }
     private void buildSidebar(int width){
@@ -138,8 +140,10 @@ final class LinkPodsUi {
         artwork.setVisibility(View.GONE);
         batteries=text("左耳 --   ·   右耳 --   ·   充电盒 --",13,muted);batteries.setGravity(Gravity.CENTER);batteries.setPadding(0,dp(6),0,dp(8));body.addView(batteries);
         modelStatus=text("型号尚未识别",13,muted);modelStatus.setGravity(Gravity.CENTER);modelStatus.setPadding(dp(8),0,dp(8),dp(4));body.addView(modelStatus);
-        connection=text("系统音频："+actions.connectionStatus(),12,muted);connection.setGravity(Gravity.CENTER);connection.setPadding(dp(8),dp(2),dp(8),dp(3));body.addView(connection);
-        session=text("耳机控制：未连接",12,muted);session.setGravity(Gravity.CENTER);session.setPadding(dp(8),0,dp(8),dp(3));body.addView(session);
+        connection=text("媒体音频 (A2DP)："+actions.connectionStatus(),12,muted);connection.setGravity(Gravity.CENTER);connection.setPadding(dp(8),dp(2),dp(8),dp(3));body.addView(connection);
+        audioCallStatus=text("通话音频 (HFP/HSP)：未知",12,muted);audioCallStatus.setGravity(Gravity.CENTER);audioCallStatus.setPadding(dp(8),0,dp(8),dp(3));body.addView(audioCallStatus);
+        audioRouteStatus=text("音频输出与路由：未知",12,muted);audioRouteStatus.setGravity(Gravity.CENTER);audioRouteStatus.setPadding(dp(8),0,dp(8),dp(3));body.addView(audioRouteStatus);
+        session=text("耳机控制 (AACP)：未连接",12,muted);session.setGravity(Gravity.CENTER);session.setPadding(dp(8),0,dp(8),dp(3));body.addView(session);
         handoff=text("自动交接：关闭",12,muted);handoff.setGravity(Gravity.CENTER);handoff.setPadding(dp(8),0,dp(8),dp(18));body.addView(handoff);
         capabilitiesStatus=text("",12,muted);capabilitiesStatus.setGravity(Gravity.CENTER);capabilitiesStatus.setPadding(dp(8),0,dp(8),dp(14));body.addView(capabilitiesStatus);
     }
@@ -166,7 +170,33 @@ final class LinkPodsUi {
         caption("权限");LinearLayout permissions=group();action(permissions,"允许读取媒体播放状态",actions::openMediaAccess);action(permissions,"允许服务通知",actions::requestNotifications);
         caption("运行环境");LinearLayout runtime=group();action(runtime,"检查 Root 与运行环境",actions::checkEnvironment);action(runtime,"连接耳机",actions::connectEarbuds);action(runtime,"启用自动交接",actions::enableHandoff);action(runtime,"准备兼容桥接",actions::prepareBridge);action(runtime,"停止连接",actions::stopConnection);attachStatus();
         caption("运行记录");LinearLayout logs=group();detach(logOutput);logOutput.setPadding(dp(16),dp(12),dp(16),dp(12));logs.addView(logOutput,new LinearLayout.LayoutParams(-1,-2));help("LinkPods 1.0 · 耳机控制与交接的设备验收仍在进行。");}
-    private void attachStatus(){LinearLayout g=group();detach(environmentStatus);environmentStatus.setPadding(dp(20),dp(14),dp(20),dp(14));g.addView(environmentStatus,new LinearLayout.LayoutParams(-1,-2));capabilitiesStatus=text("",13,muted);capabilitiesStatus.setPadding(dp(20),0,dp(20),dp(14));g.addView(capabilitiesStatus);}
+    private void attachStatus(){LinearLayout g=group();detach(environmentStatus);environmentStatus.setPadding(dp(20),dp(14),dp(20),dp(14));g.addView(environmentStatus,new LinearLayout.LayoutParams(-1,-2));audioDetails=text("",13,muted);audioDetails.setPadding(dp(20),0,dp(20),dp(14));g.addView(audioDetails,new LinearLayout.LayoutParams(-1,-2));capabilitiesStatus=text("",13,muted);capabilitiesStatus.setPadding(dp(20),0,dp(20),dp(14));g.addView(capabilitiesStatus,new LinearLayout.LayoutParams(-1,-2));}
+    void bindAudio(SamsungAudioSnapshot state) {
+        audioSnapshot = state;
+        if (connection != null) {
+            String a2dpText = state != null ? SamsungAudioPolicy.formatA2dpSummary(state) : actions.connectionStatus();
+            connection.setText("媒体音频 (A2DP)：" + a2dpText);
+        }
+        if (audioCallStatus != null) {
+            audioCallStatus.setText("通话音频 (HFP/HSP)：" + SamsungAudioPolicy.formatHeadsetSummary(state));
+        }
+        if (audioRouteStatus != null) {
+            audioRouteStatus.setText("音频输出与路由：" + SamsungAudioPolicy.formatRouteSummary(state));
+        }
+        if (audioDetails != null) {
+            if (state == null || !state.permissionGranted) {
+                audioDetails.setText("系统音频快照：等待附近设备权限");
+            } else if (state.targetAddress.isEmpty()) {
+                audioDetails.setText("系统音频快照：请先在设置中选择耳机");
+            } else {
+                audioDetails.setText(
+                        "媒体音频 (A2DP)：" + SamsungAudioPolicy.connectionLabel(state.a2dpState)
+                        + "\n通话音频 (HFP/HSP)：" + SamsungAudioPolicy.formatHeadsetSummary(state)
+                        + "\n" + SamsungAudioPolicy.formatRouteSummary(state)
+                        + (state.routeDetail.isEmpty() ? "" : "\n路由说明：" + state.routeDetail));
+            }
+        }
+    }
     void bindCapabilities(ConnectionPolicy.Snapshot state,boolean mediaAllowed) {
         capabilities=state;mediaGranted=mediaAllowed;
         if(capabilitiesStatus!=null)capabilitiesStatus.setText((state==null?"控制会话尚未启动":state.description)
@@ -186,11 +216,11 @@ final class LinkPodsUi {
         if(title!=null&&HOME.equals(page))title.setText(actions.deviceName());
         if(deviceNameValue!=null)deviceNameValue.setText(actions.deviceName()+"  ›");
         if(sidebarDevice!=null)sidebarDevice.setText("◉  "+actions.deviceName());
-        if(connection!=null)connection.setText("系统音频："+actions.connectionStatus());
+        if(connection!=null)connection.setText("媒体音频 (A2DP)："+(audioSnapshot!=null?SamsungAudioPolicy.formatA2dpSummary(audioSnapshot):actions.connectionStatus()));
         if(session!=null){
             String ctrl=status!=null&&status.serviceRunning?status.controlDescription:(state.status==null?(state.ready?"通道就绪":"未连接"):state.status);
             if(state.status!=null&&state.status.contains("未确认")) ctrl=ctrl+"（"+state.status+"）";
-            session.setText("耳机控制："+ctrl);
+            session.setText("耳机控制 (AACP)："+ctrl);
         }
         if(handoff!=null){
             handoff.setText("自动交接："+(status!=null?status.handoffDescription:"关闭"));
