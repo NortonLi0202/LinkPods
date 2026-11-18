@@ -152,7 +152,10 @@ final class ControlSession {
             active.sendPacketAsync(write.packet, sent -> handler.post(() -> {
                 if (stopped || generation != sessionGeneration || active != probe) return;
                 if (!sent) earbudState.failed(id, write.token);
-                else active.requestState();
+                else {
+                    earbudState.sent(id, write.token);
+                    active.requestState();
+                }
                 logger.write("EARBUD_SETTING id=" + id + " sent=" + sent + " confirmed=false");
             }));
         });

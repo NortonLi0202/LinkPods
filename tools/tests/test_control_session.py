@@ -100,7 +100,8 @@ public class ControlSessionTest {
   expect(session.setSetting(TARGET_A,EarbudCommands.CONVERSATION_AWARENESS,1),"request A queued");
   clock.set(5200);
   EarbudSnapshot expired=session.snapshot(TARGET_A);
-  expect(expired.pending.isEmpty()&&expired.status.contains("未确认"),"request A expires after timeout");
+  expect(expired.pending.isEmpty()&&"设置请求超时，耳机未确认".equals(expired.status),
+   "request A expires before socket write as request-timeout, not sent");
 
   // Retry Request B on the same connection.
   expect(session.setSetting(TARGET_A,EarbudCommands.CONVERSATION_AWARENESS,2),"request B queued");
@@ -113,21 +114,30 @@ public class ControlSessionTest {
     &&"等待耳机确认设置".equals(afterStaleFailure.status),
    "stale failure of timed-out request A must not clear active retry B");
 
-  // Succeeding Request B triggers state refresh and awaits reply.
+  // Succeeding Request B triggers state refresh; if B then times out without reply, status says sent-unconfirmed.
   probe.pendingWrites.get(1).accept(true);
   expect(probe.stateRequests==1,"successful write triggers state refresh");
+  clock.set(10300);
+  EarbudSnapshot sentExpired=session.snapshot(TARGET_A);
+  expect(sentExpired.pending.isEmpty()&&"设置已发送，耳机未确认".equals(sentExpired.status),
+   "timeout after confirmed write reports sent without confirmation");
+
+  // Fresh Request B2 succeeds and matching reply confirms it.
+  expect(session.setSetting(TARGET_A,EarbudCommands.CONVERSATION_AWARENESS,2),"request B2 queued");
+  probe.pendingWrites.get(2).accept(true);
+  expect(probe.stateRequests==2,"B2 write triggers state refresh");
   probe.listener.packet(scalarReport(EarbudCommands.CONVERSATION_AWARENESS,2));
   expect(!session.snapshot(TARGET_A).pending.contains(EarbudCommands.CONVERSATION_AWARENESS),
-   "matching reply confirms request B");
+   "matching reply confirms request B2");
 
   // Late success on an already-timed-out write only triggers a read-only refresh without clearing a newer pending request.
-  clock.set(6000);
+  clock.set(11000);
   expect(session.setSetting(TARGET_A,EarbudCommands.CONVERSATION_AWARENESS,1),"request C queued");
-  clock.set(11200);
+  clock.set(16200);
   expect(session.snapshot(TARGET_A).pending.isEmpty(),"request C expires");
   expect(session.setSetting(TARGET_A,EarbudCommands.CONVERSATION_AWARENESS,2),"request D queued");
-  probe.pendingWrites.get(2).accept(true);
-  expect(probe.stateRequests==2,"late success triggers read-only refresh");
+  probe.pendingWrites.get(3).accept(true);
+  expect(probe.stateRequests==3,"late success triggers read-only refresh");
   expect(session.snapshot(TARGET_A).pending.contains(EarbudCommands.CONVERSATION_AWARENESS),
    "late success of C does not clear D");
  }

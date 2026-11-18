@@ -21,7 +21,7 @@ public class Context {
  public final Map<Class<?>,Object> services=new HashMap<>();
  public int registeredReceivers,unregisteredReceivers;
  public BroadcastReceiver lastReceiver;
- public boolean bluetoothPermissionGranted=true;
+ public boolean bluetoothPermissionGranted=true,baseAttached=false;
  public <T>T getSystemService(Class<T> type){return type.cast(services.get(type));}
  public Context getApplicationContext(){return this;}
  public java.util.concurrent.Executor getMainExecutor(){return Runnable::run;}
@@ -51,7 +51,7 @@ public class Intent {
  public <T>T getParcelableExtra(String k){return (T)extras.get(k);}
  public <T>T getParcelableExtra(String k,Class<T> t){return t.cast(extras.get(k));}
 }''',
-    'android/content/ComponentName.java': 'package android.content; public class ComponentName {public ComponentName(Context c,Class<?> t){}}',
+    'android/content/ComponentName.java': 'package android.content; public class ComponentName {public ComponentName(Context c,Class<?> t){if(!c.baseAttached)throw new NullPointerException("base context not attached");}}',
     'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(){}public IntentFilter(String a){}public void addAction(String a){}}',
     'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i);}',
     'android/service/notification/NotificationListenerService.java': '''package android.service.notification;
@@ -122,12 +122,15 @@ import java.util.*;
 public class MediaController {
  public final Set<Callback> callbacks=new HashSet<>(); public int registered,unregistered,paused;
  private int playbackState=3;
+ private String pkg="host.player";
  private final MediaSession.Token token=new MediaSession.Token();
  public MediaController(){}
  public MediaController(int state){playbackState=state;}
- public String getPackageName(){return "host.player";}
+ public MediaController(String pkg,int state){this.pkg=pkg;this.playbackState=state;}
+ public String getPackageName(){return pkg;}
  public MediaSession.Token getSessionToken(){return token;}
  public PlaybackState getPlaybackState(){return new PlaybackState(playbackState);}
+ public void setPlaybackState(int state){playbackState=state;}
  public void registerCallback(Callback c,android.os.Handler h){callbacks.add(c);registered++;}
  public void unregisterCallback(Callback c){callbacks.remove(c);unregistered++;}
  public TransportControls getTransportControls(){return new TransportControls(this);}
@@ -267,7 +270,7 @@ public class HandoffLifecycleTest {
  static Object get(Object o,String n)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);return f.get(o);}
  static void set(Object o,String n,Object v)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);f.set(o,v);}
  static HandoffService service(MediaSessionManager manager)throws Exception{
-  HandoffService s=new HandoffService();HandoffService.current=s;s.services.put(MediaSessionManager.class,manager);
+  HandoffService s=new HandoffService();s.baseAttached=true;HandoffService.current=s;s.services.put(MediaSessionManager.class,manager);
   s.services.put(AudioManager.class,new AudioManager());
   s.services.put(BluetoothManager.class,new BluetoothManager());
   s.services.put(NotificationManager.class,new NotificationManager());
@@ -406,7 +409,8 @@ public class HandoffLifecycleTest {
   probe.packets.clear();
   MediaController newPlayer=new MediaController(PlaybackState.STATE_PLAYING);
   manager.lastListener.onActiveSessionsChanged(Arrays.asList(activeBeforeRevoke,newPlayer));
-  expect(newPlayer.callbacks.size()==1,"new player is tracked after permission recovery");
+  expect(activeBeforeRevoke.callbacks.size()==1&&newPlayer.callbacks.size()==1,
+   "both existing and new players are tracked after permission recovery");
   boolean took=false;
   for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) took=true;
   expect(took,"new player playback after permission recovery triggers handoff TAKE");
@@ -468,16 +472,39 @@ public class HandoffLifecycleTest {
   for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipFalse),"downgrade must not send release ownership packet");
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("关闭"),"UI reports handoff closed after downgrade");
 
-  // Re-upgrade with paused player and verify stale callback from prior AUTO_HANDOFF batch cannot trigger TAKE.
-  MediaController pausedPlayer=new MediaController(0);
-  manager.active.clear();manager.active.add(pausedPlayer);
+  // Re-upgrade with the same controller paused and verify stale callback from prior AUTO_HANDOFF batch cannot trigger TAKE,
+  // while the fresh callback for the same controller does trigger TAKE.
+  activePlayer.setPlaybackState(0);
   probe.packets.clear();
   Intent reupgrade=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
-  s.onStartCommand(reupgrade,0,2);
+  s.onStartCommand(reupgrade,0,3);
+  expect(activePlayer.callbacks.size()==1,"re-upgrade registers one fresh callback on same controller");
+  MediaController.Callback freshCallback=activePlayer.callbacks.iterator().next();
+  expect(freshCallback!=staleCallback,"re-upgrade creates a distinct callback instance");
+  activePlayer.setPlaybackState(PlaybackState.STATE_PLAYING);
   staleCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
   byte[] ownershipTrue=RoutingPackets.ownership(true);
   for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipTrue),"stale playback callback from pre-downgrade batch cannot trigger TAKE");
+  freshCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  boolean freshTook=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) freshTook=true;
+  expect(freshTook,"fresh callback after re-upgrade triggers TAKE for same controller");
+
+  // Telecom-only session update after a call-triggered TAKE syncs mediaInformation(false) when no media players exist.
+  probe.packets.clear();
+  manager.active.clear();
+  manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
+  MediaController telecom=new MediaController("com.android.server.telecom",PlaybackState.STATE_PLAYING);
+  ((AudioManager)s.services.get(AudioManager.class)).mode=AudioManager.MODE_IN_CALL;
+  SamsungAudioMonitor.Listener monitorListener=(SamsungAudioMonitor.Listener)get(s,"audioMonitorListener");
+  monitorListener.onAudioModeChanged(AudioManager.MODE_IN_CALL);
+  probe.packets.clear();
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(telecom));
+  byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
+  boolean sentNoOnTelecom=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentNoOnTelecom=true;
+  expect(sentNoOnTelecom,"telecom-only session list after call TAKE syncs mediaInformation(false)");
  }
  static void bridgeLifecycle(String modeName)throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();RootEnvironment.stoppedBridges.clear();

@@ -58,10 +58,18 @@ public final class EarbudCommandsTest {
         state.receive(control(0x28,1));
         expect(!state.snapshot(A,14).pending.contains(0x28) && Boolean.TRUE.equals(state.snapshot(A,14).enabled(0x28)),"matching real reply confirms");
         state.queue(A,0x28,2,20);
-        EarbudSnapshot expired=state.snapshot(A,10000);
-        expect(expired.pending.isEmpty() && Boolean.TRUE.equals(expired.enabled(0x28)) && expired.status.contains("未确认"),"timeout remains unconfirmed and preserves observed state");
-        state.queue(A,0x28,2,10001); state.failed(0x28);
-        expect(state.snapshot(A,10002).pending.isEmpty() && Boolean.TRUE.equals(state.snapshot(A,10002).enabled(0x28)),"send failure preserves observation");
+        EarbudSnapshot expiredUnsent=state.snapshot(A,10000);
+        expect(expiredUnsent.pending.isEmpty() && Boolean.TRUE.equals(expiredUnsent.enabled(0x28))
+            && "设置请求超时，耳机未确认".equals(expiredUnsent.status),
+            "timeout before write completion reports request timeout without claiming sent");
+        EarbudCommands.PendingWrite sentBeforeTimeout=state.queueRequest(A,0x28,2,10000);
+        expect(sentBeforeTimeout!=null,"request queued before send confirmation");
+        state.sent(0x28,sentBeforeTimeout.token);
+        EarbudSnapshot expiredSent=state.snapshot(A,15000);
+        expect(expiredSent.pending.isEmpty() && "设置已发送，耳机未确认".equals(expiredSent.status),
+            "timeout after confirmed socket write reports sent without reply");
+        state.queue(A,0x28,2,15001); state.failed(0x28);
+        expect(state.snapshot(A,15002).pending.isEmpty() && Boolean.TRUE.equals(state.snapshot(A,15002).enabled(0x28)),"send failure preserves observation");
         EarbudCommands.PendingWrite firstAttempt=state.queueRequest(A,0x28,2,10010);
         expect(firstAttempt!=null,"tokenized request queued");
         expect(state.snapshot(A,16000).pending.isEmpty(),"first request expires after timeout");

@@ -93,6 +93,7 @@ public class PlaybackWatchTest {
   final List<String> stateChanges=new ArrayList<>();
   final List<String> removedPlayers=new ArrayList<>();
   final List<Boolean> stopped=new ArrayList<>();
+  int sessionsSynced;
   @Override public void onPlayersSeeded(Map<String,Integer> states,boolean restarted){
    seeded.add(new LinkedHashMap<>(states));
    seededRestartFlags.add(restarted);
@@ -101,6 +102,7 @@ public class PlaybackWatchTest {
    stateChanges.add(playerId+":"+packageName+":"+state);
   }
   @Override public void onPlayerRemoved(String playerId){removedPlayers.add(playerId);}
+  @Override public void onSessionsSynced(){sessionsSynced++;}
   @Override public void onWatchStopped(boolean accessLost){stopped.add(accessLost);}
  }
 
@@ -189,6 +191,18 @@ public class PlaybackWatchTest {
   expect(events.removedPlayers.size()==1,"active batch removes missing player");
   batch3PlayerCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
   expect(events.stateChanges.isEmpty(),"late callback from removed player in same batch is ignored");
+
+  // Stale queued PLAYING callback when controller is already PAUSED must be discarded.
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(second));
+  events.stateChanges.clear();
+  second.setPlaybackState(PlaybackState.STATE_PAUSED);
+  second.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  expect(events.stateChanges.isEmpty(),"stale queued PLAYING callback when controller is paused is discarded");
+
+  // Current PLAYING callback with matching live controller state is forwarded.
+  second.setPlaybackState(PlaybackState.STATE_PLAYING);
+  second.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  expect(events.stateChanges.size()==1,"live PLAYING callback matching controller state is forwarded");
  }
 
  static void accessLostAndPauseActive(){
@@ -213,6 +227,15 @@ public class PlaybackWatchTest {
   expect(playing.paused==1&&buffering.paused==1,"pauseActive pauses playing and buffering players");
   expect(paused.paused==0&&telecom.paused==0,"pauseActive skips paused and telecom players");
 
+  // Recoverable restart failure while access remains granted does NOT emit onWatchStopped, and preserves restarted=true on recovery.
+  manager.rejectRegistration=true;
+  int stopsBeforeRecoverableFailure=events.stopped.size();
+  expect(!watch.restart(),"recoverable restart failure returns false");
+  expect(events.stopped.size()==stopsBeforeRecoverableFailure,"recoverable restart failure does not emit onWatchStopped");
+  manager.rejectRegistration=false;
+  expect(watch.restart(),"subsequent restart succeeds");
+  expect(events.seededRestartFlags.get(events.seededRestartFlags.size()-1),"recovery after recoverable restart failure preserves restarted=true");
+
   // Revocation via empty session list triggers accessLost=true.
   nm.notificationAccessGranted=false;
   manager.active.clear();
@@ -234,6 +257,14 @@ public class PlaybackWatchTest {
   nm.notificationAccessGranted=false;
   expect(!watch.restart(),"restart fails when access revoked");
   expect(events.stopped.size()==3&&events.stopped.get(2),"failed restart after revoke emits onWatchStopped(true)");
+
+  // Telecom-only session update still triggers onSessionsSynced().
+  nm.notificationAccessGranted=true;
+  manager.active.clear();
+  expect(watch.start(),"start succeeds with no players");
+  int syncedBeforeTelecom=events.sessionsSynced;
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(telecom));
+  expect(events.sessionsSynced==syncedBeforeTelecom+1,"telecom-only session list triggers onSessionsSynced");
  }
 
  public static void main(String[] args){

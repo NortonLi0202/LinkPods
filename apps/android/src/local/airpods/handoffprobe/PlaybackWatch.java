@@ -27,6 +27,7 @@ final class PlaybackWatch {
         void onPlayersSeeded(Map<String, Integer> states, boolean restarted);
         void onPlayerStateChanged(String playerId, String packageName, int state);
         void onPlayerRemoved(String playerId);
+        void onSessionsSynced();
         void onWatchStopped(boolean accessLost);
     }
 
@@ -42,6 +43,7 @@ final class PlaybackWatch {
     private MediaSessionManager mediaSessions;
     private MediaSessionManager.OnActiveSessionsChangedListener activeSessionsListener;
     private boolean watching;
+    private boolean preservePendingOnRestart;
     private long generation;
 
     PlaybackWatch(
@@ -73,30 +75,45 @@ final class PlaybackWatch {
 
     boolean start() {
         if (watching) return false;
-        return startInternal(false);
+        boolean restarted = preservePendingOnRestart;
+        boolean started = startInternal(restarted);
+        if (started) preservePendingOnRestart = false;
+        return started;
     }
 
     boolean restart() {
-        boolean wasWatching = watching;
+        boolean wasWatching = watching || preservePendingOnRestart;
         if (!hasMediaAccess()) {
+            preservePendingOnRestart = false;
             if (hasRegistrationState()) onAccessLost();
+            else if (wasWatching) listener.onWatchStopped(true);
             return false;
         }
         if (hasRegistrationState()) {
             tearDownRegistration();
         }
         boolean started = startInternal(wasWatching);
-        if (!started && wasWatching) {
-            listener.onWatchStopped(true);
+        if (started) {
+            preservePendingOnRestart = false;
+        } else if (wasWatching) {
+            if (!hasMediaAccess()) {
+                preservePendingOnRestart = false;
+                listener.onWatchStopped(true);
+            } else {
+                // Keep pending TAKE intact across recoverable registration failures until next rebind.
+                preservePendingOnRestart = true;
+            }
         }
         return started;
     }
 
     void stop() {
+        preservePendingOnRestart = false;
         stopInternal(false);
     }
 
     void onAccessLost() {
+        preservePendingOnRestart = false;
         if (!hasRegistrationState()) return;
         stopInternal(true);
         logger.write("MEDIA_SESSION_WATCH access-lost");
@@ -173,8 +190,9 @@ final class PlaybackWatch {
             if (!isTrackable(controller)) continue;
             MediaSession.Token token = controller.getSessionToken();
             if (token == null || players.containsKey(token)) continue;
-            registerPlayer(batch, token, controller);
+            // Read the baseline before registering callbacks so pre-snapshot transitions cannot queue behind it.
             seeded.put(token.toString(), playbackStateValue(controller.getPlaybackState()));
+            registerPlayer(batch, token, controller);
         }
     }
 
@@ -182,6 +200,7 @@ final class PlaybackWatch {
         if (!isCurrentBatch(batch)) return;
         Set<MediaSession.Token> present = new HashSet<>();
         List<MediaController> added = new ArrayList<>();
+        List<Integer> addedStates = new ArrayList<>();
         if (list != null) {
             for (MediaController controller : list) {
                 if (!isTrackable(controller)) continue;
@@ -189,18 +208,21 @@ final class PlaybackWatch {
                 if (token == null) continue;
                 present.add(token);
                 if (players.containsKey(token)) continue;
+                int initialState = playbackStateValue(controller.getPlaybackState());
                 registerPlayer(batch, token, controller);
                 added.add(controller);
+                addedStates.add(initialState);
             }
         }
-        for (MediaController controller : added) {
+        for (int i = 0; i < added.size(); i++) {
             if (!isCurrentBatch(batch)) return;
+            MediaController controller = added.get(i);
             MediaSession.Token token = controller.getSessionToken();
             if (token == null || players.get(token) != controller) continue;
             listener.onPlayerStateChanged(
                     token.toString(),
                     safePackageName(controller),
-                    playbackStateValue(controller.getPlaybackState()));
+                    addedStates.get(i));
         }
         for (MediaSession.Token token : new HashSet<>(players.keySet())) {
             if (!isCurrentBatch(batch)) return;
@@ -211,6 +233,10 @@ final class PlaybackWatch {
         }
         if (isCurrentBatch(batch) && (list == null || list.isEmpty()) && !hasMediaAccess()) {
             onAccessLost();
+            return;
+        }
+        if (isCurrentBatch(batch)) {
+            listener.onSessionsSynced();
         }
     }
 
@@ -218,10 +244,15 @@ final class PlaybackWatch {
         if (!isCurrentBatch(batch)) return;
         MediaSession.Token token = controller.getSessionToken();
         if (token == null || players.get(token) != controller) return;
+        int value = playbackStateValue(state);
+        if (value == PlaybackState.STATE_PLAYING
+                && playbackStateValue(controller.getPlaybackState()) != PlaybackState.STATE_PLAYING) {
+            return;
+        }
         listener.onPlayerStateChanged(
                 token.toString(),
                 safePackageName(controller),
-                playbackStateValue(state));
+                value);
     }
 
     private boolean isCurrentBatch(long batch) {

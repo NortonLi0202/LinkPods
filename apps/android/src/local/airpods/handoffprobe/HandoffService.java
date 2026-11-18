@@ -113,6 +113,10 @@ public final class HandoffService extends Service {
             policy.remove(playerId);
             if (controlSession.isReady() && !policy.hasPlayback()) mediaInformation(false);
         }
+        @Override public void onSessionsSynced() {
+            if (stopped || !mode.allowsRouting()) return;
+            if (controlSession.isReady() && !policy.hasPlayback()) mediaInformation(false);
+        }
         @Override public void onWatchStopped(boolean accessLost) {
             policy.reset();
             if (accessLost && !stopped && mode.allowsRouting() && controlSession.isReady()) {
@@ -120,8 +124,15 @@ public final class HandoffService extends Service {
             }
         }
     };
-    private final PlaybackWatch playbackWatch = new PlaybackWatch(
-        this, handler, new ComponentName(this, PlaybackListener.class), this::log, playbackEvents);
+    private PlaybackWatch playbackWatch;
+
+    private PlaybackWatch watch() {
+        if (playbackWatch == null) {
+            playbackWatch = new PlaybackWatch(
+                this, handler, new ComponentName(this, PlaybackListener.class), this::log, playbackEvents);
+        }
+        return playbackWatch;
+    }
 
     public SessionMode mode() { return mode; }
     boolean isStopped() { return stopped; }
@@ -174,7 +185,7 @@ public final class HandoffService extends Service {
         }
         SessionMode mode = service.mode;
         boolean ready = service.controlSession.isReady();
-        boolean watchActive = service.playbackWatch.isActive();
+        boolean watchActive = service.playbackWatch != null && service.playbackWatch.isActive();
         ConnectionPolicy.Snapshot conn = service.connection.snapshot(targetAddress);
         String ctrl = ready ? (service.nativeBackendReady ? "桥接控制通道已连接" : "直连控制通道已连接") : conn.description;
         String handoff = mode == SessionMode.AUTO_HANDOFF
@@ -222,6 +233,7 @@ public final class HandoffService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
+        watch();
         current = this;
         audio = getSystemService(AudioManager.class);
         adapter = getSystemService(BluetoothManager.class).getAdapter();
@@ -281,18 +293,18 @@ public final class HandoffService extends Service {
             log("SESSION_MODE changed: " + previousMode + " -> " + requestedMode);
             updateForegroundNotification();
             if (requestedMode == SessionMode.AUTO_HANDOFF) {
-                playbackWatch.start();
+                watch().start();
                 announcePeers();
             } else {
-                playbackWatch.stop();
+                if (playbackWatch != null) playbackWatch.stop();
                 policy.reset();
                 peerPolicy.reset();
                 audioLink.reset();
                 lastMediaState = null;
                 owns = null;
             }
-        } else if (requestedMode == SessionMode.AUTO_HANDOFF && !playbackWatch.isWatching()) {
-            playbackWatch.start();
+        } else if (requestedMode == SessionMode.AUTO_HANDOFF && !watch().isWatching()) {
+            watch().start();
             announcePeers();
         }
         boolean preparedBridge=false;
@@ -322,12 +334,12 @@ public final class HandoffService extends Service {
 
     void restartSessionWatch() {
         if (stopped || mode != SessionMode.AUTO_HANDOFF) return;
-        playbackWatch.restart();
+        watch().restart();
     }
 
     void onMediaAccessLost() {
         if (stopped) return;
-        playbackWatch.onAccessLost();
+        if (playbackWatch != null) playbackWatch.onAccessLost();
     }
 
     private void finishPendingTake(String reason) {
@@ -543,7 +555,7 @@ public final class HandoffService extends Service {
         log("RELEASE reason=" + reason);
         if (acknowledge) send(RoutingPackets.ownership(false), "ownership-false");
         mediaInformation(false);
-        playbackWatch.pauseActive();
+        if (playbackWatch != null) playbackWatch.pauseActive();
         BluetoothProfile a2dp = a2dpProxy();
         applyAudioLink(audioLink.want(false,a2dp == null ? 0 : a2dp.getConnectionState(target)));
     }
@@ -591,7 +603,7 @@ public final class HandoffService extends Service {
         if (current == this) current = null;
         handler.removeCallbacksAndMessages(null);
         controlSession.stop();
-        playbackWatch.stop();
+        if (playbackWatch != null) playbackWatch.stop();
         if (audioMonitor != null) audioMonitor.stop();
         target = null;
         peers.clear();

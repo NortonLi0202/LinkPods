@@ -58,6 +58,7 @@ public final class EarbudCommands {
         private final Set<Integer> observedModes=new HashSet<>();
         private static final class Request {
             final long token; final int value; final long deadline;
+            boolean sent;
             Request(long token,int value,long deadline) {
                 this.token=token;this.value=value;this.deadline=deadline;
             }
@@ -146,6 +147,10 @@ public final class EarbudCommands {
             status="等待耳机确认设置";
             return new PendingWrite(token,bytes);
         }
+        synchronized void sent(int id,long token) {
+            Request current=pending.get(id);
+            if(current!=null && current.token==token) current.sent=true;
+        }
         synchronized void failed(int id) {
             if(pending.remove(id)!=null) status="设置未发送，未确认";
         }
@@ -166,8 +171,12 @@ public final class EarbudCommands {
         }
         private void expire(long now) {
             Iterator<Request> iterator=pending.values().iterator();
-            while(iterator.hasNext()) if(now>=iterator.next().deadline) {
-                iterator.remove();status="设置已发送，耳机未确认";
+            while(iterator.hasNext()) {
+                Request request=iterator.next();
+                if(now>=request.deadline) {
+                    iterator.remove();
+                    status=request.sent ? "设置已发送，耳机未确认" : "设置请求超时，耳机未确认";
+                }
             }
         }
         synchronized EarbudSnapshot snapshot(String address,long now) {
