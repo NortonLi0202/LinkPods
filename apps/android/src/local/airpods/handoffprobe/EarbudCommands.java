@@ -33,6 +33,16 @@ public final class EarbudCommands {
         return new byte[]{4,0,4,0,9,0,(byte)id,(byte)value,0,0,0};
     }
 
+    /** Tokenized pending write returned by {@link State#queueRequest}. */
+    static final class PendingWrite {
+        final long token;
+        final byte[] packet;
+        PendingWrite(long token, byte[] packet) {
+            this.token=token;
+            this.packet=packet;
+        }
+    }
+
     /** Session-local observed state, independently testable without Android or a socket. */
     static final class State {
         private static final long CONFIRM_TIMEOUT_MS=5000;
@@ -42,12 +52,15 @@ public final class EarbudCommands {
         private String status="控制服务未运行";
         private AirPodsModels.Model model;
         private String modelNumber="",reportedName="",version1="",version2="";
+        private long nextToken;
         private final Map<Integer,Integer> observed=new HashMap<>();
         private final Map<Integer,Request> pending=new HashMap<>();
         private final Set<Integer> observedModes=new HashSet<>();
         private static final class Request {
-            final int value; final long deadline;
-            Request(int value,long deadline) { this.value=value;this.deadline=deadline; }
+            final long token; final int value; final long deadline;
+            Request(long token,int value,long deadline) {
+                this.token=token;this.value=value;this.deadline=deadline;
+            }
         }
         synchronized void begin(String address) {
             target=address==null ? "" : address;
@@ -118,18 +131,30 @@ public final class EarbudCommands {
             return true;
         }
         synchronized byte[] queue(String address,int id,int value,long now) {
+            PendingWrite request=queueRequest(address,id,value,now);
+            return request==null ? null : request.packet;
+        }
+        synchronized PendingWrite queueRequest(String address,int id,int value,long now) {
             expire(now);
             if(!matches(address) || !ready || !observed.containsKey(id) || pending.containsKey(id)) return null;
             if(!AirPodsModels.supportsSetting(model,id)) return null;
             if(id==LISTENING_MODE && !supportedMode(value)) return null;
             byte[] bytes=encode(id,value);
             if(bytes==null) return null;
-            pending.put(id,new Request(value,now+CONFIRM_TIMEOUT_MS));
+            long token=++nextToken;
+            pending.put(id,new Request(token,value,now+CONFIRM_TIMEOUT_MS));
             status="等待耳机确认设置";
-            return bytes;
+            return new PendingWrite(token,bytes);
         }
         synchronized void failed(int id) {
             if(pending.remove(id)!=null) status="设置未发送，未确认";
+        }
+        synchronized void failed(int id,long token) {
+            Request current=pending.get(id);
+            if(current!=null && current.token==token) {
+                pending.remove(id);
+                status="设置未发送，未确认";
+            }
         }
         private boolean matches(String address) {
             return address!=null && !target.isEmpty() && target.equalsIgnoreCase(address);

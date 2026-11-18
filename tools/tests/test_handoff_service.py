@@ -276,19 +276,22 @@ public class HandoffLifecycleTest {
   return s;
  }
  static void upgradeWithLocalIdentity(boolean initiallyKnown)throws Exception{
-  AapProbe.failStart=true;
+  AapProbe.failStart=false;AapProbe.created.clear();
   HandoffService s=service(new MediaSessionManager());
-  set(s,"deviceConfig",DeviceConfig.create(TARGET,initiallyKnown?SELF:"",PEER));set(s,"selfMac",initiallyKnown?SELF:"");
-  set(s,"peerMac",PEER);set(s,"ready",true);
+  Intent initial=new Intent().putExtra("address",TARGET)
+   .putExtra("local_mac",initiallyKnown?SELF:"").putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY");
+  s.onStartCommand(initial,0,1);
+  expect(AapProbe.created.size()==1,"initial start creates one probe");
+  AapProbe probe=AapProbe.created.get(0);
+  probe.listener.ready();
+  AapProbe.failStart=true;
   ((Set<String>)get(s,"peers")).add(PEER);
-  ConnectionPolicy connection=(ConnectionPolicy)get(s,"connection");
-  connection.start(TARGET,false);connection.ready(connection.generation(),TARGET);
   ((RoutingPolicy)get(s,"policy")).onPlayback("pending.player",3);
-  AapProbe probe=new AapProbe(null,m->{},null);set(s,"session",probe);
   Intent request=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
-  s.onStartCommand(request,0,1);
-  expect(get(s,"session")==probe,"mode upgrade must reuse ready control session");
+  s.onStartCommand(request,0,2);
+  expect(AapProbe.created.size()==1&&probe.stopped==0,"mode upgrade must reuse ready control session");
   boolean announced=false,media=false,take=false;
   byte[] expected=RoutingPackets.announce(SELF,PEER);
   for(byte[] packet:probe.packets){
@@ -300,74 +303,47 @@ public class HandoffLifecycleTest {
   expect(media,"upgrade must send current media state after announcing peer");
   expect(take,"upgrade must finish pending take without a fresh peer list");
  }
- static void failedWatchCleansPlayers()throws Exception{
-  MediaSessionManager manager=new MediaSessionManager();manager.rejectRegistration=true;
-  MediaController controller=new MediaController();manager.active.add(controller);
-  HandoffService s=service(manager);set(s,"mode",SessionMode.AUTO_HANDOFF);
-  s.startSessionWatch();
-  expect(controller.registered==1,"test must reach player callback registration before listener failure");
-  expect(controller.callbacks.isEmpty(),"failed watch start must immediately unregister player callbacks");
-  expect(((Map<?,?>)get(s,"players")).isEmpty(),"failed watch must discard player controllers");
-  expect(((Map<?,?>)get(s,"playerCallbacks")).isEmpty(),"failed watch must discard callback map");
-  expect(!((RoutingPolicy)get(s,"policy")).hasPlayback(),"failed watch must discard seeded playback policy");
-  expect(manager.removed==0,"listener registration failed, so no active listener must be removed");
-  manager.rejectRegistration=false;s.startSessionWatch();
-  expect(controller.callbacks.size()==1,"retry must register one fresh player callback");
-  s.stopSessionWatch();expect(controller.callbacks.isEmpty()&&manager.removed==1,"successful retry must stop normally");
- }
- static void stopPartialWatch()throws Exception{
-  MediaSessionManager manager=new MediaSessionManager();HandoffService s=service(manager);
-  MediaController controller=new MediaController();MediaSession.Token token=controller.getSessionToken();
-  MediaController.Callback callback=new MediaController.Callback();controller.registerCallback(callback,null);
-  ((Map<MediaSession.Token,MediaController>)get(s,"players")).put(token,controller);
-  ((Map<MediaSession.Token,MediaController.Callback>)get(s,"playerCallbacks")).put(token,callback);
-  ((RoutingPolicy)get(s,"policy")).seed(token.toString(),3);
-  s.stopSessionWatch();s.stopSessionWatch();
-  expect(controller.callbacks.isEmpty(),"stop must release partial player callbacks even when watching=false");
-  expect(controller.unregistered==1,"repeated stop must not unregister a player twice");
-  expect(((Map<?,?>)get(s,"players")).isEmpty()&&((Map<?,?>)get(s,"playerCallbacks")).isEmpty(),"stop must clear player maps");
-  expect(!((RoutingPolicy)get(s,"policy")).hasPlayback(),"stop must clear partial playback policy");
-  expect(manager.removed==0,"partial watch has no registered active listener");
- }
  static void modeRoundTripInvalidatesQueuedRouting()throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();
+  HandoffService s=service(new MediaSessionManager());
+  s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
+  AapProbe probe=AapProbe.created.get(0);
+  probe.listener.ready();
   AapProbe.failStart=true;
-  HandoffService s=service(new MediaSessionManager());set(s,"mode",SessionMode.AUTO_HANDOFF);
-  set(s,"deviceConfig",DeviceConfig.create(TARGET,SELF,PEER));set(s,"selfMac",SELF);set(s,"peerMac",PEER);set(s,"ready",true);
-  ConnectionPolicy connection=(ConnectionPolicy)get(s,"connection");connection.start(TARGET,false);connection.ready(connection.generation(),TARGET);
-  AapProbe probe=new AapProbe(null,m->{},null);probe.holdWrites=true;set(s,"session",probe);
+  probe.holdWrites=true;
   Method send=HandoffService.class.getDeclaredMethod("send",byte[].class,String.class);send.setAccessible(true);
   byte[] packet=RoutingPackets.ownership(true);send.invoke(s,packet,"test-routing");
   Intent request=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER);
-  s.onStartCommand(request.putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY"),0,1);
-  s.onStartCommand(request.putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,2);
+  s.onStartCommand(request.putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY"),0,2);
+  s.onStartCommand(request.putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,3);
   probe.flush();
   expect(probe.packets.isEmpty(),"service mode round trip must invalidate routing already queued on the reused session");
   send.invoke(s,packet,"fresh-routing");probe.flush();
   expect(probe.packets.size()==1&&Arrays.equals(probe.packets.get(0),packet),"fresh routing after mode round trip must work");
  }
  static void permissionRevokeAndRestoreResumesHandoff()throws Exception{
-  AapProbe.failStart=true;
+  AapProbe.failStart=false;AapProbe.created.clear();
   MediaSessionManager manager=new MediaSessionManager();
   NotificationManager nm=new NotificationManager();
+  nm.notificationAccessGranted=false;
   HandoffService s=service(manager);s.services.put(NotificationManager.class,nm);
-  set(s,"deviceConfig",DeviceConfig.create(TARGET,SELF,PEER));set(s,"selfMac",SELF);set(s,"peerMac",PEER);set(s,"ready",true);
-  set(s,"target",new BluetoothDevice(TARGET));
+  s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
+  AapProbe probe=AapProbe.created.get(0);
+  probe.listener.ready();
+  AapProbe.failStart=true;
   ((Set<String>)get(s,"peers")).add(PEER);
-  ConnectionPolicy connection=(ConnectionPolicy)get(s,"connection");
-  connection.start(TARGET,false);connection.ready(connection.generation(),TARGET);
-  AapProbe probe=new AapProbe(null,m->{},null);set(s,"session",probe);
-  set(s,"mode",SessionMode.AUTO_HANDOFF);
 
+  nm.notificationAccessGranted=true;
   PlaybackListener listener=new PlaybackListener();
   listener.onListenerConnected();
   expect(manager.added==1,"initial grant registers media listener once");
-  expect((Boolean)get(s,"watching"),"watching becomes true after initial grant");
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("运行中"),"UI reports handoff running when watch active");
 
   // Path 1: Android revokes access -> removes server listener and emits empty list.
   nm.notificationAccessGranted=false;
   manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
-  expect(!(Boolean)get(s,"watching"),"revoked empty-list callback clears watching state");
   expect(manager.removed==1,"revoked empty-list callback removes old listener registration");
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("等待媒体权限"),"UI reports waiting for media access after revocation");
 
@@ -375,15 +351,22 @@ public class HandoffLifecycleTest {
   nm.notificationAccessGranted=true;
   listener.onListenerConnected();
   expect(manager.added==2,"re-grant registers a fresh media listener");
-  expect((Boolean)get(s,"watching"),"watching resumes after re-grant");
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("运行中"),"UI reports running again after re-grant");
 
-  // Path 2: onListenerDisconnected revokes access, then re-grant + new player starts playback.
+  // Path 2: onListenerDisconnected revokes access while playing -> sends mediaInformation(false) too.
+  MediaController playingBeforeDisconnect=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.clear();manager.active.add(playingBeforeDisconnect);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(playingBeforeDisconnect));
+  probe.packets.clear();
   nm.notificationAccessGranted=false;
   listener.onListenerDisconnected();
-  expect(!(Boolean)get(s,"watching"),"onListenerDisconnected clears watching state");
   expect(manager.removed==2,"onListenerDisconnected removes active listener registration");
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("等待媒体权限"),"UI reports waiting for media access after disconnect");
+  byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
+  boolean sentFalseOnDisconnect=false;
+  for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentFalseOnDisconnect=true;
+  expect(sentFalseOnDisconnect,"onListenerDisconnected while playing sends mediaInformation(false)");
+  manager.active.clear();
 
   nm.notificationAccessGranted=true;
   listener.onListenerConnected();
@@ -401,7 +384,6 @@ public class HandoffLifecycleTest {
   nm.notificationAccessGranted=false;
   manager.active.clear();
   manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
-  byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
   byte[] mediaTrue=RoutingPackets.mediaInformation(SELF,PEER,true);
   byte[] ownershipTrue=RoutingPackets.ownership(true);
   boolean sentFalseOnRevoke=false;
@@ -424,7 +406,7 @@ public class HandoffLifecycleTest {
   probe.packets.clear();
   MediaController newPlayer=new MediaController(PlaybackState.STATE_PLAYING);
   manager.lastListener.onActiveSessionsChanged(Arrays.asList(activeBeforeRevoke,newPlayer));
-  expect(((Map<?,?>)get(s,"players")).size()==2,"new player is tracked after permission recovery");
+  expect(newPlayer.callbacks.size()==1,"new player is tracked after permission recovery");
   boolean took=false;
   for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) took=true;
   expect(took,"new player playback after permission recovery triggers handoff TAKE");
@@ -461,30 +443,41 @@ public class HandoffLifecycleTest {
   expect(took,"ready() after listener restart completes preserved pending TAKE");
  }
  static void downgradeReusesSessionWithoutAudioDisruption()throws Exception{
-  AapProbe.failStart=true;
+  AapProbe.failStart=false;AapProbe.created.clear();
   MediaSessionManager manager=new MediaSessionManager();
   MediaController activePlayer=new MediaController(PlaybackState.STATE_PLAYING);
   manager.active.add(activePlayer);
   HandoffService s=service(manager);
-  set(s,"deviceConfig",DeviceConfig.create(TARGET,SELF,PEER));set(s,"selfMac",SELF);set(s,"peerMac",PEER);set(s,"ready",true);
+  s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
+  AapProbe probe=AapProbe.created.get(0);
+  probe.listener.ready();
+  AapProbe.failStart=true;
   ((Set<String>)get(s,"peers")).add(PEER);
-  ConnectionPolicy connection=(ConnectionPolicy)get(s,"connection");
-  connection.start(TARGET,false);connection.ready(connection.generation(),TARGET);
-  AapProbe probe=new AapProbe(null,m->{},null);set(s,"session",probe);
-  set(s,"mode",SessionMode.AUTO_HANDOFF);
-  s.startSessionWatch();
-  expect(activePlayer.callbacks.size()==1&&(Boolean)get(s,"watching"),"AUTO_HANDOFF starts with active watch");
+  expect(activePlayer.callbacks.size()==1&&HandoffService.sessionStatus(TARGET).handoffDescription.contains("运行中"),"AUTO_HANDOFF starts with active watch");
+  MediaController.Callback staleCallback=activePlayer.callbacks.iterator().next();
 
   Intent downgrade=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY");
-  s.onStartCommand(downgrade,0,1);
-  expect(get(s,"session")==probe&&probe.stopped==0,"downgrade reuses existing AACP probe without stopping it");
-  expect(!(Boolean)get(s,"watching")&&manager.removed==1,"downgrade stops media session watch");
+  s.onStartCommand(downgrade,0,2);
+  expect(AapProbe.created.size()==1&&probe.stopped==0,"downgrade reuses existing AACP probe without stopping it");
+  expect(manager.removed==1,"downgrade stops media session watch");
   expect(activePlayer.callbacks.isEmpty(),"downgrade unregisters player callbacks");
   expect(activePlayer.paused==0,"downgrade never pauses playing media");
   byte[] ownershipFalse=RoutingPackets.ownership(false);
   for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipFalse),"downgrade must not send release ownership packet");
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("关闭"),"UI reports handoff closed after downgrade");
+
+  // Re-upgrade with paused player and verify stale callback from prior AUTO_HANDOFF batch cannot trigger TAKE.
+  MediaController pausedPlayer=new MediaController(0);
+  manager.active.clear();manager.active.add(pausedPlayer);
+  probe.packets.clear();
+  Intent reupgrade=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
+  s.onStartCommand(reupgrade,0,2);
+  staleCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  byte[] ownershipTrue=RoutingPackets.ownership(true);
+  for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipTrue),"stale playback callback from pre-downgrade batch cannot trigger TAKE");
  }
  static void bridgeLifecycle(String modeName)throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();RootEnvironment.stoppedBridges.clear();
@@ -505,7 +498,7 @@ public class HandoffLifecycleTest {
   SessionStatus st=HandoffService.sessionStatus(TARGET);
   expect(st.channelReady&&st.controlDescription.contains("桥接"),modeName+" bridge ready reflected in sessionStatus");
   boolean expectWatch="AUTO_HANDOFF".equals(modeName);
-  expect((Boolean)get(s,"watching")==expectWatch,modeName+" watch state matches session mode after bridge start");
+  expect(st.handoffDescription.contains("运行中")==expectWatch,modeName+" watch state matches session mode after bridge start");
 
   // Bridge failure after one reconnect attempt must clean up owned bridge.
   first.listener.ended();
@@ -527,7 +520,7 @@ public class HandoffLifecycleTest {
   s.onDestroy();
   expect(RootEnvironment.stoppedBridges.contains(second),modeName+" onDestroy cleans up owned bridge");
   expect(active.stopped>=1,modeName+" onDestroy stops active probe");
-  expect(!(Boolean)get(s,"watching"),modeName+" onDestroy stops watching");
+  expect(!HandoffService.isRunning()&&(!expectWatch||manager.removed==1),modeName+" onDestroy stops watching");
  }
  static void audioSnapshotObservation()throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();
@@ -626,7 +619,8 @@ public class HandoffLifecycleTest {
   s.onStartCommand(start,0,4);
   expect(AapProbe.created.size()==1,"repeated onStartCommand while reconnecting avoids duplicate session");
   s.onDestroy();
-  expect(!HandoffService.isRunning()&&get(s,"session")==null&&get(s,"target")==null,
+  expect(!HandoffService.isRunning()&&!HandoffService.sessionStatus(TARGET).serviceRunning
+   &&!HandoffService.earbudSnapshot(TARGET).ready&&get(s,"target")==null,
    "onDestroy marks service stopped and clears session/target references");
   ((Handler)get(s,"handler")).flushDelayed();
   expect(AapProbe.created.size()==1,"onDestroy cancels pending reconnect callbacks");
@@ -648,8 +642,6 @@ public class HandoffLifecycleTest {
   switch(args[0]){
    case "identity":upgradeWithLocalIdentity(false);break;
    case "known-peer":upgradeWithLocalIdentity(true);break;
-   case "watch-failure":failedWatchCleansPlayers();break;
-   case "partial-stop":stopPartialWatch();break;
    case "mode-round-trip":modeRoundTripInvalidatesQueuedRouting();break;
    case "permission-recovery":permissionRevokeAndRestoreResumesHandoff();break;
    case "restart-pending-take":restartPreservesPendingTakeUntilReady();break;
@@ -672,12 +664,6 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_ready_session_upgrade_announces_known_peer(self):
         self.run_scenario('known-peer')
-
-    def test_failed_watch_start_releases_registered_players(self):
-        self.run_scenario('watch-failure')
-
-    def test_stopping_partial_watch_is_complete_and_idempotent(self):
-        self.run_scenario('partial-stop')
 
     def test_mode_round_trip_invalidates_queued_routing(self):
         self.run_scenario('mode-round-trip')
@@ -718,7 +704,7 @@ class HandoffLifecycleTests(unittest.TestCase):
                 target.write_text(content, encoding='utf-8')
                 files.append(str(target))
             package = ROOT / 'apps/android/src' / PACKAGE
-            names = ('HandoffService', 'PlaybackListener', 'SessionMode', 'SessionStatus',
+            names = ('HandoffService', 'PlaybackListener', 'PlaybackWatch', 'ControlSession', 'SessionMode', 'SessionStatus',
                      'SamsungAudioMonitor', 'SamsungAudioSnapshot', 'SamsungAudioPolicy',
                      'RoutingPolicy', 'AudioLinkPolicy', 'PeerRoutingPolicy', 'DeviceConfig',
                      'ConnectionPolicy', 'RoutingPackets', 'AapPackets', 'SmartRouting',

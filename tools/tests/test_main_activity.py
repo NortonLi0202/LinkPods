@@ -441,7 +441,7 @@ class MainActivityBridgeTests(unittest.TestCase):
                 target.write_text(content, encoding='utf-8')
                 files.append(str(target))
             package = ROOT / 'apps/android/src' / PACKAGE
-            names = ('MainActivity', 'HandoffService', 'PlaybackListener', 'SessionMode',
+            names = ('MainActivity', 'HandoffService', 'PlaybackListener', 'PlaybackWatch', 'ControlSession', 'SessionMode',
                      'SessionStatus', 'SamsungAudioMonitor', 'SamsungAudioSnapshot',
                      'SamsungAudioPolicy', 'RoutingPolicy', 'AudioLinkPolicy',
                      'PeerRoutingPolicy', 'DeviceConfig', 'ConnectionPolicy', 'RequestGate',
