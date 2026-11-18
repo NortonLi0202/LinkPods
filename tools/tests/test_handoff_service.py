@@ -83,13 +83,21 @@ public class NotificationManager {
 }''',
     'android/R.java': 'package android; public class R {public static class drawable {public static final int stat_sys_data_bluetooth=1;}}',
     'android/bluetooth/BluetoothAdapter.java': '''package android.bluetooth;
+import java.util.*;
 public class BluetoothAdapter {
  public static final String ACTION_STATE_CHANGED="android.bluetooth.adapter.action.STATE_CHANGED";
  public int proxyRequests;
+ public BluetoothProfile.ServiceListener lastA2dpListener,lastHeadsetListener;
+ public final List<BluetoothProfile> closedProxies=new ArrayList<>();
  public static boolean checkBluetoothAddress(String s){return s!=null&&s.matches("[0-9A-F]{2}(:[0-9A-F]{2}){5}");}
  public BluetoothDevice getRemoteDevice(String a){return new BluetoothDevice(a);}
- public void closeProfileProxy(int k,BluetoothProfile p){}
- public boolean getProfileProxy(android.content.Context c,BluetoothProfile.ServiceListener l,int k){proxyRequests++;return true;}
+ public void closeProfileProxy(int k,BluetoothProfile p){if(p!=null)closedProxies.add(p);}
+ public boolean getProfileProxy(android.content.Context c,BluetoothProfile.ServiceListener l,int k){
+  proxyRequests++;
+  if(k==BluetoothProfile.A2DP)lastA2dpListener=l;
+  if(k==BluetoothProfile.HEADSET)lastHeadsetListener=l;
+  return true;
+ }
  public boolean isEnabled(){return true;}
 }''',
     'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth;
@@ -539,6 +547,27 @@ public class HandoffLifecycleTest {
   expect(btManager.adapter.proxyRequests==2,"setTargetAddress requests A2DP and HEADSET proxies once permitted");
   s.onStartCommand(start,0,2);
   expect(btManager.adapter.proxyRequests==2,"repeated start does not re-request profile proxies");
+  BluetoothProfile.ServiceListener oldA2dpListener=btManager.adapter.lastA2dpListener;
+  BluetoothProfile p1=d->2;
+  oldA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p1);
+  expect(HandoffService.audioSnapshot(TARGET).a2dpState==SamsungAudioSnapshot.ConnectionState.CONNECTED,
+   "connected P1 reports A2DP state");
+  oldA2dpListener.onServiceDisconnected(BluetoothProfile.A2DP);
+  expect(btManager.adapter.closedProxies.contains(p1),
+   "onServiceDisconnected closes disconnected proxy P1 before any retry");
+  expect(HandoffService.audioSnapshot(TARGET).a2dpState==SamsungAudioSnapshot.ConnectionState.UNKNOWN,
+   "disconnected proxy reports A2DP state as UNKNOWN");
+  s.onStartCommand(start,0,3);
+  expect(btManager.adapter.proxyRequests==3,"retry after disconnect requests replacement A2DP proxy P2");
+  BluetoothProfile p2=d->2;
+  btManager.adapter.lastA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p2);
+  int closedBeforeStale=btManager.adapter.closedProxies.size();
+  oldA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p1);
+  expect(btManager.adapter.closedProxies.size()==closedBeforeStale+1,
+   "stale onServiceConnected for P1 is immediately closed and cannot replace P2");
+  oldA2dpListener.onServiceDisconnected(BluetoothProfile.A2DP);
+  expect(HandoffService.audioSnapshot(TARGET).a2dpState==SamsungAudioSnapshot.ConnectionState.CONNECTED,
+   "stale onServiceDisconnected from P1 cannot clear active P2");
   SamsungAudioSnapshot initial=HandoffService.audioSnapshot(TARGET);
   expect(initial.mediaOutputAvailable,"service audio snapshot sees available A2DP output device");
   expect(initial.routeEvidenceSupported,"SDK 36 supports media attributes route evidence");
@@ -549,6 +578,8 @@ public class HandoffLifecycleTest {
   expect(routed.routeState==SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED,
    "service audio snapshot sees ROUTE_OBSERVED when media attributes route matches target");
   s.onDestroy();
+  expect(btManager.adapter.closedProxies.contains(p2),
+   "onDestroy closes replacement proxy P2");
   expect(audio.deviceCallbacks==0&&audio.playbackCallbacks==0&&audio.modeListeners==0&&audio.commListeners==0,
    "onDestroy unregisters all SamsungAudioMonitor listeners");
   expect(s.unregisteredReceivers==1,"onDestroy unregisters Bluetooth receiver");

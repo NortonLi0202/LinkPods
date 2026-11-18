@@ -53,8 +53,12 @@ final class SamsungAudioMonitor {
     private boolean audioCallbacksRegistered;
     private boolean a2dpRequested;
     private boolean headsetRequested;
-    private BluetoothProfile a2dp;
-    private BluetoothProfile headset;
+    private boolean a2dpConnected;
+    private boolean headsetConnected;
+    private long a2dpGeneration;
+    private long headsetGeneration;
+    private BluetoothProfile ownedA2dp;
+    private BluetoothProfile ownedHeadset;
     private String targetAddress = "";
     private SamsungAudioSnapshot latest = SamsungAudioSnapshot.unavailable("");
 
@@ -89,37 +93,85 @@ final class SamsungAudioMonitor {
                 }
             };
 
-    private final BluetoothProfile.ServiceListener profileListener = new BluetoothProfile.ServiceListener() {
-        @Override public void onServiceConnected(int kind, BluetoothProfile proxy) {
-            if (!started || adapter == null) {
-                if (adapter != null && proxy != null) {
-                    adapter.closeProfileProxy(kind, proxy);
-                }
-                return;
+    private BluetoothProfile.ServiceListener newProfileListener(final int expectedKind, final long generation) {
+        return new BluetoothProfile.ServiceListener() {
+            @Override public void onServiceConnected(int kind, BluetoothProfile proxy) {
+                onProfileConnected(kind == 0 ? expectedKind : kind, proxy, generation);
             }
-            if (kind == BluetoothProfile.A2DP) {
-                a2dp = proxy;
-                refresh();
-                if (listener != null) {
-                    listener.onA2dpProxyReady(proxy);
-                }
-            } else if (kind == BluetoothProfile.HEADSET) {
-                headset = proxy;
-                refresh();
-            }
-        }
 
-        @Override public void onServiceDisconnected(int kind) {
-            if (kind == BluetoothProfile.A2DP) {
-                a2dp = null;
-                a2dpRequested = false;
-            } else if (kind == BluetoothProfile.HEADSET) {
-                headset = null;
-                headsetRequested = false;
+            @Override public void onServiceDisconnected(int kind) {
+                onProfileDisconnected(kind == 0 ? expectedKind : kind, generation);
             }
+        };
+    }
+
+    private synchronized void onProfileConnected(int kind, BluetoothProfile proxy, long generation) {
+        long currentGen = kind == BluetoothProfile.A2DP ? a2dpGeneration
+                : kind == BluetoothProfile.HEADSET ? headsetGeneration : -1L;
+        if (!started || adapter == null || generation != currentGen) {
+            if (adapter != null && proxy != null) {
+                try { adapter.closeProfileProxy(kind, proxy); } catch (RuntimeException ignored) {}
+            }
+            return;
+        }
+        if (kind == BluetoothProfile.A2DP) {
+            if (ownedA2dp != null && ownedA2dp != proxy) {
+                closeOwnedProxy(BluetoothProfile.A2DP);
+            }
+            ownedA2dp = proxy;
+            a2dpConnected = proxy != null;
+            refresh();
+            if (proxy != null && listener != null) {
+                listener.onA2dpProxyReady(proxy);
+            }
+        } else if (kind == BluetoothProfile.HEADSET) {
+            if (ownedHeadset != null && ownedHeadset != proxy) {
+                closeOwnedProxy(BluetoothProfile.HEADSET);
+            }
+            ownedHeadset = proxy;
+            headsetConnected = proxy != null;
             refresh();
         }
-    };
+    }
+
+    private synchronized void onProfileDisconnected(int kind, long generation) {
+        if (kind == BluetoothProfile.A2DP) {
+            if (generation != a2dpGeneration) {
+                return;
+            }
+            a2dpConnected = false;
+            a2dpRequested = false;
+            ++a2dpGeneration;
+            closeOwnedProxy(BluetoothProfile.A2DP);
+        } else if (kind == BluetoothProfile.HEADSET) {
+            if (generation != headsetGeneration) {
+                return;
+            }
+            headsetConnected = false;
+            headsetRequested = false;
+            ++headsetGeneration;
+            closeOwnedProxy(BluetoothProfile.HEADSET);
+        }
+        refresh();
+    }
+
+    private void closeOwnedProxy(int kind) {
+        if (kind == BluetoothProfile.A2DP) {
+            BluetoothProfile proxy = ownedA2dp;
+            ownedA2dp = null;
+            a2dpConnected = false;
+            if (adapter != null && proxy != null) {
+                try { adapter.closeProfileProxy(BluetoothProfile.A2DP, proxy); } catch (RuntimeException ignored) {}
+            }
+        } else if (kind == BluetoothProfile.HEADSET) {
+            BluetoothProfile proxy = ownedHeadset;
+            ownedHeadset = null;
+            headsetConnected = false;
+            if (adapter != null && proxy != null) {
+                try { adapter.closeProfileProxy(BluetoothProfile.HEADSET, proxy); } catch (RuntimeException ignored) {}
+            }
+        }
+    }
 
     private final BroadcastReceiver bluetoothReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ctx, Intent intent) {
@@ -134,9 +186,15 @@ final class SamsungAudioMonitor {
                 if (device != null && listener != null) {
                     listener.onA2dpStateChanged(device.getAddress(), state);
                 }
+            } else if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
+                synchronized (SamsungAudioMonitor.this) {
+                    if (started && adapter != null && adapter.isEnabled()) {
+                        requestProxiesIfPermitted();
+                    }
+                }
+                refresh();
             } else if (BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED.equals(action)
-                    || BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED.equals(action)
-                    || BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
+                    || BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED.equals(action)) {
                 refresh();
             }
         }
@@ -184,10 +242,12 @@ final class SamsungAudioMonitor {
     }
 
     synchronized void stop() {
-        if (!started && !audioCallbacksRegistered && !receiverRegistered && a2dp == null && headset == null) {
+        if (!started && !audioCallbacksRegistered && !receiverRegistered && ownedA2dp == null && ownedHeadset == null) {
             return;
         }
         started = false;
+        ++a2dpGeneration;
+        ++headsetGeneration;
         if (audio != null && audioCallbacksRegistered) {
             try { audio.unregisterAudioDeviceCallback(deviceCallback); } catch (RuntimeException ignored) {}
             try { audio.unregisterAudioPlaybackCallback(playbackCallback); } catch (RuntimeException ignored) {}
@@ -199,16 +259,8 @@ final class SamsungAudioMonitor {
             try { context.unregisterReceiver(bluetoothReceiver); } catch (IllegalArgumentException ignored) {}
             receiverRegistered = false;
         }
-        if (adapter != null) {
-            if (a2dp != null) {
-                try { adapter.closeProfileProxy(BluetoothProfile.A2DP, a2dp); } catch (RuntimeException ignored) {}
-                a2dp = null;
-            }
-            if (headset != null) {
-                try { adapter.closeProfileProxy(BluetoothProfile.HEADSET, headset); } catch (RuntimeException ignored) {}
-                headset = null;
-            }
-        }
+        closeOwnedProxy(BluetoothProfile.A2DP);
+        closeOwnedProxy(BluetoothProfile.HEADSET);
         a2dpRequested = false;
         headsetRequested = false;
         latest = SamsungAudioSnapshot.unavailable(targetAddress);
@@ -233,11 +285,11 @@ final class SamsungAudioMonitor {
     }
 
     synchronized BluetoothProfile a2dpProxy() {
-        return a2dp;
+        return a2dpConnected ? ownedA2dp : null;
     }
 
     synchronized BluetoothProfile headsetProxy() {
-        return headset;
+        return headsetConnected ? ownedHeadset : null;
     }
 
     synchronized SamsungAudioSnapshot snapshot(String address) {
@@ -263,16 +315,26 @@ final class SamsungAudioMonitor {
         if (adapter == null || !hasBluetoothPermission()) {
             return;
         }
-        if (!a2dpRequested && a2dp == null) {
+        if (!a2dpRequested) {
+            closeOwnedProxy(BluetoothProfile.A2DP);
+            long gen = ++a2dpGeneration;
             try {
-                a2dpRequested = adapter.getProfileProxy(context, profileListener, BluetoothProfile.A2DP);
+                a2dpRequested = adapter.getProfileProxy(
+                        context,
+                        newProfileListener(BluetoothProfile.A2DP, gen),
+                        BluetoothProfile.A2DP);
             } catch (SecurityException ignored) {
                 a2dpRequested = false;
             }
         }
-        if (!headsetRequested && headset == null) {
+        if (!headsetRequested) {
+            closeOwnedProxy(BluetoothProfile.HEADSET);
+            long gen = ++headsetGeneration;
             try {
-                headsetRequested = adapter.getProfileProxy(context, profileListener, BluetoothProfile.HEADSET);
+                headsetRequested = adapter.getProfileProxy(
+                        context,
+                        newProfileListener(BluetoothProfile.HEADSET, gen),
+                        BluetoothProfile.HEADSET);
             } catch (SecurityException ignored) {
                 headsetRequested = false;
             }
@@ -293,16 +355,16 @@ final class SamsungAudioMonitor {
 
         int rawA2dp = -1;
         int rawHeadset = -1;
-        boolean a2dpReady = a2dp != null && adapter != null && adapter.isEnabled();
-        boolean headsetReady = headset != null && adapter != null && adapter.isEnabled();
+        boolean a2dpReady = a2dpConnected && ownedA2dp != null && adapter != null && adapter.isEnabled();
+        boolean headsetReady = headsetConnected && ownedHeadset != null && adapter != null && adapter.isEnabled();
         if (adapter != null && BluetoothAdapter.checkBluetoothAddress(target)) {
             try {
                 BluetoothDevice device = adapter.getRemoteDevice(target);
                 if (a2dpReady) {
-                    rawA2dp = a2dp.getConnectionState(device);
+                    rawA2dp = ownedA2dp.getConnectionState(device);
                 }
                 if (headsetReady) {
-                    rawHeadset = headset.getConnectionState(device);
+                    rawHeadset = ownedHeadset.getConnectionState(device);
                 }
             } catch (SecurityException | IllegalArgumentException ignored) {
                 a2dpReady = false;
