@@ -218,6 +218,7 @@ public class Handler {
  public final java.util.List<Runnable> delayed=new java.util.ArrayList<>();
  public Handler(Looper l){}public boolean post(Runnable r){r.run();return true;}
  public boolean postDelayed(Runnable r,long d){delayed.add(r);return true;}
+ public void removeCallbacks(Runnable r){delayed.remove(r);}
  public void flushDelayed(){for(Runnable r:new java.util.ArrayList<>(delayed))r.run();delayed.clear();}
  public void removeCallbacksAndMessages(Object t){delayed.clear();}
 }''',
@@ -599,6 +600,50 @@ public class HandoffLifecycleTest {
   expect(HandoffService.audioSnapshot(TARGET).routeState==SamsungAudioSnapshot.RouteState.UNKNOWN,
    "stopped service returns unavailable audio snapshot");
  }
+ static void sessionLifecycleStability()throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();
+  MediaSessionManager manager=new MediaSessionManager();
+  AudioManager audio=new AudioManager();
+  HandoffService s=service(manager);
+  s.services.put(AudioManager.class,audio);
+  s.onCreate();
+  SamsungAudioMonitor monitor=(SamsungAudioMonitor)get(s,"audioMonitor");
+  monitor.start();
+  expect(monitor.isStarted()&&audio.deviceCallbacks==1&&s.registeredReceivers==1,
+   "repeated SamsungAudioMonitor.start() is idempotent");
+  Intent start=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
+  s.onStartCommand(start,0,1);
+  s.onStartCommand(start,0,2);
+  expect(AapProbe.created.size()==1,"repeated onStartCommand while connecting creates one probe");
+  expect(manager.added==1,"repeated onStartCommand registers media watch once");
+  AapProbe first=AapProbe.created.get(0);
+  first.listener.ready();
+  s.onStartCommand(start,0,3);
+  expect(AapProbe.created.size()==1,"repeated onStartCommand while ready reuses existing probe");
+  expect(manager.added==1,"repeated onStartCommand while ready keeps single media watch");
+  first.listener.ended();
+  s.onStartCommand(start,0,4);
+  expect(AapProbe.created.size()==1,"repeated onStartCommand while reconnecting avoids duplicate session");
+  s.onDestroy();
+  expect(!HandoffService.isRunning()&&get(s,"session")==null&&get(s,"target")==null,
+   "onDestroy marks service stopped and clears session/target references");
+  ((Handler)get(s,"handler")).flushDelayed();
+  expect(AapProbe.created.size()==1,"onDestroy cancels pending reconnect callbacks");
+  PlaybackListener listener=new PlaybackListener();
+  listener.onListenerConnected();
+  expect(AapProbe.created.size()==1&&manager.added==1,
+   "PlaybackListener after service stop does not restart service or media watch");
+  monitor.stop();
+  expect(!monitor.isStarted()&&audio.deviceCallbacks==0&&s.unregisteredReceivers==1,
+   "repeated SamsungAudioMonitor.stop() is idempotent");
+  monitor.start();
+  expect(monitor.isStarted()&&audio.deviceCallbacks==1&&s.registeredReceivers==2,
+   "SamsungAudioMonitor can cleanly restart after idempotent stop");
+  monitor.stop();
+  expect(!monitor.isStarted()&&audio.deviceCallbacks==0&&s.unregisteredReceivers==2,
+   "second lifecycle stop cleans all listeners");
+ }
  public static void main(String[] args)throws Exception{
   switch(args[0]){
    case "identity":upgradeWithLocalIdentity(false);break;
@@ -612,6 +657,7 @@ public class HandoffLifecycleTest {
    case "bridge-control-only":bridgeLifecycle("CONTROL_ONLY");break;
    case "bridge-auto-handoff":bridgeLifecycle("AUTO_HANDOFF");break;
    case "audio-snapshot":audioSnapshotObservation();break;
+   case "session-lifecycle":sessionLifecycleStability();break;
    default:throw new AssertionError("unknown scenario");
   }
   System.out.println("PASS: service lifecycle "+args[0]);
@@ -653,6 +699,9 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_service_audio_snapshot_and_monitor_cleanup(self):
         self.run_scenario('audio-snapshot')
+
+    def test_session_lifecycle_no_duplicate_connections_and_clean_stop(self):
+        self.run_scenario('session-lifecycle')
 
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None

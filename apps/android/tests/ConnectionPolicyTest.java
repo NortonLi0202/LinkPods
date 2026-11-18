@@ -101,6 +101,31 @@ public final class ConnectionPolicyTest {
         action(p.start(TARGET,true),ConnectionPolicy.Action.CONNECT_BRIDGE);
         action(p.bridgePrepared(preparing,TARGET,true,"old","",""),ConnectionPolicy.Action.NONE);
         expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.BRIDGE_CONNECTING,"explicit upgrade invalidates pending automatic preparation");
+
+        p=new ConnectionPolicy();
+        expect(!p.isActive()&&!p.isStopped()&&!p.isReconnecting(),"initial policy is idle");
+        action(p.start(TARGET,false),ConnectionPolicy.Action.CONNECT_DIRECT);
+        long activeGen=p.generation();
+        expect(p.isActive(),"connecting policy is active");
+        p.ready(activeGen,TARGET);
+        action(p.ended(activeGen,TARGET),ConnectionPolicy.Action.RECONNECT);
+        expect(p.isReconnecting()&&p.isActive(),"reconnecting state exposed explicitly");
+        expect(p.canRetry(activeGen,TARGET),"canRetry accepts active reconnect generation");
+        action(p.start(TARGET,false),ConnectionPolicy.Action.NONE);
+        expect(p.isReconnecting(),"duplicate start during reconnect does not open a second session");
+        p.stop();
+        expect(p.isStopped()&&!p.isActive()&&!p.isReconnecting(),"stop clears active and reconnecting states");
+        expect(!p.canRetry(activeGen,TARGET),"stop invalidates pending reconnect retry");
+        action(p.retry(activeGen,TARGET),ConnectionPolicy.Action.NONE);
+        expect(p.isStopped(),"stale retry after stop stays STOPPED");
+        action(p.start(TARGET,true),ConnectionPolicy.Action.CONNECT_BRIDGE);
+        long bridgeGen=p.generation();
+        p.ready(bridgeGen,TARGET);
+        p.stop();
+        action(p.start(TARGET,false),ConnectionPolicy.Action.CONNECT_DIRECT);
+        action(p.ended(p.generation(),TARGET,false),ConnectionPolicy.Action.NONE);
+        expect(p.snapshot(TARGET).phase==ConnectionPolicy.Phase.FAILED,
+            "stop clears prior directWorked/bridge flags before new direct session");
         System.out.println("PASS: direct-first, bounded bridge fallback, reconnect, failures and stale completion");
     }
 }

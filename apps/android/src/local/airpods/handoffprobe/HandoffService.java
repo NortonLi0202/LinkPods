@@ -76,8 +76,18 @@ public final class HandoffService extends Service {
     private String sourceMac;
     private int sourceType;
     private Boolean lastMediaState;
+    private Runnable pendingReconnect;
 
     public SessionMode mode() { return mode; }
+    boolean isStopped() { return stopped; }
+    public static boolean isRunning() {
+        HandoffService service = current;
+        return service != null && !service.stopped;
+    }
+    public static String activeTarget() {
+        HandoffService service = current;
+        return service == null || service.stopped || service.deviceConfig == null ? "" : service.deviceConfig.target;
+    }
     public static SessionMode currentMode() {
         HandoffService service = current;
         return service == null || service.stopped ? null : service.mode;
@@ -222,7 +232,9 @@ public final class HandoffService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (stopped) { return START_NOT_STICKY; }
         if (intent == null) { stopSelf(); return START_NOT_STICKY; }
+        if (adapter == null) { log("SERVICE bluetooth adapter unavailable"); stopSelf(); return START_NOT_STICKY; }
         final DeviceConfig requested;
         try { requested = DeviceConfig.create(intent.getStringExtra("address"), intent.getStringExtra("local_mac"), intent.getStringExtra("peer_address")); }
         catch (IllegalArgumentException error) { log("SERVICE invalid device configuration"); stopSelf(); return START_NOT_STICKY; }
@@ -302,7 +314,7 @@ public final class HandoffService extends Service {
     }
 
     void restartSessionWatch() {
-        if (stopped || mode != SessionMode.AUTO_HANDOFF) return;
+        if (stopped || mode != SessionMode.AUTO_HANDOFF || !mediaAccessGranted()) return;
         boolean keepPending = watching && policy.isPending();
         if (watching) stopSessionWatch();
         startSessionWatch();
@@ -318,9 +330,10 @@ public final class HandoffService extends Service {
     }
 
     void startSessionWatch() {
-        if (watching || stopped || mode != SessionMode.AUTO_HANDOFF) return;
+        if (watching || stopped || mode != SessionMode.AUTO_HANDOFF || !mediaAccessGranted()) return;
         try {
             mediaSessions = getSystemService(MediaSessionManager.class);
+            if (mediaSessions == null) return;
             ComponentName listener = new ComponentName(this, PlaybackListener.class);
             watchPlayers(mediaSessions.getActiveSessions(listener), true);
             mediaSessions.addOnActiveSessionsChangedListener(sessionsChanged, listener, handler);
@@ -336,13 +349,15 @@ public final class HandoffService extends Service {
     void stopSessionWatch() {
         boolean wasWatching = watching;
         if (wasWatching && mediaSessions != null) {
-            mediaSessions.removeOnActiveSessionsChangedListener(sessionsChanged);
+            try { mediaSessions.removeOnActiveSessionsChangedListener(sessionsChanged); }
+            catch (RuntimeException ignored) {}
         }
         for (MediaSession.Token token : new HashSet<>(players.keySet())) {
             MediaController controller = players.remove(token);
             MediaController.Callback callback = playerCallbacks.remove(token);
             if (controller != null && callback != null) {
-                controller.unregisterCallback(callback);
+                try { controller.unregisterCallback(callback); }
+                catch (RuntimeException ignored) {}
             }
             policy.remove(token.toString());
         }
@@ -397,20 +412,33 @@ public final class HandoffService extends Service {
         if (policy.consumeTake(ready,!peers.isEmpty())) take(reason);
     }
 
+    private void cancelPendingReconnect() {
+        if (pendingReconnect != null) {
+            handler.removeCallbacks(pendingReconnect);
+            pendingReconnect = null;
+        }
+    }
+
     private void applyConnection(ConnectionPolicy.Action action) {
         if (stopped || target == null) return;
         log("CONNECTION " + connection.snapshot(deviceConfig.target).description);
         if (connection.snapshot(deviceConfig.target).phase==ConnectionPolicy.Phase.FAILED) cleanupOwnedBridge();
+        if (action == ConnectionPolicy.Action.NONE) return;
+        cancelPendingReconnect();
         if (action == ConnectionPolicy.Action.CONNECT_DIRECT || action == ConnectionPolicy.Action.CONNECT_BRIDGE) {
             nativeBackendReady=action == ConnectionPolicy.Action.CONNECT_BRIDGE;
             connectSession();
         } else if (action == ConnectionPolicy.Action.RECONNECT) {
             final long generation=connection.generation();
             final String address=deviceConfig.target;
-            handler.postDelayed(() -> {
+            final Runnable[] ref = new Runnable[1];
+            ref[0] = () -> {
+                if (pendingReconnect == ref[0]) pendingReconnect = null;
                 if (!stopped && current==this && deviceConfig!=null && address.equals(deviceConfig.target))
                     applyConnection(connection.retry(generation,address));
-            },5000);
+            };
+            pendingReconnect = ref[0];
+            handler.postDelayed(ref[0], 5000);
         } else if (action == ConnectionPolicy.Action.PREPARE_BRIDGE) {
             final long generation=connection.generation();
             final String address=deviceConfig.target;
@@ -480,7 +508,7 @@ public final class HandoffService extends Service {
         if (stopped || target == null || session != null) return;
         final long connectionGeneration=connection.generation();
         final String address=deviceConfig.target;
-        if (!adapter.isEnabled()) {
+        if (adapter == null || !adapter.isEnabled()) {
             connection.unavailable(connectionGeneration,address,"Bluetooth 已关闭");
             cleanupOwnedBridge();
             log("CONNECTION " + connection.snapshot(address).description);return;
@@ -688,18 +716,33 @@ public final class HandoffService extends Service {
 
     @Override public void onDestroy() {
         stopped = true; ready = false;
+        cancelPendingReconnect();
         connection.stop();
         RootEnvironment.Prepared pending=pendingBridge.getAndSet(null);
         if(pending!=null)RootEnvironment.queueBridgeStop(pending);
         cleanupOwnedBridge();
         if (bridgePreparation!=null) { bridgePreparation.cancel(true); bridgePreparation=null; }
         ++earbudSessionGeneration;
+        ++routingModeGeneration;
         earbudState.disconnected();
         if (current == this) current = null;
         handler.removeCallbacksAndMessages(null);
-        if (session != null) session.stop();
+        if (session != null) {
+            session.stop();
+            session = null;
+        }
         stopSessionWatch();
+        mediaSessions = null;
         if (audioMonitor != null) audioMonitor.stop();
+        target = null;
+        peers.clear();
+        owns = null;
+        lastMediaState = null;
+        sourceMac = null;
+        sourceType = 0;
+        policy.reset();
+        peerPolicy.reset();
+        audioLink.reset();
         log("SERVICE stopped");
         super.onDestroy();
     }

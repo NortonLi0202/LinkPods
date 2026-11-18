@@ -142,8 +142,10 @@ public class Intent {
 public class Activity extends android.content.Context {
  public void setTheme(int r){}
  public void onCreate(android.os.Bundle b){}
+ protected void onStart(){}
  protected void onResume(){}
  protected void onPause(){}
+ protected void onStop(){}
  protected void onSaveInstanceState(android.os.Bundle b){}
  public void onBackPressed(){}
  public void onRequestPermissionsResult(int r,String[] p,int[] res){}
@@ -152,6 +154,7 @@ public class Activity extends android.content.Context {
  public void requestPermissions(String[] p,int r){}
  public android.window.OnBackInvokedDispatcher getOnBackInvokedDispatcher(){return new android.window.OnBackInvokedDispatcher(){public void registerOnBackInvokedCallback(int p,android.window.OnBackInvokedCallback c){}public void unregisterOnBackInvokedCallback(android.window.OnBackInvokedCallback c){}};}
 }''',
+    'android/app/ForegroundServiceStartNotAllowedException.java': 'package android.app; public class ForegroundServiceStartNotAllowedException extends IllegalStateException {}',
     'android/app/Service.java': '''package android.app;
 public class Service extends android.content.Context {
  public static final int START_NOT_STICKY=2;
@@ -392,7 +395,31 @@ public class MainActivityTest {
   expect(get(rotated,"requestedMode")==SessionMode.AUTO_HANDOFF,"onCreate restores requested_mode from savedInstanceState");
   idle.onDestroy();rotated.onDestroy();
 
-  System.out.println("PASS: main activity bridge preparation preserves active handoff across recreation");
+  // Scenario 6: Fresh Activity recreation while service is running for OTHER device restores target & mode without restarting service or duplicating monitor.
+  runningService(OTHER,SessionMode.AUTO_HANDOFF);
+  MainActivity recovered=createActivity(null);
+  expect(recovered.startedServices.isEmpty(),"reopening activity never calls startForegroundService");
+  expect(get(recovered,"requestedMode")==SessionMode.AUTO_HANDOFF,"fresh reopen syncs AUTO_HANDOFF from running service");
+  expect(((android.widget.Spinner)get(recovered,"picker")).getSelectedItemPosition()==1,
+   "fresh reopen selects active service target OTHER in picker");
+  SamsungAudioMonitor recoveredMonitor=(SamsungAudioMonitor)get(recovered,"localAudioMonitor");
+  expect(!recoveredMonitor.isStarted(),"localAudioMonitor stays stopped while HandoffService monitor is active");
+  recovered.onDestroy();
+
+  // Scenario 7: When service is stopped, onStart starts localAudioMonitor and onStop releases it without starting service.
+  HandoffService.current=null;
+  MainActivity backgrounded=createActivity(null);
+  SamsungAudioMonitor bgMonitor=(SamsungAudioMonitor)get(backgrounded,"localAudioMonitor");
+  expect(bgMonitor.isStarted(),"idle activity starts localAudioMonitor while active");
+  backgrounded.onStop();
+  expect(!bgMonitor.isStarted(),"onStop stops localAudioMonitor when screen locks or app goes to background");
+  backgrounded.onStart();
+  expect(bgMonitor.isStarted()&&backgrounded.startedServices.isEmpty(),
+   "onStart resumes localAudioMonitor without starting foreground service");
+  backgrounded.onDestroy();
+  expect(!bgMonitor.isStarted(),"onDestroy stops localAudioMonitor cleanly");
+
+  System.out.println("PASS: main activity bridge preparation and session lifecycle recovery");
  }
 }''',
 }
