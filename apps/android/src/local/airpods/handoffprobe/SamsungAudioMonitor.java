@@ -151,8 +151,11 @@ final class SamsungAudioMonitor {
             headsetRequested = false;
             ++headsetGeneration;
             closeOwnedProxy(BluetoothProfile.HEADSET);
+        } else {
+            return;
         }
         refresh();
+        requestProxiesIfPermitted();
     }
 
     private void closeOwnedProxy(int kind) {
@@ -312,7 +315,7 @@ final class SamsungAudioMonitor {
     }
 
     private void requestProxiesIfPermitted() {
-        if (adapter == null || !hasBluetoothPermission()) {
+        if (!started || adapter == null || !adapter.isEnabled() || !hasBluetoothPermission()) {
             return;
         }
         if (!a2dpRequested) {

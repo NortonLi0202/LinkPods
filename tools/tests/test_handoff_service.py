@@ -20,13 +20,14 @@ public class Context {
  public static final int MODE_PRIVATE=0,MODE_APPEND=32768,RECEIVER_EXPORTED=2;
  public final Map<Class<?>,Object> services=new HashMap<>();
  public int registeredReceivers,unregisteredReceivers;
+ public BroadcastReceiver lastReceiver;
  public boolean bluetoothPermissionGranted=true;
  public <T>T getSystemService(Class<T> type){return type.cast(services.get(type));}
  public Context getApplicationContext(){return this;}
  public java.util.concurrent.Executor getMainExecutor(){return Runnable::run;}
  public int checkSelfPermission(String p){return bluetoothPermissionGranted?android.content.pm.PackageManager.PERMISSION_GRANTED:-1;}
- public void registerReceiver(BroadcastReceiver r,IntentFilter f){registeredReceivers++;}
- public void registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){registeredReceivers++;}
+ public void registerReceiver(BroadcastReceiver r,IntentFilter f){registeredReceivers++;lastReceiver=r;}
+ public void registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){registeredReceivers++;lastReceiver=r;}
  public void unregisterReceiver(BroadcastReceiver r){unregisteredReceivers++;}
  public FileOutputStream openFileOutput(String name,int mode)throws IOException{throw new IOException("host logging disabled");}
  public SharedPreferences getSharedPreferences(String name,int mode){return new SharedPreferences();}
@@ -87,6 +88,7 @@ import java.util.*;
 public class BluetoothAdapter {
  public static final String ACTION_STATE_CHANGED="android.bluetooth.adapter.action.STATE_CHANGED";
  public int proxyRequests;
+ public boolean enabled=true;
  public BluetoothProfile.ServiceListener lastA2dpListener,lastHeadsetListener;
  public final List<BluetoothProfile> closedProxies=new ArrayList<>();
  public static boolean checkBluetoothAddress(String s){return s!=null&&s.matches("[0-9A-F]{2}(:[0-9A-F]{2}){5}");}
@@ -98,7 +100,7 @@ public class BluetoothAdapter {
   if(k==BluetoothProfile.HEADSET)lastHeadsetListener=l;
   return true;
  }
- public boolean isEnabled(){return true;}
+ public boolean isEnabled(){return enabled;}
 }''',
     'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth;
 public class BluetoothDevice {public static final String EXTRA_DEVICE="device";public final String address;public BluetoothDevice(String a){address=a;}public String getAddress(){return address;}}''',
@@ -554,13 +556,14 @@ public class HandoffLifecycleTest {
    "connected P1 reports A2DP state");
   oldA2dpListener.onServiceDisconnected(BluetoothProfile.A2DP);
   expect(btManager.adapter.closedProxies.contains(p1),
-   "onServiceDisconnected closes disconnected proxy P1 before any retry");
+   "onServiceDisconnected closes disconnected proxy P1 before retry");
+  expect(btManager.adapter.proxyRequests==3,
+   "onServiceDisconnected automatically re-requests replacement A2DP proxy P2 when started, enabled, and permitted");
   expect(HandoffService.audioSnapshot(TARGET).a2dpState==SamsungAudioSnapshot.ConnectionState.UNKNOWN,
-   "disconnected proxy reports A2DP state as UNKNOWN");
-  s.onStartCommand(start,0,3);
-  expect(btManager.adapter.proxyRequests==3,"retry after disconnect requests replacement A2DP proxy P2");
+   "disconnected proxy reports A2DP state as UNKNOWN until P2 connects");
   BluetoothProfile p2=d->2;
-  btManager.adapter.lastA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p2);
+  BluetoothProfile.ServiceListener secondA2dpListener=btManager.adapter.lastA2dpListener;
+  secondA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p2);
   int closedBeforeStale=btManager.adapter.closedProxies.size();
   oldA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p1);
   expect(btManager.adapter.closedProxies.size()==closedBeforeStale+1,
@@ -568,6 +571,16 @@ public class HandoffLifecycleTest {
   oldA2dpListener.onServiceDisconnected(BluetoothProfile.A2DP);
   expect(HandoffService.audioSnapshot(TARGET).a2dpState==SamsungAudioSnapshot.ConnectionState.CONNECTED,
    "stale onServiceDisconnected from P1 cannot clear active P2");
+  btManager.adapter.enabled=false;
+  secondA2dpListener.onServiceDisconnected(BluetoothProfile.A2DP);
+  expect(btManager.adapter.proxyRequests==3,
+   "onServiceDisconnected does not re-request proxy while adapter is disabled");
+  btManager.adapter.enabled=true;
+  s.lastReceiver.onReceive(s,new Intent(BluetoothAdapter.ACTION_STATE_CHANGED));
+  expect(btManager.adapter.proxyRequests==4,
+   "ACTION_STATE_CHANGED when adapter re-enables requests replacement A2DP proxy P3");
+  BluetoothProfile p3=d->2;
+  btManager.adapter.lastA2dpListener.onServiceConnected(BluetoothProfile.A2DP,p3);
   SamsungAudioSnapshot initial=HandoffService.audioSnapshot(TARGET);
   expect(initial.mediaOutputAvailable,"service audio snapshot sees available A2DP output device");
   expect(initial.routeEvidenceSupported,"SDK 36 supports media attributes route evidence");
@@ -578,8 +591,8 @@ public class HandoffLifecycleTest {
   expect(routed.routeState==SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED,
    "service audio snapshot sees ROUTE_OBSERVED when media attributes route matches target");
   s.onDestroy();
-  expect(btManager.adapter.closedProxies.contains(p2),
-   "onDestroy closes replacement proxy P2");
+  expect(btManager.adapter.closedProxies.contains(p3),
+   "onDestroy closes replacement proxy P3");
   expect(audio.deviceCallbacks==0&&audio.playbackCallbacks==0&&audio.modeListeners==0&&audio.commListeners==0,
    "onDestroy unregisters all SamsungAudioMonitor listeners");
   expect(s.unregisteredReceivers==1,"onDestroy unregisters Bluetooth receiver");
