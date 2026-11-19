@@ -222,7 +222,7 @@ public final class HandoffService extends Service {
             log("AUDIO_MODE " + audioMode);
             if (!controlSession.isReady() || !mode.allowsRouting()) return;
             if (isCallAudioMode(audioMode)) take("call");
-            else if (!policy.hasPlayback()) mediaInformation(false);
+            else syncInactiveMediaState();
         }
     };
 
@@ -354,8 +354,12 @@ public final class HandoffService extends Service {
         return audio != null && isCallAudioMode(audio.getMode());
     }
 
+    private boolean hasSyncedPlayback() {
+        return playbackWatch != null && playbackWatch.isActive() && policy.hasPlayback();
+    }
+
     private boolean hasActiveHostStream() {
-        return policy.hasPlayback() || inCallAudioMode();
+        return hasSyncedPlayback() || inCallAudioMode();
     }
 
     private void syncInactiveMediaState() {
@@ -365,7 +369,7 @@ public final class HandoffService extends Service {
     }
 
     private void finishPendingTake(String reason) {
-        if (!mode.allowsRouting() || !watch().isWatching()) return;
+        if (!mode.allowsRouting() || !watch().isActive()) return;
         if (policy.consumeTake(controlSession.isReady(),!peers.isEmpty())) take(reason);
     }
 

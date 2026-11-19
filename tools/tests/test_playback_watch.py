@@ -63,12 +63,18 @@ public class MediaController {
 import java.util.*;
 public class MediaSessionManager {
  public List<MediaController> active=new ArrayList<>();
- public boolean rejectRegistration;
+ public boolean rejectRegistration,rejectGetActiveSessions;
  public int added,removed;
+ public final List<String> callOrder=new ArrayList<>();
  public OnActiveSessionsChangedListener lastListener;
  public final List<OnActiveSessionsChangedListener> listeners=new ArrayList<>();
- public List<MediaController> getActiveSessions(android.content.ComponentName c){return new ArrayList<>(active);}
+ public List<MediaController> getActiveSessions(android.content.ComponentName c){
+  callOrder.add("getActiveSessions");
+  if(rejectGetActiveSessions)throw new SecurityException("getActiveSessions denied");
+  return new ArrayList<>(active);
+ }
  public void addOnActiveSessionsChangedListener(OnActiveSessionsChangedListener l,android.content.ComponentName c,android.os.Handler h){
+  callOrder.add("addListener");
   if(rejectRegistration)throw new SecurityException("permission revoked");
   added++;lastListener=l;listeners.add(l);
  }
@@ -81,8 +87,22 @@ public class MediaSessionManager {
         'package android.os; public class Build {public static class VERSION {public static final int SDK_INT=36;}}',
     'android/os/Looper.java':
         'package android.os; public class Looper {public static Looper getMainLooper(){return new Looper();}}',
-    'android/os/Handler.java':
-        'package android.os; public class Handler {public Handler(Looper l){}}',
+    'android/os/Handler.java': '''package android.os;
+import java.util.*;
+public class Handler {
+ public boolean queuePosted;
+ public final List<Runnable> posted=new ArrayList<>();
+ public Handler(Looper l){}
+ public boolean post(Runnable r){
+  if(queuePosted){posted.add(r);return true;}
+  r.run();return true;
+ }
+ public void flushPosted(){
+  List<Runnable> pending=new ArrayList<>(posted);
+  posted.clear();
+  for(Runnable r:pending)r.run();
+ }
+}''',
     PACKAGE + 'PlaybackWatchTest.java': '''package local.airpods.handoffprobe;
 import android.app.*;
 import android.content.*;
@@ -128,13 +148,23 @@ public class PlaybackWatchTest {
 
   expect(!watch.start(),"failed registration must return false");
   expect(!watch.isWatching()&&!watch.isActive(),"failed start leaves watch inactive");
-  expect(controller.registered==1,"seed registers player callback before listener failure");
-  expect(controller.callbacks.isEmpty(),"failed start rolls back player callbacks");
+  expect(controller.registered==0&&controller.callbacks.isEmpty(),"failed listener registration occurs before player seeding");
   expect(manager.removed==0,"failed listener registration does not call remove");
   expect(events.seeded.isEmpty()&&events.stopped.isEmpty(),"failed start emits no seeded or stopped events");
 
+  // Listener registration succeeds, then getActiveSessions() fails -> must roll back the registered listener.
   manager.rejectRegistration=false;
+  manager.rejectGetActiveSessions=true;
+  expect(!watch.start(),"failed getActiveSessions must return false");
+  expect(!watch.isWatching()&&!watch.isActive(),"failed getActiveSessions leaves watch inactive");
+  expect(manager.added==1&&manager.removed==1&&manager.listeners.isEmpty(),"failed getActiveSessions rolls back registered session listener");
+  expect(events.seeded.isEmpty()&&events.stopped.isEmpty(),"failed getActiveSessions emits no seeded or stopped events");
+
+  manager.rejectGetActiveSessions=false;
+  manager.callOrder.clear();
   expect(watch.start(),"retry start succeeds");
+  expect(manager.callOrder.equals(Arrays.asList("addListener","getActiveSessions")),
+   "session listener is registered before reading initial active sessions");
   expect(watch.isWatching()&&watch.isActive(),"successful start activates watch");
   expect(controller.callbacks.size()==1,"retry registers one fresh player callback");
   expect(events.seeded.size()==1&&!events.seededRestartFlags.get(0),"initial start emits seeded without restart flag");
@@ -142,7 +172,7 @@ public class PlaybackWatchTest {
   watch.stop();
   watch.stop();
   expect(!watch.isWatching()&&!watch.isActive(),"stop clears watch state");
-  expect(controller.callbacks.isEmpty()&&manager.removed==1,"stop unregisters player and manager listener once");
+  expect(controller.callbacks.isEmpty()&&manager.removed==2,"stop unregisters player and manager listener once");
   expect(events.stopped.size()==1&&!events.stopped.get(0),"repeated stop emits one non-access-lost stop");
  }
 
@@ -239,6 +269,39 @@ public class PlaybackWatchTest {
    "initial seed observes final PAUSED state");
   queuedPlay[0].onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
   expect(events.stateChanges.isEmpty(),"stale queued PLAYING callback after PAUSE does not fire");
+
+  // 3) Pre-baseline PAUSED -> PLAYING callbacks queued before reading PLAYING baseline must NOT trigger TAKE,
+  //    while real fast PAUSED -> PLAYING callbacks after the baseline fence still trigger both events.
+  watch.stop();
+  Handler queuedHandler=new Handler(Looper.getMainLooper());
+  queuedHandler.queuePosted=true;
+  RecordingListener fenceEvents=new RecordingListener();
+  PlaybackWatch fenceWatch=new PlaybackWatch(ctx,queuedHandler,
+   new ComponentName(ctx,PlaybackWatchTest.class),msg->{},fenceEvents);
+  MediaController preSeedChurn=new MediaController("pre.seed.churn",PlaybackState.STATE_PLAYING);
+  manager.active.clear();
+  manager.active.add(preSeedChurn);
+  expect(fenceWatch.start(),"watch starts with queued baseline fence");
+  expect(Integer.valueOf(PlaybackState.STATE_PLAYING).equals(
+    fenceEvents.seeded.get(0).get(preSeedChurn.getSessionToken().toString())),
+   "baseline sees PLAYING");
+  // Callbacks queued before the baseline fence are discarded even if live state is PLAYING.
+  preSeedChurn.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  preSeedChurn.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  expect(fenceEvents.stateChanges.isEmpty(),"pre-baseline queued PAUSED and PLAYING callbacks are dropped");
+  // Flush the baseline fence; baseline still matches live PLAYING so no spurious event fires.
+  queuedHandler.flushPosted();
+  expect(fenceEvents.stateChanges.isEmpty(),"baseline fence emits nothing when live state matches baseline");
+  // Real fast pause + replay after baseline fence (live state already back to PLAYING when PAUSED callback runs)
+  // must preserve both PAUSED and PLAYING callbacks so RoutingPolicy sees the replay edge.
+  preSeedChurn.setPlaybackState(PlaybackState.STATE_PLAYING);
+  preSeedChurn.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  preSeedChurn.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  expect(fenceEvents.stateChanges.size()==2
+    &&fenceEvents.stateChanges.get(0).endsWith(":"+PlaybackState.STATE_PAUSED)
+    &&fenceEvents.stateChanges.get(1).endsWith(":"+PlaybackState.STATE_PLAYING),
+   "real fast PAUSED->PLAYING after baseline fence preserves both callbacks");
+  fenceWatch.stop();
  }
 
  static void accessLostAndPauseActive(){

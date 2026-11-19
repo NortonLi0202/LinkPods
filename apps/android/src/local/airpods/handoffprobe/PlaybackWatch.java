@@ -40,6 +40,7 @@ final class PlaybackWatch {
     private final Listener listener;
     private final Map<MediaSession.Token, MediaController> players = new HashMap<>();
     private final Map<MediaSession.Token, MediaController.Callback> playerCallbacks = new HashMap<>();
+    private final Set<MediaSession.Token> awaitingBaselineFence = new HashSet<>();
     private MediaSessionManager mediaSessions;
     private MediaSessionManager.OnActiveSessionsChangedListener activeSessionsListener;
     private boolean watching;
@@ -152,19 +153,25 @@ final class PlaybackWatch {
         MediaSessionManager.OnActiveSessionsChangedListener sessionsListener =
                 list -> onActiveSessionsChanged(batch, list);
         Map<String, Integer> seeded = new LinkedHashMap<>();
+        Map<MediaSession.Token, Integer> seededBaselines = new LinkedHashMap<>();
         try {
-            List<MediaController> active = manager.getActiveSessions(listenerComponent);
-            seedPlayers(batch, active, seeded);
+            // Register the active-session listener before reading the initial list so sessions
+            // added between getActiveSessions() and listener registration cannot be missed on Android 12L.
             manager.addOnActiveSessionsChangedListener(sessionsListener, listenerComponent, handler);
+            activeSessionsListener = sessionsListener;
+            List<MediaController> active = manager.getActiveSessions(listenerComponent);
+            seedPlayers(batch, active, seeded, seededBaselines);
         } catch (SecurityException error) {
             tearDownRegistration();
             logger.write("MEDIA_SESSION_WATCH access-required " + error);
             return false;
         }
-        activeSessionsListener = sessionsListener;
         watching = true;
         logger.write("MEDIA_SESSION_WATCH ready");
         listener.onPlayersSeeded(seeded, restarted);
+        if (!seededBaselines.isEmpty()) {
+            handler.post(() -> finishBaselineFence(batch, seededBaselines));
+        }
         return true;
     }
 
@@ -187,11 +194,16 @@ final class PlaybackWatch {
         for (MediaSession.Token token : new HashSet<>(players.keySet())) {
             unregisterPlayer(token);
         }
+        awaitingBaselineFence.clear();
         watching = false;
         return wasWatching;
     }
 
-    private void seedPlayers(long batch, List<MediaController> list, Map<String, Integer> seeded) {
+    private void seedPlayers(
+            long batch,
+            List<MediaController> list,
+            Map<String, Integer> seeded,
+            Map<MediaSession.Token, Integer> seededBaselines) {
         if (list == null) return;
         for (MediaController controller : list) {
             if (!isTrackable(controller)) continue;
@@ -199,7 +211,25 @@ final class PlaybackWatch {
             if (token == null || players.containsKey(token)) continue;
             // Register callback before reading the baseline so a PAUSED->PLAYING transition cannot slip past Android 12L registration.
             registerPlayer(batch, token, controller);
-            seeded.put(token.toString(), playbackStateValue(controller.getPlaybackState()));
+            int baseline = playbackStateValue(controller.getPlaybackState());
+            seeded.put(token.toString(), baseline);
+            seededBaselines.put(token, baseline);
+            awaitingBaselineFence.add(token);
+        }
+    }
+
+    private void finishBaselineFence(long batch, Map<MediaSession.Token, Integer> seededBaselines) {
+        if (!isCurrentBatch(batch)) return;
+        for (Map.Entry<MediaSession.Token, Integer> entry : seededBaselines.entrySet()) {
+            if (!isCurrentBatch(batch)) return;
+            MediaSession.Token token = entry.getKey();
+            awaitingBaselineFence.remove(token);
+            MediaController controller = players.get(token);
+            if (controller == null) continue;
+            int current = playbackStateValue(controller.getPlaybackState());
+            if (current != entry.getValue()) {
+                listener.onPlayerStateChanged(token.toString(), safePackageName(controller), current);
+            }
         }
     }
 
@@ -247,6 +277,7 @@ final class PlaybackWatch {
         if (!isCurrentBatch(batch)) return;
         MediaSession.Token token = controller.getSessionToken();
         if (token == null || players.get(token) != controller) return;
+        if (awaitingBaselineFence.contains(token)) return;
         int value = playbackStateValue(state);
         if (value == PlaybackState.STATE_PLAYING
                 && playbackStateValue(controller.getPlaybackState()) != PlaybackState.STATE_PLAYING) {
@@ -281,6 +312,7 @@ final class PlaybackWatch {
     }
 
     private void unregisterPlayer(MediaSession.Token token) {
+        awaitingBaselineFence.remove(token);
         MediaController controller = players.remove(token);
         MediaController.Callback callback = playerCallbacks.remove(token);
         if (controller != null && callback != null) {

@@ -447,46 +447,111 @@ public class HandoffLifecycleTest {
   for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) took=true;
   expect(took,"ready() after listener restart completes preserved pending TAKE");
 
-  // Recoverable rebind failure while ready: do NOT execute pending TAKE while unwatched;
-  // execute on recovery only if playback is still active, or clear if playback stopped.
-  manager.active.clear();
-  MediaController paused=new MediaController(0);
-  manager.active.add(paused);
-  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(paused));
-  // Create a fresh pending TAKE by starting playback on a new player, then simulate rebind failure before ready, or test directly:
-  probe.packets.clear();
-  ((RoutingPolicy)get(s,"policy")).onPlayback("rebind.player",3);
-  manager.rejectRegistration=true;
+  // Recoverable rebind failure on a fresh, initially unready control session:
+  // 1) Build pending TAKE via real player callback (never calling RoutingPolicy.onPlayback directly).
+  // 2) Fail rebind registration and verify no TAKE is sent.
+  // 3) Fire first-ever probe.listener.ready() while unwatched during failed rebind:
+  //    - must NOT execute pending TAKE;
+  //    - must NOT advertise stale playback as mediaInformation(true);
+  //    - call audio mode transitions still advertise true and false independently of stale playback.
+  // 4) Recover rebind with the same player still playing -> sends mediaInformation(true) and exactly one TAKE.
+  s.onDestroy();
+  AapProbe.created.clear();
+  MediaSessionManager rebindManager=new MediaSessionManager();
+  NotificationManager rebindNm=new NotificationManager();
+  HandoffService s2=service(rebindManager);s2.services.put(NotificationManager.class,rebindNm);
+  s2.onCreate();
+  s2.onStartCommand(start,0,2);
+  expect(AapProbe.created.size()==1,"fresh session creates one probe");
+  AapProbe probe2=AapProbe.created.get(0);
+  ((Set<String>)get(s2,"peers")).add(PEER);
+  MediaController realPlayer=new MediaController(PlaybackState.STATE_PLAYING);
+  rebindManager.active.add(realPlayer);
+  rebindManager.lastListener.onActiveSessionsChanged(Collections.singletonList(realPlayer));
+  expect(((RoutingPolicy)get(s2,"policy")).isPending(),"real player callback while unready queues pending TAKE");
+
+  probe2.packets.clear();
+  rebindManager.rejectRegistration=true;
   listener.onListenerConnected();
-  for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipTrue),"failed rebind must not execute preserved pending TAKE");
-  // Even if onReady fires while unwatched during failed rebind, TAKE must wait until rebind completes.
-  probe.listener.ready();
-  for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipTrue),"onReady while unwatched after failed rebind must not execute stale TAKE");
-  // Recover with player actually playing -> preserved TAKE now executes immediately on already-ready channel.
-  manager.rejectRegistration=false;
-  playing.setPlaybackState(PlaybackState.STATE_PLAYING);
-  manager.active.clear();manager.active.add(playing);
+  for(byte[] p:probe2.packets) expect(!Arrays.equals(p,ownershipTrue),"failed rebind must not execute preserved pending TAKE");
+
+  // First-ever ready() during failed rebind must wait until rebind completes and must not announce stale playback as YES.
+  byte[] mediaTrue=RoutingPackets.mediaInformation(SELF,PEER,true);
+  byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
+  probe2.listener.ready();
+  for(byte[] p:probe2.packets){
+   expect(!Arrays.equals(p,ownershipTrue),"first ready() while unwatched after failed rebind must not execute stale TAKE");
+   expect(!Arrays.equals(p,mediaTrue),"unwatched failed rebind must not advertise stale playback as mediaInformation(true)");
+  }
+
+  // Ending a call while unwatched must not be blocked from sending mediaInformation(false) by stale policy.hasPlayback().
+  AudioManager s2Audio=(AudioManager)get(s2,"audio");
+  SamsungAudioMonitor.Listener s2Monitor=(SamsungAudioMonitor.Listener)get(s2,"audioMonitorListener");
+  probe2.packets.clear();
+  s2Audio.mode=AudioManager.MODE_IN_CALL;
+  s2Monitor.onAudioModeChanged(AudioManager.MODE_IN_CALL);
+  boolean sentCallTrueWhileUnwatched=false;
+  for(byte[] p:probe2.packets) if(Arrays.equals(p,mediaTrue)) sentCallTrueWhileUnwatched=true;
+  expect(sentCallTrueWhileUnwatched,"live call audio mode still advertises mediaInformation(true) while unwatched");
+  probe2.packets.clear();
+  s2Audio.mode=AudioManager.MODE_NORMAL;
+  s2Monitor.onAudioModeChanged(AudioManager.MODE_NORMAL);
+  boolean sentCallFalseWhileUnwatched=false;
+  for(byte[] p:probe2.packets) if(Arrays.equals(p,mediaFalse)) sentCallFalseWhileUnwatched=true;
+  expect(sentCallFalseWhileUnwatched,"ending call while unwatched sends mediaInformation(false) despite stale playback record");
+
+  // Recover rebind with the same player still playing -> syncs mediaInformation(true) and sends TAKE exactly once.
+  probe2.packets.clear();
+  rebindManager.rejectRegistration=false;
   listener.onListenerConnected();
-  boolean tookOnRecovery=false;
-  for(byte[] p:probe.packets) if(Arrays.equals(p,ownershipTrue)) tookOnRecovery=true;
-  expect(tookOnRecovery,"successful rebind recovery executes preserved TAKE when player is still playing");
+  int takeCount=0;
+  boolean syncedTrueOnRecovery=false;
+  for(byte[] p:probe2.packets){
+   if(Arrays.equals(p,ownershipTrue)) takeCount++;
+   if(Arrays.equals(p,mediaTrue)) syncedTrueOnRecovery=true;
+  }
+  expect(syncedTrueOnRecovery,"successful rebind recovery resyncs mediaInformation(true) for active playback");
+  expect(takeCount==1,"successful rebind recovery executes preserved TAKE exactly once when player is still playing");
 
   // If player paused before rebind recovery, preserved pending TAKE must NOT execute on recovery and must be cleared.
-  playing.setPlaybackState(PlaybackState.STATE_PAUSED);
-  playing.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
-  ((Set<String>)get(s,"peers")).clear();
-  playing.setPlaybackState(PlaybackState.STATE_PLAYING);
-  playing.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
-  expect(((RoutingPolicy)get(s,"policy")).isPending(),"fresh pending TAKE queued before second rebind failure");
-  probe.packets.clear();
-  manager.rejectRegistration=true;
+  realPlayer.setPlaybackState(PlaybackState.STATE_PAUSED);
+  realPlayer.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  ((Set<String>)get(s2,"peers")).clear();
+  realPlayer.setPlaybackState(PlaybackState.STATE_PLAYING);
+  realPlayer.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  expect(((RoutingPolicy)get(s2,"policy")).isPending(),"fresh pending TAKE queued before second rebind failure");
+  probe2.packets.clear();
+  rebindManager.rejectRegistration=true;
   listener.onListenerConnected();
-  ((Set<String>)get(s,"peers")).add(PEER);
-  playing.setPlaybackState(PlaybackState.STATE_PAUSED);
-  manager.rejectRegistration=false;
+  ((Set<String>)get(s2,"peers")).add(PEER);
+  realPlayer.setPlaybackState(PlaybackState.STATE_PAUSED);
+  rebindManager.rejectRegistration=false;
   listener.onListenerConnected();
-  expect(!((RoutingPolicy)get(s,"policy")).isPending(),"rebind recovery when player already paused clears pending TAKE");
-  for(byte[] p:probe.packets) expect(!Arrays.equals(p,ownershipTrue),"rebind recovery when player already paused clears TAKE without executing");
+  expect(!((RoutingPolicy)get(s2,"policy")).isPending(),"rebind recovery when player already paused clears pending TAKE");
+  for(byte[] p:probe2.packets) expect(!Arrays.equals(p,ownershipTrue),"rebind recovery when player already paused clears TAKE without executing");
+
+  // Revoked notification access before onAccessLost runs must block finishPendingTake() on first ready().
+  s2.onDestroy();
+  AapProbe.created.clear();
+  MediaSessionManager revokeManager=new MediaSessionManager();
+  NotificationManager revokeNm=new NotificationManager();
+  HandoffService s3=service(revokeManager);s3.services.put(NotificationManager.class,revokeNm);
+  s3.onCreate();
+  s3.onStartCommand(start,0,3);
+  AapProbe probe3=AapProbe.created.get(0);
+  ((Set<String>)get(s3,"peers")).add(PEER);
+  MediaController revokePlayer=new MediaController(PlaybackState.STATE_PLAYING);
+  revokeManager.active.add(revokePlayer);
+  revokeManager.lastListener.onActiveSessionsChanged(Collections.singletonList(revokePlayer));
+  expect(((RoutingPolicy)get(s3,"policy")).isPending(),"pending TAKE queued before access revocation");
+  probe3.packets.clear();
+  revokeNm.notificationAccessGranted=false;
+  probe3.listener.ready();
+  for(byte[] p:probe3.packets){
+   expect(!Arrays.equals(p,ownershipTrue),"revoked media access blocks finishPendingTake before access-lost callback");
+   expect(!Arrays.equals(p,mediaTrue),"revoked media access blocks advertising stale playback on ready()");
+  }
+  s3.onDestroy();
  }
  static void downgradeReusesSessionWithoutAudioDisruption()throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();
@@ -547,6 +612,11 @@ public class HandoffLifecycleTest {
   manager.lastListener.onActiveSessionsChanged(Collections.singletonList(telecom));
   byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
   for(byte[] p:probe.packets) expect(!Arrays.equals(p,mediaFalse),"telecom-only list during MODE_IN_CALL must not send mediaInformation(false)");
+  // Stale queued MODE_NORMAL callback when a new call is already in MODE_IN_CALL must NOT send mediaInformation(false).
+  probe.packets.clear();
+  serviceAudio.mode=AudioManager.MODE_IN_CALL;
+  monitorListener.onAudioModeChanged(AudioManager.MODE_NORMAL);
+  for(byte[] p:probe.packets) expect(!Arrays.equals(p,mediaFalse),"stale MODE_NORMAL callback during active MODE_IN_CALL must not send mediaInformation(false)");
   serviceAudio.mode=AudioManager.MODE_NORMAL;
   monitorListener.onAudioModeChanged(AudioManager.MODE_NORMAL);
   boolean sentNoAfterCall=false;
