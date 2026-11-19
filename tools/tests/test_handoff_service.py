@@ -116,7 +116,11 @@ public interface BluetoothProfile {
     'android/media/session/MediaSession.java': 'package android.media.session; public class MediaSession {public static class Token {}}',
     'android/media/session/PlaybackState.java': '''package android.media.session;
 public class PlaybackState {public static final int STATE_PAUSED=2,STATE_PLAYING=3,STATE_BUFFERING=6,STATE_CONNECTING=8;
- private final int state;public PlaybackState(int s){state=s;}public int getState(){return state;}}''',
+ private final int state;private final long updateTime;
+ public PlaybackState(int s){this(s,0L);}
+ public PlaybackState(int s,long t){state=s;updateTime=t;}
+ public int getState(){return state;}
+ public long getLastPositionUpdateTime(){return updateTime;}}''',
     'android/media/session/MediaController.java': '''package android.media.session;
 import java.util.*;
 public class MediaController {
@@ -409,6 +413,7 @@ public class HandoffLifecycleTest {
   // Fresh playback edge after recovery still triggers TAKE.
   probe.packets.clear();
   MediaController newPlayer=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.add(newPlayer);
   manager.lastListener.onActiveSessionsChanged(Arrays.asList(activeBeforeRevoke,newPlayer));
   expect(activeBeforeRevoke.callbacks.size()==1&&newPlayer.callbacks.size()==1,
    "both existing and new players are tracked after permission recovery");
@@ -484,7 +489,7 @@ public class HandoffLifecycleTest {
    expect(!Arrays.equals(p,mediaTrue),"unwatched failed rebind must not advertise stale playback as mediaInformation(true)");
   }
 
-  // Ending a call while unwatched must not be blocked from sending mediaInformation(false) by stale policy.hasPlayback().
+  // Ending a call while unwatched must NOT send mediaInformation(false) when playback is unobservable.
   AudioManager s2Audio=(AudioManager)get(s2,"audio");
   SamsungAudioMonitor.Listener s2Monitor=(SamsungAudioMonitor.Listener)get(s2,"audioMonitorListener");
   probe2.packets.clear();
@@ -496,22 +501,40 @@ public class HandoffLifecycleTest {
   probe2.packets.clear();
   s2Audio.mode=AudioManager.MODE_NORMAL;
   s2Monitor.onAudioModeChanged(AudioManager.MODE_NORMAL);
-  boolean sentCallFalseWhileUnwatched=false;
-  for(byte[] p:probe2.packets) if(Arrays.equals(p,mediaFalse)) sentCallFalseWhileUnwatched=true;
-  expect(sentCallFalseWhileUnwatched,"ending call while unwatched sends mediaInformation(false) despite stale playback record");
+  for(byte[] p:probe2.packets) expect(!Arrays.equals(p,mediaFalse),"ending call while unwatched must not send mediaInformation(false)");
 
-  // Recover rebind with the same player still playing -> syncs mediaInformation(true) and sends TAKE exactly once.
+  // Recover rebind with the same player still playing -> keeps YES without NO->YES flip and sends TAKE exactly once.
   probe2.packets.clear();
   rebindManager.rejectRegistration=false;
   listener.onListenerConnected();
   int takeCount=0;
-  boolean syncedTrueOnRecovery=false;
   for(byte[] p:probe2.packets){
    if(Arrays.equals(p,ownershipTrue)) takeCount++;
-   if(Arrays.equals(p,mediaTrue)) syncedTrueOnRecovery=true;
+   expect(!Arrays.equals(p,mediaFalse),"rebind recovery with player still playing must not send mediaInformation(false)");
   }
-  expect(syncedTrueOnRecovery,"successful rebind recovery resyncs mediaInformation(true) for active playback");
+  expect(Boolean.TRUE.equals(get(s2,"lastMediaState")),"rebind recovery with player still playing keeps media state active");
   expect(takeCount==1,"successful rebind recovery executes preserved TAKE exactly once when player is still playing");
+
+  // If player stopped during unwatched call end, NO is deferred until rebind recovery confirms no playback.
+  probe2.packets.clear();
+  rebindManager.rejectRegistration=true;
+  listener.onListenerConnected();
+  s2Audio.mode=AudioManager.MODE_IN_CALL;
+  s2Monitor.onAudioModeChanged(AudioManager.MODE_IN_CALL);
+  realPlayer.setPlaybackState(PlaybackState.STATE_PAUSED);
+  probe2.packets.clear();
+  s2Audio.mode=AudioManager.MODE_NORMAL;
+  s2Monitor.onAudioModeChanged(AudioManager.MODE_NORMAL);
+  for(byte[] p:probe2.packets) expect(!Arrays.equals(p,mediaFalse),"call end while unwatched does not emit NO before watch confirms");
+  rebindManager.rejectRegistration=false;
+  listener.onListenerConnected();
+  boolean sentFalseAfterConfirmedStop=false;
+  for(byte[] p:probe2.packets) if(Arrays.equals(p,mediaFalse)) sentFalseAfterConfirmedStop=true;
+  expect(sentFalseAfterConfirmedStop,"rebind recovery sends mediaInformation(false) once watch confirms player stopped");
+  realPlayer.setPlaybackState(PlaybackState.STATE_PLAYING);
+  rebindManager.active.clear();
+  rebindManager.active.add(realPlayer);
+  rebindManager.lastListener.onActiveSessionsChanged(Collections.singletonList(realPlayer));
 
   // If player paused before rebind recovery, preserved pending TAKE must NOT execute on recovery and must be cleared.
   realPlayer.setPlaybackState(PlaybackState.STATE_PAUSED);
@@ -609,6 +632,8 @@ public class HandoffLifecycleTest {
   SamsungAudioMonitor.Listener monitorListener=(SamsungAudioMonitor.Listener)get(s,"audioMonitorListener");
   monitorListener.onAudioModeChanged(AudioManager.MODE_IN_CALL);
   probe.packets.clear();
+  manager.active.clear();
+  manager.active.add(telecom);
   manager.lastListener.onActiveSessionsChanged(Collections.singletonList(telecom));
   byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
   for(byte[] p:probe.packets) expect(!Arrays.equals(p,mediaFalse),"telecom-only list during MODE_IN_CALL must not send mediaInformation(false)");
@@ -625,6 +650,8 @@ public class HandoffLifecycleTest {
   // Also verify telecom-only list after call ends syncs mediaInformation(false) when lastMediaState was still true.
   set(s,"lastMediaState",Boolean.TRUE);
   probe.packets.clear();
+  manager.active.clear();
+  manager.active.add(telecom);
   manager.lastListener.onActiveSessionsChanged(Collections.singletonList(telecom));
   boolean sentNoOnTelecomAfterCall=false;
   for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentNoOnTelecomAfterCall=true;

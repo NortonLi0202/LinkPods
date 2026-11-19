@@ -120,8 +120,8 @@ public final class HandoffService extends Service {
         }
         @Override public void onWatchStopped(boolean accessLost) {
             policy.reset();
-            if (accessLost && !stopped && mode.allowsRouting()) {
-                syncInactiveMediaState();
+            if (accessLost && !stopped && mode.allowsRouting() && controlSession.isReady() && !inCallAudioMode()) {
+                mediaInformation(false);
             }
         }
     };
@@ -363,7 +363,10 @@ public final class HandoffService extends Service {
     }
 
     private void syncInactiveMediaState() {
-        if (controlSession.isReady() && !hasActiveHostStream()) {
+        if (controlSession.isReady()
+                && playbackWatch != null
+                && playbackWatch.isActive()
+                && !hasActiveHostStream()) {
             mediaInformation(false);
         }
     }

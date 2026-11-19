@@ -41,6 +41,7 @@ final class PlaybackWatch {
     private final Map<MediaSession.Token, MediaController> players = new HashMap<>();
     private final Map<MediaSession.Token, MediaController.Callback> playerCallbacks = new HashMap<>();
     private final Set<MediaSession.Token> awaitingBaselineFence = new HashSet<>();
+    private final Map<MediaSession.Token, Long> baselineUpdateTimes = new HashMap<>();
     private MediaSessionManager mediaSessions;
     private MediaSessionManager.OnActiveSessionsChangedListener activeSessionsListener;
     private boolean watching;
@@ -195,6 +196,7 @@ final class PlaybackWatch {
             unregisterPlayer(token);
         }
         awaitingBaselineFence.clear();
+        baselineUpdateTimes.clear();
         watching = false;
         return wasWatching;
     }
@@ -211,10 +213,12 @@ final class PlaybackWatch {
             if (token == null || players.containsKey(token)) continue;
             // Register callback before reading the baseline so a PAUSED->PLAYING transition cannot slip past Android 12L registration.
             registerPlayer(batch, token, controller);
-            int baseline = playbackStateValue(controller.getPlaybackState());
+            PlaybackState baselineState = controller.getPlaybackState();
+            int baseline = playbackStateValue(baselineState);
             seeded.put(token.toString(), baseline);
             seededBaselines.put(token, baseline);
             awaitingBaselineFence.add(token);
+            baselineUpdateTimes.put(token, baselineState == null ? 0L : baselineState.getLastPositionUpdateTime());
         }
     }
 
@@ -223,7 +227,8 @@ final class PlaybackWatch {
         for (Map.Entry<MediaSession.Token, Integer> entry : seededBaselines.entrySet()) {
             if (!isCurrentBatch(batch)) return;
             MediaSession.Token token = entry.getKey();
-            awaitingBaselineFence.remove(token);
+            baselineUpdateTimes.remove(token);
+            if (!awaitingBaselineFence.remove(token)) continue;
             MediaController controller = players.get(token);
             if (controller == null) continue;
             int current = playbackStateValue(controller.getPlaybackState());
@@ -235,10 +240,21 @@ final class PlaybackWatch {
 
     private void onActiveSessionsChanged(long batch, List<MediaController> list) {
         if (!isCurrentBatch(batch)) return;
+        List<MediaController> currentList;
+        if (mediaSessions != null) {
+            try {
+                currentList = mediaSessions.getActiveSessions(listenerComponent);
+            } catch (SecurityException error) {
+                onAccessLost();
+                return;
+            }
+        } else {
+            currentList = list;
+        }
         Set<MediaSession.Token> present = new HashSet<>();
         List<MediaController> added = new ArrayList<>();
-        if (list != null) {
-            for (MediaController controller : list) {
+        if (currentList != null) {
+            for (MediaController controller : currentList) {
                 if (!isTrackable(controller)) continue;
                 MediaSession.Token token = controller.getSessionToken();
                 if (token == null) continue;
@@ -264,7 +280,7 @@ final class PlaybackWatch {
                 listener.onPlayerRemoved(token.toString());
             }
         }
-        if (isCurrentBatch(batch) && (list == null || list.isEmpty()) && !hasMediaAccess()) {
+        if (isCurrentBatch(batch) && (currentList == null || currentList.isEmpty()) && !hasMediaAccess()) {
             onAccessLost();
             return;
         }
@@ -277,7 +293,15 @@ final class PlaybackWatch {
         if (!isCurrentBatch(batch)) return;
         MediaSession.Token token = controller.getSessionToken();
         if (token == null || players.get(token) != controller) return;
-        if (awaitingBaselineFence.contains(token)) return;
+        if (awaitingBaselineFence.contains(token)) {
+            long baselineTime = baselineUpdateTimes.getOrDefault(token, 0L);
+            long eventTime = state == null ? 0L : state.getLastPositionUpdateTime();
+            if (state == null || eventTime <= baselineTime) {
+                return;
+            }
+            awaitingBaselineFence.remove(token);
+            baselineUpdateTimes.remove(token);
+        }
         int value = playbackStateValue(state);
         if (value == PlaybackState.STATE_PLAYING
                 && playbackStateValue(controller.getPlaybackState()) != PlaybackState.STATE_PLAYING) {
@@ -313,6 +337,7 @@ final class PlaybackWatch {
 
     private void unregisterPlayer(MediaSession.Token token) {
         awaitingBaselineFence.remove(token);
+        baselineUpdateTimes.remove(token);
         MediaController controller = players.remove(token);
         MediaController.Callback callback = playerCallbacks.remove(token);
         if (controller != null && callback != null) {

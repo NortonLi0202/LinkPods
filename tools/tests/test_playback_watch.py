@@ -28,8 +28,11 @@ public class NotificationManager {
 public class PlaybackState {
  public static final int STATE_PAUSED=2,STATE_PLAYING=3,STATE_BUFFERING=6,STATE_CONNECTING=8;
  private final int state;
- public PlaybackState(int s){state=s;}
+ private final long updateTime;
+ public PlaybackState(int s){this(s,0L);}
+ public PlaybackState(int s,long t){state=s;updateTime=t;}
  public int getState(){return state;}
+ public long getLastPositionUpdateTime(){return updateTime;}
 }''',
     'android/media/session/MediaController.java': '''package android.media.session;
 import java.util.*;
@@ -40,12 +43,15 @@ public class MediaController {
  public java.util.function.Consumer<Callback> onRegister;
  private final String pkg;
  private int playbackState;
+ private long updateTime;
  private final MediaSession.Token token=new MediaSession.Token();
- public MediaController(String pkg,int state){this.pkg=pkg;this.playbackState=state;}
+ public MediaController(String pkg,int state){this(pkg,state,0L);}
+ public MediaController(String pkg,int state,long t){this.pkg=pkg;this.playbackState=state;this.updateTime=t;}
  public String getPackageName(){return pkg;}
  public MediaSession.Token getSessionToken(){return token;}
- public PlaybackState getPlaybackState(){return new PlaybackState(playbackState);}
+ public PlaybackState getPlaybackState(){return new PlaybackState(playbackState,updateTime);}
  public void setPlaybackState(int state){playbackState=state;}
+ public void setPlaybackState(int state,long t){playbackState=state;updateTime=t;}
  public void registerCallback(Callback c,android.os.Handler h){
   callbacks.add(c);lastCallback=c;registered++;
   if(onRegister!=null)onRegister.accept(c);
@@ -221,17 +227,37 @@ public class PlaybackWatchTest {
 
   // Removing a player within the active batch also fences late callbacks from that removed player.
   MediaController.Callback batch3PlayerCallback=second.lastCallback;
+  manager.active.clear();
   manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
   expect(events.removedPlayers.size()==1,"active batch removes missing player");
   batch3PlayerCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
   expect(events.stateChanges.isEmpty(),"late callback from removed player in same batch is ignored");
 
   // Stale queued PLAYING callback when controller is already PAUSED must be discarded.
+  manager.active.add(second);
   manager.lastListener.onActiveSessionsChanged(Collections.singletonList(second));
   events.stateChanges.clear();
   second.setPlaybackState(PlaybackState.STATE_PAUSED);
   second.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
   expect(events.stateChanges.isEmpty(),"stale queued PLAYING callback when controller is paused is discarded");
+
+  // Stale session-list callback (e.g. empty list queued before initial snapshot) must NOT remove active player P,
+  // while newly added players in live getActiveSessions() are still tracked.
+  events.removedPlayers.clear();
+  events.stateChanges.clear();
+  manager.lastListener.onActiveSessionsChanged(Collections.emptyList());
+  expect(events.removedPlayers.isEmpty(),"stale empty session-list callback does not remove live player");
+  expect(second.callbacks.size()==1,"live player callback remains registered after stale empty list");
+  MediaController addedAfterSnapshot=new MediaController("added.after",PlaybackState.STATE_PLAYING);
+  manager.active.add(addedAfterSnapshot);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(second));
+  expect(addedAfterSnapshot.callbacks.size()==1,"newly added live player is tracked when session list refreshes");
+  expect(events.stateChanges.size()==1&&events.stateChanges.get(0).contains(":added.after:"+PlaybackState.STATE_PLAYING),
+   "newly added live player emits initial state change");
+  manager.active.remove(addedAfterSnapshot);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(second));
+  events.removedPlayers.clear();
+  events.stateChanges.clear();
 
   // Current PLAYING callback with matching live controller state is forwarded.
   second.setPlaybackState(PlaybackState.STATE_PLAYING);
@@ -302,6 +328,27 @@ public class PlaybackWatchTest {
     &&fenceEvents.stateChanges.get(1).endsWith(":"+PlaybackState.STATE_PLAYING),
    "real fast PAUSED->PLAYING after baseline fence preserves both callbacks");
   fenceWatch.stop();
+
+  // 4) Post-baseline PAUSED -> PLAYING callbacks enqueued after reading baseline and before fence runs
+  //    must be delivered in order, and flushing the fence must not duplicate them.
+  queuedHandler.posted.clear();
+  RecordingListener postBaselineEvents=new RecordingListener();
+  PlaybackWatch postBaselineWatch=new PlaybackWatch(ctx,queuedHandler,
+   new ComponentName(ctx,PlaybackWatchTest.class),msg->{},postBaselineEvents);
+  MediaController postBaselinePlayer=new MediaController("post.baseline.replay",PlaybackState.STATE_PLAYING,100L);
+  manager.active.clear();
+  manager.active.add(postBaselinePlayer);
+  expect(postBaselineWatch.start(),"watch starts with timestamped baseline");
+  postBaselinePlayer.setPlaybackState(PlaybackState.STATE_PLAYING,102L);
+  postBaselinePlayer.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED,101L));
+  postBaselinePlayer.lastCallback.onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING,102L));
+  expect(postBaselineEvents.stateChanges.size()==2
+    &&postBaselineEvents.stateChanges.get(0).endsWith(":"+PlaybackState.STATE_PAUSED)
+    &&postBaselineEvents.stateChanges.get(1).endsWith(":"+PlaybackState.STATE_PLAYING),
+   "post-baseline PAUSED->PLAYING before fence delivers both events in order");
+  queuedHandler.flushPosted();
+  expect(postBaselineEvents.stateChanges.size()==2,"flushing baseline fence after delivered replay emits no duplicate");
+  postBaselineWatch.stop();
  }
 
  static void accessLostAndPauseActive(){
