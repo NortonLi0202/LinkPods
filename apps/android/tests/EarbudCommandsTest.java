@@ -11,7 +11,37 @@ public final class EarbudCommandsTest {
     private static byte[] control(int id, int value) {
         return new byte[]{4,0,4,0,9,0,(byte) id,(byte) value,0,0,0};
     }
+    private static void tokenAndDeadlineBoundaries() {
+        EarbudCommands.State state=new EarbudCommands.State();
+        state.begin(A);state.connected();
+        state.receive(control(0x28,2));state.receive(control(0x0a,2));
+        EarbudCommands.PendingWrite first=state.queueRequest(A,0x28,1,100);
+        EarbudCommands.PendingWrite other=state.queueRequest(A,0x0a,1,100);
+        expect(first!=null && other!=null && other.token>first.token,"different setting requests get increasing tokens");
+        expect(Arrays.equals(first.packet,control(0x28,1)),"tokenized request retains exact wire encoding");
+        state.failed(0x0a,first.token);
+        expect(state.snapshot(A,5099).pending.size()==2,"token for another setting cannot fail request; deadline is exclusive before 5000ms");
+        state.sent(0x28,other.token);
+        state.failed(0x0a,other.token);
+        expect(state.snapshot(A,5099).pending.contains(0x28),"failure clears only matching setting and token");
+        EarbudSnapshot expired=state.snapshot(A,5100);
+        expect(expired.pending.isEmpty() && "设置请求超时，耳机未确认".equals(expired.status),
+            "exact deadline expires request; wrong sent token cannot claim socket delivery");
+        EarbudCommands.PendingWrite retry=state.queueRequest(A,0x28,1,5100);
+        expect(retry!=null && retry.token>other.token,"retry allowed at exact timeout with increasing token");
+        state.sent(0x28,first.token);
+        expired=state.snapshot(A,10100);
+        expect("设置请求超时，耳机未确认".equals(expired.status),"late success cannot mark retry as sent");
+        state.begin(A);state.connected();state.receive(control(0x28,2));
+        EarbudCommands.PendingWrite fresh=state.queueRequest(A,0x28,1,10200);
+        expect(fresh!=null && fresh.token>retry.token,"begin never recycles tokens across sessions");
+        state.failed(0x28,retry.token);
+        state.sent(0x28,fresh.token);
+        expect(state.snapshot(A,15199).pending.contains(0x28),"old session failure cannot clear fresh request");
+        expect("设置已发送，耳机未确认".equals(state.snapshot(A,15200).status),"matching success changes exact-deadline timeout status");
+    }
     public static void main(String[] args) {
+        tokenAndDeadlineBoundaries();
         expect(Arrays.equals(EarbudCommands.encode(0x0d,2), new byte[]{4,0,4,0,9,0,13,2,0,0,0}), "ANC uses setting 13 and mode 2");
         expect(Arrays.equals(EarbudCommands.encode(0x28,EarbudCommands.booleanValue(true)),new byte[]{4,0,4,0,9,0,40,1,0,0,0}), "conversation true is Apple bool 1");
         expect(EarbudCommands.booleanValue(false)==2, "Apple bool false is 2");
@@ -58,10 +88,29 @@ public final class EarbudCommandsTest {
         state.receive(control(0x28,1));
         expect(!state.snapshot(A,14).pending.contains(0x28) && Boolean.TRUE.equals(state.snapshot(A,14).enabled(0x28)),"matching real reply confirms");
         state.queue(A,0x28,2,20);
-        EarbudSnapshot expired=state.snapshot(A,10000);
-        expect(expired.pending.isEmpty() && Boolean.TRUE.equals(expired.enabled(0x28)) && expired.status.contains("未确认"),"timeout remains unconfirmed and preserves observed state");
-        state.queue(A,0x28,2,10001); state.failed(0x28);
-        expect(state.snapshot(A,10002).pending.isEmpty() && Boolean.TRUE.equals(state.snapshot(A,10002).enabled(0x28)),"send failure preserves observation");
+        EarbudSnapshot expiredUnsent=state.snapshot(A,10000);
+        expect(expiredUnsent.pending.isEmpty() && Boolean.TRUE.equals(expiredUnsent.enabled(0x28))
+            && "设置请求超时，耳机未确认".equals(expiredUnsent.status),
+            "timeout before write completion reports request timeout without claiming sent");
+        EarbudCommands.PendingWrite sentBeforeTimeout=state.queueRequest(A,0x28,2,10000);
+        expect(sentBeforeTimeout!=null,"request queued before send confirmation");
+        state.sent(0x28,sentBeforeTimeout.token);
+        EarbudSnapshot expiredSent=state.snapshot(A,15000);
+        expect(expiredSent.pending.isEmpty() && "设置已发送，耳机未确认".equals(expiredSent.status),
+            "timeout after confirmed socket write reports sent without reply");
+        state.queue(A,0x28,2,15001); state.failed(0x28);
+        expect(state.snapshot(A,15002).pending.isEmpty() && Boolean.TRUE.equals(state.snapshot(A,15002).enabled(0x28)),"send failure preserves observation");
+        EarbudCommands.PendingWrite firstAttempt=state.queueRequest(A,0x28,2,10010);
+        expect(firstAttempt!=null,"tokenized request queued");
+        expect(state.snapshot(A,16000).pending.isEmpty(),"first request expires after timeout");
+        EarbudCommands.PendingWrite retryAttempt=state.queueRequest(A,0x28,1,16001);
+        expect(retryAttempt!=null && retryAttempt.token!=firstAttempt.token,"retry gets distinct request token");
+        state.failed(0x28,firstAttempt.token);
+        EarbudSnapshot afterStaleFailure=state.snapshot(A,16002);
+        expect(afterStaleFailure.pending.contains(0x28) && "等待耳机确认设置".equals(afterStaleFailure.status),
+            "late failure from timed-out attempt must not clear active retry");
+        state.failed(0x28,retryAttempt.token);
+        expect(state.snapshot(A,16003).pending.isEmpty(),"matching request token failure clears active retry");
         expect(!state.snapshot(B,0).ready && state.snapshot(B,0).settings.isEmpty(),"wrong target reveals no state");
 
         state.receive(control(0x0d,2));

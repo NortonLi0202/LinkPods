@@ -50,7 +50,10 @@ final class SamsungAudioMonitor {
 
     private boolean started;
     private boolean receiverRegistered;
-    private boolean audioCallbacksRegistered;
+    private boolean deviceCallbackRegistered;
+    private boolean playbackCallbackRegistered;
+    private boolean modeListenerRegistered;
+    private boolean commDeviceListenerRegistered;
     private boolean a2dpRequested;
     private boolean headsetRequested;
     private boolean a2dpConnected;
@@ -212,6 +215,10 @@ final class SamsungAudioMonitor {
         this.adapter = btManager == null ? null : btManager.getAdapter();
     }
 
+    synchronized boolean isStarted() {
+        return started;
+    }
+
     synchronized void start() {
         if (started) {
             requestProxiesIfPermitted();
@@ -219,13 +226,24 @@ final class SamsungAudioMonitor {
             return;
         }
         started = true;
-        if (audio != null && !audioCallbacksRegistered) {
+        if (audio != null) {
             Executor executor = context.getMainExecutor();
-            audio.registerAudioDeviceCallback(deviceCallback, handler);
-            audio.registerAudioPlaybackCallback(playbackCallback, handler);
-            audio.addOnModeChangedListener(executor, modeListener);
-            audio.addOnCommunicationDeviceChangedListener(executor, commDeviceListener);
-            audioCallbacksRegistered = true;
+            if (!deviceCallbackRegistered) {
+                audio.registerAudioDeviceCallback(deviceCallback, handler);
+                deviceCallbackRegistered = true;
+            }
+            if (!playbackCallbackRegistered) {
+                audio.registerAudioPlaybackCallback(playbackCallback, handler);
+                playbackCallbackRegistered = true;
+            }
+            if (!modeListenerRegistered) {
+                audio.addOnModeChangedListener(executor, modeListener);
+                modeListenerRegistered = true;
+            }
+            if (!commDeviceListenerRegistered) {
+                audio.addOnCommunicationDeviceChangedListener(executor, commDeviceListener);
+                commDeviceListenerRegistered = true;
+            }
         }
         if (!receiverRegistered) {
             IntentFilter filter = new IntentFilter();
@@ -245,18 +263,31 @@ final class SamsungAudioMonitor {
     }
 
     synchronized void stop() {
-        if (!started && !audioCallbacksRegistered && !receiverRegistered && ownedA2dp == null && ownedHeadset == null) {
+        if (!started && !deviceCallbackRegistered && !playbackCallbackRegistered
+                && !modeListenerRegistered && !commDeviceListenerRegistered
+                && !receiverRegistered && ownedA2dp == null && ownedHeadset == null) {
             return;
         }
         started = false;
         ++a2dpGeneration;
         ++headsetGeneration;
-        if (audio != null && audioCallbacksRegistered) {
-            try { audio.unregisterAudioDeviceCallback(deviceCallback); } catch (RuntimeException ignored) {}
-            try { audio.unregisterAudioPlaybackCallback(playbackCallback); } catch (RuntimeException ignored) {}
-            try { audio.removeOnModeChangedListener(modeListener); } catch (RuntimeException ignored) {}
-            try { audio.removeOnCommunicationDeviceChangedListener(commDeviceListener); } catch (RuntimeException ignored) {}
-            audioCallbacksRegistered = false;
+        if (audio != null) {
+            if (deviceCallbackRegistered) {
+                try { audio.unregisterAudioDeviceCallback(deviceCallback); } catch (RuntimeException ignored) {}
+                deviceCallbackRegistered = false;
+            }
+            if (playbackCallbackRegistered) {
+                try { audio.unregisterAudioPlaybackCallback(playbackCallback); } catch (RuntimeException ignored) {}
+                playbackCallbackRegistered = false;
+            }
+            if (modeListenerRegistered) {
+                try { audio.removeOnModeChangedListener(modeListener); } catch (RuntimeException ignored) {}
+                modeListenerRegistered = false;
+            }
+            if (commDeviceListenerRegistered) {
+                try { audio.removeOnCommunicationDeviceChangedListener(commDeviceListener); } catch (RuntimeException ignored) {}
+                commDeviceListenerRegistered = false;
+            }
         }
         if (receiverRegistered) {
             try { context.unregisterReceiver(bluetoothReceiver); } catch (IllegalArgumentException ignored) {}

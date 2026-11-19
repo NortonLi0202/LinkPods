@@ -15,6 +15,16 @@ public final class ConnectionPolicy {
     private boolean fallbackUsed,directWorked,bridge,sessionReady;
     public synchronized long generation(){return generation;}
     public synchronized boolean fallbackUsed(){return fallbackUsed;}
+    public synchronized boolean isStopped(){return phase==Phase.STOPPED;}
+    public synchronized boolean isReconnecting(){return phase==Phase.RECONNECTING;}
+    public synchronized boolean isActive(){
+        return phase==Phase.DIRECT_CONNECTING || phase==Phase.DIRECT_READY
+            || phase==Phase.BRIDGE_PREPARING || phase==Phase.BRIDGE_CONNECTING
+            || phase==Phase.BRIDGE_READY || phase==Phase.RECONNECTING;
+    }
+    public synchronized boolean canRetry(long expected,String address){
+        return accepts(expected,address) && phase==Phase.RECONNECTING;
+    }
     public synchronized Snapshot snapshot(String address){
         return address!=null && address.equalsIgnoreCase(target)
             ? new Snapshot(target,phase,description) : new Snapshot(address,Phase.IDLE,"此设备没有活动控制会话");
@@ -86,5 +96,12 @@ public final class ConnectionPolicy {
         }
     }
     private void fail(String reason){phase=Phase.FAILED;description=reason+"；交接未验证";}
-    public synchronized void stop(){++generation;phase=Phase.STOPPED;description="控制服务已停止";}
+    public synchronized void stop(){
+        ++generation;
+        sessionReady=false;
+        directWorked=false;
+        bridge=false;
+        phase=Phase.STOPPED;
+        description="控制服务已停止";
+    }
 }

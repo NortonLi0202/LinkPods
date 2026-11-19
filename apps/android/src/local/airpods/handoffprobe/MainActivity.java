@@ -85,6 +85,7 @@ public class MainActivity extends Activity {
                 catch (IllegalArgumentException ignored) {}
             }
         }
+        syncWithRunningService(restoredTarget == null);
         picker = new Spinner(this);
         ui = new LinkPodsUi(this, picker, new LinkPodsUi.Actions() {
             @Override public void openBluetooth() { startActivity(new Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)); }
@@ -122,7 +123,6 @@ public class MainActivity extends Activity {
         }, state == null ? null : state.getString("ui_page"));
         status=ui.environmentStatus; output=ui.logOutput;
         localAudioMonitor = new SamsungAudioMonitor(this, handler, audioMonitorListener);
-        localAudioMonitor.start();
         if(Build.VERSION.SDK_INT>=33) {
             backCallback=()->{if(ui==null || !ui.back())finish();};
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,backCallback);
@@ -130,7 +130,7 @@ public class MainActivity extends Activity {
         picker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent,View view,int position,long id) {
                 BluetoothDevice currentTarget = hasPermission() ? selected() : null;
-                if (localAudioMonitor != null) {
+                if (localAudioMonitor != null && localAudioMonitor.isStarted()) {
                     localAudioMonitor.setTargetAddress(currentTarget == null ? "" : currentTarget.getAddress());
                 }
                 refreshStatus(); refreshControls();
@@ -138,7 +138,7 @@ public class MainActivity extends Activity {
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { refreshControls(); }
         });
         log("系统：" + Build.MODEL + " / Android " + Build.VERSION.RELEASE + " / targetSdk=" + getApplicationInfo().targetSdkVersion);
-        initialize(); refreshControls();
+        initialize(); syncLocalAudioMonitor(); refreshControls();
     }
 
     private String selectedName() {
@@ -147,8 +147,34 @@ public class MainActivity extends Activity {
         try { String name=target.getName();return name==null || name.trim().isEmpty()?"AirPods":name; }
         catch(SecurityException ignored){return "AirPods";}
     }
+    private void syncWithRunningService(boolean adoptServiceTarget) {
+        if (!HandoffService.isRunning()) {
+            return;
+        }
+        SessionMode activeMode = HandoffService.currentMode();
+        if (activeMode != null) {
+            requestedMode = activeMode;
+        }
+        String activeTarget = HandoffService.activeTarget();
+        if (adoptServiceTarget && !activeTarget.isEmpty()) {
+            restoredTarget = activeTarget;
+        }
+    }
+    private void syncLocalAudioMonitor() {
+        if (localAudioMonitor == null) return;
+        if (destroyed || HandoffService.isRunning()) {
+            localAudioMonitor.stop();
+            return;
+        }
+        if (!localAudioMonitor.isStarted()) {
+            localAudioMonitor.start();
+        }
+        localAudioMonitor.refreshPermission();
+        BluetoothDevice target = hasPermission() ? selected() : null;
+        localAudioMonitor.setTargetAddress(target == null ? "" : target.getAddress());
+    }
     private SamsungAudioSnapshot currentAudioSnapshot(String address) {
-        if (HandoffService.current != null) {
+        if (HandoffService.isRunning()) {
             return HandoffService.audioSnapshot(address);
         }
         if (localAudioMonitor != null) {
@@ -172,11 +198,22 @@ public class MainActivity extends Activity {
         ui.bindAudio(currentAudioSnapshot(address));
         ui.bindCapabilities(HandoffService.capabilities(address),mediaAccessGranted());
     }
+    @Override protected void onStart() {
+        super.onStart();
+        syncWithRunningService(false);
+        syncLocalAudioMonitor();
+        refreshStatus();
+        refreshControls();
+    }
     @Override protected void onResume() {
         super.onResume();visible=true;handler.removeCallbacks(controlPoll);handler.post(controlPoll);
     }
     @Override protected void onPause() {
         visible=false;handler.removeCallbacks(controlPoll);super.onPause();
+    }
+    @Override protected void onStop() {
+        if (localAudioMonitor != null) localAudioMonitor.stop();
+        super.onStop();
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         if(ui!=null)state.putString("ui_page",ui.page());
@@ -214,7 +251,8 @@ public class MainActivity extends Activity {
             int chosen = 0;
             for (BluetoothDevice device : adapter.getBondedDevices()) {
                 String name = device.getName() == null ? "未命名设备" : device.getName();
-                if ((previous == null && name.toLowerCase(Locale.ROOT).contains("airpod")) || device.getAddress().equals(previous)) chosen = devices.size();
+                if ((previous == null && name.toLowerCase(Locale.ROOT).contains("airpod"))
+                        || (previous != null && device.getAddress().equalsIgnoreCase(previous))) chosen = devices.size();
                 devices.add(device);
                 labels.add(name);
             }
@@ -222,11 +260,7 @@ public class MainActivity extends Activity {
             list.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
             picker.setAdapter(list);
             if (!devices.isEmpty()) picker.setSelection(chosen);
-            if (localAudioMonitor != null) {
-                localAudioMonitor.refreshPermission();
-                BluetoothDevice initial = selected();
-                localAudioMonitor.setTargetAddress(initial == null ? "" : initial.getAddress());
-            }
+            syncLocalAudioMonitor();
             log("已读取配对设备；请核对下拉列表中的 AirPods。");
             refreshStatus();
         } catch (Exception error) { failure("初始化", error); }
@@ -273,7 +307,7 @@ public class MainActivity extends Activity {
         startServicePrepared(SessionMode.AUTO_HANDOFF);
     }
     private void disableHandoff() {
-        if (HandoffService.current == null) {
+        if (!HandoffService.isRunning()) {
             log("控制服务未运行。");
             return;
         }
@@ -286,8 +320,11 @@ public class MainActivity extends Activity {
     }
     private void stopSession() {
         cancelEnvironment(); nativeBackendReady=false;
+        requestedMode = SessionMode.CONTROL_ONLY;
         stopService(new Intent(MainActivity.this,HandoffService.class));
         log("已请求停止会话；仅清理本次应用实际启动的桥接。");
+        syncLocalAudioMonitor();
+        refreshStatus();
         refreshControls();
     }
     private void confirmTemporaryRoot(final SessionMode launchMode) {
@@ -420,8 +457,12 @@ public class MainActivity extends Activity {
         try {startForegroundService(service);}
         catch(RuntimeException error) {
             if(prepared!=null)HandoffService.discardPreparedBridge(prepared);
+            if (Build.VERSION.SDK_INT >= 31 && error instanceof android.app.ForegroundServiceStartNotAllowedException) {
+                log("系统限制当前状态下启动前台服务，请在前台界面重新连接。");
+            }
             failure("启动控制会话",error);return;
         }
+        syncLocalAudioMonitor();
         log(mode == SessionMode.AUTO_HANDOFF ? "自动交接服务已启动；请按实际出声验证。" : "耳机控制服务已启动（CONTROL_ONLY）；不触发音频路由。");
     }
 

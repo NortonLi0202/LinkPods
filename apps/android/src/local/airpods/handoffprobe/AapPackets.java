@@ -26,4 +26,11 @@ final class AapPackets {
         while(header(packet,offset+4))offset+=4;
         return offset==0?packet:Arrays.copyOfRange(packet,offset,packet.length);
     }
+    static boolean isEarbudStateReport(byte[] normalized) {
+        return normalized != null && normalized.length >= 6 && header(normalized, 0) && normalized[5] == 0
+                && (normalized[4] == 4 || normalized[4] == 9 || normalized[4] == 0x1d);
+    }
+    static boolean isInformationReport(byte[] normalized) {
+        return normalized != null && normalized.length >= 5 && normalized[4] == 0x1d;
+    }
 }
