@@ -295,10 +295,7 @@ public final class HandoffService extends Service {
         if (previousMode != requestedMode) {
             log("SESSION_MODE changed: " + previousMode + " -> " + requestedMode);
             updateForegroundNotification();
-            if (requestedMode == SessionMode.AUTO_HANDOFF) {
-                watch().start();
-                announcePeers();
-            } else {
+            if (requestedMode != SessionMode.AUTO_HANDOFF) {
                 if (playbackWatch != null) playbackWatch.stop();
                 policy.reset();
                 peerPolicy.reset();
@@ -306,7 +303,9 @@ public final class HandoffService extends Service {
                 lastMediaState = null;
                 owns = null;
             }
-        } else if (requestedMode == SessionMode.AUTO_HANDOFF && !watch().isWatching()) {
+        }
+        if (requestedMode == SessionMode.AUTO_HANDOFF
+                && (previousMode != requestedMode || !watch().isWatching())) {
             watch().start();
             announcePeers();
         }

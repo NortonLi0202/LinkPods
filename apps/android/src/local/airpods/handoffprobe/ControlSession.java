@@ -148,9 +148,9 @@ final class ControlSession {
                 earbudState.queueRequest(address, id, value, clock.getAsLong());
         if (write == null) return false;
         boolean queued = handler.post(() -> {
-            if (stopped || generation != sessionGeneration || active != probe) return;
+            if (!isCurrentSession(generation, active)) return;
             active.sendPacketAsync(write.packet, sent -> handler.post(() -> {
-                if (stopped || generation != sessionGeneration || active != probe) return;
+                if (!isCurrentSession(generation, active)) return;
                 if (!sent) earbudState.failed(id, write.token);
                 else {
                     earbudState.sent(id, write.token);
@@ -171,7 +171,7 @@ final class ControlSession {
         final AapProbe active = probe;
         if (active == null) return false;
         return handler.post(() -> {
-            if (!stopped && generation == sessionGeneration && active == probe) {
+            if (isCurrentSession(generation, active)) {
                 active.requestState();
             }
         });
@@ -184,25 +184,27 @@ final class ControlSession {
         if (active == null) return false;
         active.sendPacketAsync(
                 packet,
-                () -> !stopped && generation == sessionGeneration && active == probe && allowed.getAsBoolean(),
+                () -> isCurrentSession(generation, active) && allowed.getAsBoolean(),
                 sent -> handler.post(() -> {
-                    if (!stopped && generation == sessionGeneration && active == probe && allowed.getAsBoolean()) {
+                    if (isCurrentSession(generation, active) && allowed.getAsBoolean()) {
                         done.accept(sent);
                     }
                 }));
         return true;
     }
 
+    private boolean isCurrentSession(long generation, AapProbe active) {
+        return !stopped && generation == sessionGeneration && active == probe;
+    }
+
     private void handlePacket(String address, byte[] data) {
         boolean accepted = earbudState.receive(data);
         byte[] statePacket = AapPackets.normalize(data);
-        if (statePacket.length >= 6 && statePacket[0] == 4 && statePacket[1] == 0
-                && statePacket[2] == 4 && statePacket[3] == 0 && statePacket[5] == 0
-                && (statePacket[4] == 4 || statePacket[4] == 9 || statePacket[4] == 0x1d)) {
+        if (AapPackets.isEarbudStateReport(statePacket)) {
             logger.write("EARBUD_STATE opcode=" + (statePacket[4] & 255)
                     + " len=" + statePacket.length + " accepted=" + accepted);
         }
-        if (accepted && statePacket[4] == 0x1d) {
+        if (accepted && AapPackets.isInformationReport(statePacket)) {
             EarbudSnapshot identity = earbudState.snapshot(address, clock.getAsLong());
             logger.write("EARBUD_MODEL " + identity.modelNumber + " known=" + identity.modelKnown());
         }

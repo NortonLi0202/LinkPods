@@ -33,15 +33,24 @@ final class PlaybackWatch {
 
     private static final String TELECOM_PACKAGE = "com.android.server.telecom";
 
+    private static final class TrackedPlayer {
+        final MediaController controller;
+        final MediaController.Callback callback;
+        boolean awaitingBaselineFence;
+        long baselineUpdateTime;
+
+        TrackedPlayer(MediaController controller, MediaController.Callback callback) {
+            this.controller = controller;
+            this.callback = callback;
+        }
+    }
+
     private final Context context;
     private final Handler handler;
     private final ComponentName listenerComponent;
     private final Logger logger;
     private final Listener listener;
-    private final Map<MediaSession.Token, MediaController> players = new HashMap<>();
-    private final Map<MediaSession.Token, MediaController.Callback> playerCallbacks = new HashMap<>();
-    private final Set<MediaSession.Token> awaitingBaselineFence = new HashSet<>();
-    private final Map<MediaSession.Token, Long> baselineUpdateTimes = new HashMap<>();
+    private final Map<MediaSession.Token, TrackedPlayer> players = new HashMap<>();
     private MediaSessionManager mediaSessions;
     private MediaSessionManager.OnActiveSessionsChangedListener activeSessionsListener;
     private boolean watching;
@@ -129,7 +138,8 @@ final class PlaybackWatch {
     }
 
     void pauseActive() {
-        for (MediaController player : new ArrayList<>(players.values())) {
+        for (TrackedPlayer tracked : new ArrayList<>(players.values())) {
+            MediaController player = tracked.controller;
             PlaybackState state = player.getPlaybackState();
             if (state != null && (state.getState() == PlaybackState.STATE_PLAYING
                     || state.getState() == PlaybackState.STATE_BUFFERING
@@ -141,8 +151,7 @@ final class PlaybackWatch {
     }
 
     private boolean hasRegistrationState() {
-        return watching || activeSessionsListener != null
-                || !players.isEmpty() || !playerCallbacks.isEmpty();
+        return watching || activeSessionsListener != null || !players.isEmpty();
     }
 
     private boolean startInternal(boolean restarted) {
@@ -195,8 +204,6 @@ final class PlaybackWatch {
         for (MediaSession.Token token : new HashSet<>(players.keySet())) {
             unregisterPlayer(token);
         }
-        awaitingBaselineFence.clear();
-        baselineUpdateTimes.clear();
         watching = false;
         return wasWatching;
     }
@@ -212,13 +219,13 @@ final class PlaybackWatch {
             MediaSession.Token token = controller.getSessionToken();
             if (token == null || players.containsKey(token)) continue;
             // Register callback before reading the baseline so a PAUSED->PLAYING transition cannot slip past Android 12L registration.
-            registerPlayer(batch, token, controller);
+            TrackedPlayer tracked = registerPlayer(batch, token, controller);
             PlaybackState baselineState = controller.getPlaybackState();
             int baseline = playbackStateValue(baselineState);
             seeded.put(token.toString(), baseline);
             seededBaselines.put(token, baseline);
-            awaitingBaselineFence.add(token);
-            baselineUpdateTimes.put(token, baselineState == null ? 0L : baselineState.getLastPositionUpdateTime());
+            tracked.awaitingBaselineFence = true;
+            tracked.baselineUpdateTime = baselineState == null ? 0L : baselineState.getLastPositionUpdateTime();
         }
     }
 
@@ -227,13 +234,12 @@ final class PlaybackWatch {
         for (Map.Entry<MediaSession.Token, Integer> entry : seededBaselines.entrySet()) {
             if (!isCurrentBatch(batch)) return;
             MediaSession.Token token = entry.getKey();
-            baselineUpdateTimes.remove(token);
-            if (!awaitingBaselineFence.remove(token)) continue;
-            MediaController controller = players.get(token);
-            if (controller == null) continue;
-            int current = playbackStateValue(controller.getPlaybackState());
+            TrackedPlayer tracked = players.get(token);
+            if (tracked == null || !tracked.awaitingBaselineFence) continue;
+            tracked.awaitingBaselineFence = false;
+            int current = playbackStateValue(tracked.controller.getPlaybackState());
             if (current != entry.getValue()) {
-                listener.onPlayerStateChanged(token.toString(), safePackageName(controller), current);
+                listener.onPlayerStateChanged(token.toString(), safePackageName(tracked.controller), current);
             }
         }
     }
@@ -267,7 +273,8 @@ final class PlaybackWatch {
         for (MediaController controller : added) {
             if (!isCurrentBatch(batch)) return;
             MediaSession.Token token = controller.getSessionToken();
-            if (token == null || players.get(token) != controller) continue;
+            TrackedPlayer tracked = token == null ? null : players.get(token);
+            if (tracked == null || tracked.controller != controller) continue;
             listener.onPlayerStateChanged(
                     token.toString(),
                     safePackageName(controller),
@@ -292,15 +299,14 @@ final class PlaybackWatch {
     private void onPlaybackStateChanged(long batch, MediaController controller, PlaybackState state) {
         if (!isCurrentBatch(batch)) return;
         MediaSession.Token token = controller.getSessionToken();
-        if (token == null || players.get(token) != controller) return;
-        if (awaitingBaselineFence.contains(token)) {
-            long baselineTime = baselineUpdateTimes.getOrDefault(token, 0L);
+        TrackedPlayer tracked = token == null ? null : players.get(token);
+        if (tracked == null || tracked.controller != controller) return;
+        if (tracked.awaitingBaselineFence) {
             long eventTime = state == null ? 0L : state.getLastPositionUpdateTime();
-            if (state == null || eventTime <= baselineTime) {
+            if (state == null || eventTime <= tracked.baselineUpdateTime) {
                 return;
             }
-            awaitingBaselineFence.remove(token);
-            baselineUpdateTimes.remove(token);
+            tracked.awaitingBaselineFence = false;
         }
         int value = playbackStateValue(state);
         if (value == PlaybackState.STATE_PLAYING
@@ -321,27 +327,25 @@ final class PlaybackWatch {
         return controller != null && !TELECOM_PACKAGE.equals(controller.getPackageName());
     }
 
-    private void registerPlayer(
+    private TrackedPlayer registerPlayer(
             final long batch,
             final MediaSession.Token token,
             final MediaController controller) {
-        players.put(token, controller);
         MediaController.Callback callback = new MediaController.Callback() {
             @Override public void onPlaybackStateChanged(PlaybackState state) {
                 PlaybackWatch.this.onPlaybackStateChanged(batch, controller, state);
             }
         };
-        playerCallbacks.put(token, callback);
+        TrackedPlayer tracked = new TrackedPlayer(controller, callback);
+        players.put(token, tracked);
         controller.registerCallback(callback, handler);
+        return tracked;
     }
 
     private void unregisterPlayer(MediaSession.Token token) {
-        awaitingBaselineFence.remove(token);
-        baselineUpdateTimes.remove(token);
-        MediaController controller = players.remove(token);
-        MediaController.Callback callback = playerCallbacks.remove(token);
-        if (controller != null && callback != null) {
-            try { controller.unregisterCallback(callback); }
+        TrackedPlayer tracked = players.remove(token);
+        if (tracked != null) {
+            try { tracked.controller.unregisterCallback(tracked.callback); }
             catch (RuntimeException ignored) {}
         }
     }
