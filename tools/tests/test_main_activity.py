@@ -216,7 +216,7 @@ public interface BluetoothProfile {
     'android/bluetooth/BluetoothA2dp.java': 'package android.bluetooth; public class BluetoothA2dp {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED";}',
     'android/bluetooth/BluetoothHeadset.java': 'package android.bluetooth; public class BluetoothHeadset {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED",ACTION_AUDIO_STATE_CHANGED="android.bluetooth.headset.profile.action.AUDIO_STATE_CHANGED";}',
     'android/media/session/MediaSession.java': 'package android.media.session; public class MediaSession {public static class Token {}}',
-    'android/media/session/PlaybackState.java': 'package android.media.session; public class PlaybackState {public static final int STATE_PLAYING=3,STATE_BUFFERING=6,STATE_CONNECTING=8;private final int s;public PlaybackState(int s){this.s=s;}public int getState(){return s;}}',
+    'android/media/session/PlaybackState.java': 'package android.media.session; public class PlaybackState {public static final int STATE_PLAYING=3,STATE_BUFFERING=6,STATE_CONNECTING=8;private final int s;public PlaybackState(int s){this.s=s;}public int getState(){return s;}public long getLastPositionUpdateTime(){return 0L;}}',
     'android/media/session/MediaController.java': 'package android.media.session; public class MediaController {public String getPackageName(){return "p";}public MediaSession.Token getSessionToken(){return new MediaSession.Token();}public PlaybackState getPlaybackState(){return new PlaybackState(0);}public void registerCallback(Callback c,android.os.Handler h){}public void unregisterCallback(Callback c){}public TransportControls getTransportControls(){return new TransportControls();}public static class Callback{public void onPlaybackStateChanged(PlaybackState s){}}public static class TransportControls{public void pause(){}}}',
     'android/media/session/MediaSessionManager.java': 'package android.media.session; import java.util.*; public class MediaSessionManager {public List<MediaController> getActiveSessions(android.content.ComponentName c){return Collections.emptyList();}public void addOnActiveSessionsChangedListener(OnActiveSessionsChangedListener l,android.content.ComponentName c,android.os.Handler h){}public void removeOnActiveSessionsChangedListener(OnActiveSessionsChangedListener l){}public interface OnActiveSessionsChangedListener{void onActiveSessionsChanged(List<MediaController> l);}}',
     'android/media/AudioManager.java': '''package android.media;
@@ -441,7 +441,7 @@ class MainActivityBridgeTests(unittest.TestCase):
                 target.write_text(content, encoding='utf-8')
                 files.append(str(target))
             package = ROOT / 'apps/android/src' / PACKAGE
-            names = ('MainActivity', 'HandoffService', 'PlaybackListener', 'SessionMode',
+            names = ('MainActivity', 'HandoffService', 'PlaybackListener', 'PlaybackWatch', 'ControlSession', 'SessionMode',
                      'SessionStatus', 'SamsungAudioMonitor', 'SamsungAudioSnapshot',
                      'SamsungAudioPolicy', 'RoutingPolicy', 'AudioLinkPolicy',
                      'PeerRoutingPolicy', 'DeviceConfig', 'ConnectionPolicy', 'RequestGate',
