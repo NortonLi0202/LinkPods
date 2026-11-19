@@ -431,8 +431,57 @@ public class PlaybackWatchTest {
   expect(events.sessionsSynced==syncedBeforeTelecom+1,"telecom-only session list triggers onSessionsSynced");
  }
 
+ static void baselineFenceReconcilesAndIgnoresStoppedBatch(){
+  Context ctx=new Context();
+  MediaSessionManager manager=new MediaSessionManager();
+  ctx.services.put(MediaSessionManager.class,manager);
+  Handler handler=new Handler(Looper.getMainLooper());
+  handler.queuePosted=true;
+  RecordingListener events=new RecordingListener();
+  MediaController player=new MediaController("music.app",PlaybackState.STATE_PAUSED,100L);
+  manager.active.add(player);
+  PlaybackWatch watch=new PlaybackWatch(ctx,handler,new ComponentName(ctx,PlaybackWatchTest.class),m->{},events);
+  expect(watch.start(),"watch starts");
+  expect(!watch.start()&&manager.added==1&&player.registered==1,"duplicate start never duplicates registration");
+  player.setPlaybackState(PlaybackState.STATE_PLAYING,101L);
+  handler.flushPosted();
+  expect(events.stateChanges.size()==1&&events.stateChanges.get(0).endsWith(":"+PlaybackState.STATE_PLAYING),
+   "baseline fence reconciles transition without a delivered callback");
+  expect(watch.restart(),"restart queues a fresh fence");
+  watch.stop();
+  player.setPlaybackState(PlaybackState.STATE_PAUSED,102L);
+  handler.flushPosted();
+  expect(events.stateChanges.size()==1,"queued baseline fence after stop cannot emit state changes");
+  expect(player.callbacks.isEmpty()&&manager.listeners.isEmpty(),"stop releases all registrations");
+ }
+
+ static void runtimeAccessFailureAndRecovery(){
+  Context ctx=new Context();
+  MediaSessionManager manager=new MediaSessionManager();
+  ctx.services.put(MediaSessionManager.class,manager);
+  MediaController connecting=new MediaController("connecting.app",PlaybackState.STATE_CONNECTING);
+  manager.active.add(connecting);
+  RecordingListener events=new RecordingListener();
+  PlaybackWatch watch=new PlaybackWatch(ctx,new Handler(Looper.getMainLooper()),
+   new ComponentName(ctx,PlaybackWatchTest.class),m->{},events);
+  expect(watch.start(),"start succeeds without notification manager service");
+  watch.pauseActive();
+  expect(connecting.paused==1,"connecting playback is paused on yield");
+  manager.rejectGetActiveSessions=true;
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(connecting));
+  expect(!watch.isWatching()&&events.stopped.equals(Arrays.asList(true)),"runtime SecurityException reports access lost once");
+  expect(connecting.callbacks.isEmpty()&&manager.listeners.isEmpty(),"runtime denial releases listeners");
+  watch.pauseActive();
+  expect(connecting.paused==1,"removed players cannot be paused after access loss");
+  manager.rejectGetActiveSessions=false;
+  expect(watch.start(),"registration can recover after runtime access denial");
+  expect(!events.seededRestartFlags.get(1),"access-loss recovery seeds a new watch");
+ }
+
  public static void main(String[] args){
   switch(args[0]){
+   case "baseline-reconcile":baselineFenceReconcilesAndIgnoresStoppedBatch();break;
+   case "runtime-denial":runtimeAccessFailureAndRecovery();break;
    case "failed-start":failedStartRollsBackAndRetries();break;
    case "stale-callbacks":staleCallbacksIsolatedAcrossBatchesAndRemoval();break;
    case "access-and-pause":accessLostAndPauseActive();break;
@@ -445,6 +494,12 @@ public class PlaybackWatchTest {
 
 
 class PlaybackWatchTests(unittest.TestCase):
+    def test_baseline_fence_reconciles_and_ignores_stopped_batch(self):
+        self.run_scenario('baseline-reconcile')
+
+    def test_runtime_access_failure_and_recovery(self):
+        self.run_scenario('runtime-denial')
+
     def test_failed_start_rolls_back_and_retries(self):
         self.run_scenario('failed-start')
 

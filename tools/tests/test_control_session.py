@@ -21,8 +21,18 @@ public class BluetoothDevice {
         'package android.os; public class SystemClock {public static long elapsedRealtime(){return 0;}}',
     'android/os/Handler.java': '''package android.os;
 public class Handler {
+ public boolean rejectPosts,queuePosts;
+ public final java.util.List<Runnable> posted=new java.util.ArrayList<>();
  public Handler(Looper l){}
- public boolean post(Runnable r){r.run();return true;}
+ public boolean post(Runnable r){
+  if(rejectPosts)return false;
+  if(queuePosts)posted.add(r);else r.run();
+  return true;
+ }
+ public void flush(){
+  java.util.List<Runnable> pending=new java.util.ArrayList<>(posted);
+  posted.clear();for(Runnable r:pending)r.run();
+ }
 }''',
     PACKAGE + 'AapProbe.java': '''package local.airpods.handoffprobe;
 import java.util.*;
@@ -219,8 +229,75 @@ public class ControlSessionTest {
   expect(probe.packets.isEmpty()&&results.isEmpty(),"reset fences queued packet write and callback");
  }
 
+ static void connectionFailureAndRetry(){
+  List<AapProbe> probes=new ArrayList<>();
+  RecordingListener events=new RecordingListener();
+  ControlSession session=new ControlSession(new Handler(Looper.getMainLooper()),()->0L,
+   (dev,log,l)->{AapProbe p=new AapProbe(dev,log,l);probes.add(p);return p;},m->{},events);
+  session.connect(null,TARGET_A,1L);
+  session.connect(new BluetoothDevice(TARGET_A),null,1L);
+  session.connect(new BluetoothDevice(TARGET_A),"",1L);
+  expect(probes.isEmpty(),"invalid connection arguments never create a probe");
+  session.connect(new BluetoothDevice(TARGET_A),TARGET_A,7L);
+  session.connect(new BluetoothDevice(TARGET_A),TARGET_A,8L);
+  expect(probes.size()==1&&probes.get(0).started==1,"connecting twice starts exactly one probe");
+  expect(!session.refreshState(TARGET_A),"connecting session cannot refresh before ready");
+  AapProbe first=probes.get(0);
+  first.listener.failure(AapProbe.Failure.COMPATIBILITY_REQUIRED);
+  first.listener.ended();
+  expect(events.events.equals(Arrays.asList("ended:7:"+TARGET_A+":true")),
+   "end reports original connection generation and compatibility failure");
+  expect(!session.isReady()&&!session.isConnectingOrConnected(),"failure releases connection slot");
+  session.connect(new BluetoothDevice(TARGET_B),TARGET_B,9L);
+  AapProbe second=probes.get(1);
+  second.listener.ready();
+  expect(session.snapshot(TARGET_B).ready&&!session.snapshot(TARGET_A).ready,"new target owns fresh state");
+  expect(!session.refreshState(TARGET_A)&&session.refreshState(TARGET_B),"refresh is target scoped");
+  expect(second.stateRequests==1,"only valid refresh reaches probe");
+  second.listener.failure(AapProbe.Failure.OTHER);
+  second.listener.ended();
+  expect(events.events.get(2).equals("ended:9:"+TARGET_B+":false"),"compatibility failure is not inherited by retry");
+  second.listener.ended();
+  expect(events.events.size()==3,"duplicate ended callback is ignored");
+  session.stop();
+  session.connect(new BluetoothDevice(TARGET_A),TARGET_A,10L);
+  expect(probes.size()==2,"stop permanently prevents reconnect");
+ }
+
+ static void queuedCallbacksAndRejectedPosts(){
+  Handler handler=new Handler(Looper.getMainLooper());
+  List<AapProbe> probes=new ArrayList<>();
+  RecordingListener events=new RecordingListener();
+  ControlSession session=new ControlSession(handler,()->0L,
+   (dev,log,l)->{AapProbe p=new AapProbe(dev,log,l);probes.add(p);return p;},m->{},events);
+  session.connect(new BluetoothDevice(TARGET_A),TARGET_A,1L);
+  AapProbe first=probes.get(0);
+  handler.queuePosts=true;
+  first.listener.ready();
+  first.listener.packet(scalarReport(EarbudCommands.EAR_DETECTION,1));
+  first.listener.ended();
+  session.reset();
+  session.connect(new BluetoothDevice(TARGET_A),TARGET_A,2L);
+  handler.flush();
+  expect(events.events.isEmpty()&&events.packets.isEmpty(),"callbacks queued before reset are fenced at execution");
+  expect(session.isConnectingOrConnected()&&!session.isReady(),"queued old end cannot clear replacement probe");
+  handler.queuePosts=false;
+  AapProbe second=probes.get(1);
+  second.listener.ready();
+  second.listener.packet(scalarReport(EarbudCommands.CONVERSATION_AWARENESS,2));
+  handler.rejectPosts=true;
+  expect(!session.setSetting(TARGET_A,EarbudCommands.CONVERSATION_AWARENESS,1),"rejected handler post reports failure");
+  expect(session.snapshot(TARGET_A).pending.isEmpty(),"rejected post rolls back pending setting");
+  expect(second.packets.isEmpty(),"rejected post never writes to socket");
+  handler.rejectPosts=false;
+  expect(session.setSetting(TARGET_A,EarbudCommands.CONVERSATION_AWARENESS,1),"failed post can be retried immediately");
+  expect(second.packets.size()==1&&second.stateRequests==1,"retry writes and requests confirmation");
+ }
+
  public static void main(String[] args){
   switch(args[0]){
+   case "connection-failure":connectionFailureAndRetry();break;
+   case "queued-callbacks":queuedCallbacksAndRejectedPosts();break;
    case "timeout-retry":timeoutRetryIgnoresStaleFailure();break;
    case "reset-fence":resetAndDisconnectFenceStaleCallbacks();break;
    case "send-guards":sendPacketRespectsSessionAndCallerGuards();break;
@@ -233,6 +310,12 @@ public class ControlSessionTest {
 
 
 class ControlSessionTests(unittest.TestCase):
+    def test_connection_failure_and_target_scoped_retry(self):
+        self.run_scenario('connection-failure')
+
+    def test_queued_callbacks_and_rejected_posts(self):
+        self.run_scenario('queued-callbacks')
+
     def test_timeout_retry_ignores_stale_failure(self):
         self.run_scenario('timeout-retry')
 
