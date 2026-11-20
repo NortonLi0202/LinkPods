@@ -1,20 +1,24 @@
 package local.airpods.handoffprobe;
 import java.util.Map;
 
-/** Route setup chatter is not playback; a real media rising edge can reclaim. */
+/** Route setup chatter is not playback; a real media or call rising edge can reclaim. */
 final class PeerRoutingPolicy {
     private Boolean playing;
-    void reset() { playing = null; }
+    private boolean callActive;
+    void reset() { playing = null; callActive = false; }
     boolean receive(Map<String,Object> fields, boolean localActive) {
         Object state=fields.get("hostStreamingState"), score=fields.get("otherDeviceAudioCategory");
         if (state instanceof String && score instanceof Number) {
             boolean active="YES".equals(state);
             long category=((Number)score).longValue();
-            if (!active) { playing=false; return false; }
+            if (!active) { playing=false; callActive=false; return false; }
             if (category<=100) return false;
-            boolean rising=Boolean.FALSE.equals(playing);
-            playing=true;
-            return localActive && (category>=501 || rising);
+            boolean isCall = category >= 501;
+            boolean rising = Boolean.FALSE.equals(playing);
+            boolean callRising = Boolean.TRUE.equals(playing) && isCall && !callActive;
+            playing = true;
+            callActive = isCall;
+            return localActive && (rising || callRising);
         }
         if (Boolean.TRUE.equals(fields.get("audioRoutingSetOwnershipToFalse"))) {
             Object reason=fields.get("reason");

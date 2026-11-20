@@ -48,6 +48,14 @@ public final class RoutingTest {
         expect(!queued.consumeTake(true,true), "pending takeover completes only once");
         queued.onPlayback("music",2); queued.onPlayback("music",3); queued.remove("music");
         expect(!queued.consumeTake(true,true), "removed session cancels stale takeover");
+        RoutingPolicy gated = new RoutingPolicy();
+        gated.onPlayback("music", 3);
+        expect(gated.evaluateTake(false, true, false) == RoutingPolicy.TakeDecision.WAIT, "unready channel waits without dropping pending take");
+        expect(gated.evaluateTake(true, true, false) == RoutingPolicy.TakeDecision.SKIP, "unconfirmed target output skips takeover");
+        expect(gated.evaluateTake(true, true, true) == RoutingPolicy.TakeDecision.WAIT, "skipped playback does not trigger a delayed takeover later");
+        gated.onPlayback("music", 2);
+        gated.onPlayback("music", 3);
+        expect(gated.evaluateTake(true, true, true) == RoutingPolicy.TakeDecision.TAKE, "confirmed target output on new play triggers takeover");
         RoutingPolicy resetPolicy = new RoutingPolicy();
         resetPolicy.onPlayback("music", 3);
         expect(resetPolicy.hasPlayback(), "playback active before reset");

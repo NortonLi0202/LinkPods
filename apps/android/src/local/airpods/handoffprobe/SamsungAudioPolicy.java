@@ -319,4 +319,12 @@ public final class SamsungAudioPolicy {
         }
         return "输出设备：" + available + " · 路由：" + routeLabel(snapshot.routeState);
     }
+
+    /** Returns true only when system routing explicitly points to the target AirPods. */
+    public static boolean isTargetOutputConfirmed(SamsungAudioSnapshot snapshot) {
+        return snapshot != null
+                && snapshot.permissionGranted
+                && !snapshot.targetAddress.isEmpty()
+                && snapshot.routeState == SamsungAudioSnapshot.RouteState.ROUTE_OBSERVED;
+    }
 }

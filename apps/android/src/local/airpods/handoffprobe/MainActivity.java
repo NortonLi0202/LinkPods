@@ -109,6 +109,31 @@ public class MainActivity extends Activity {
             @Override public void connectEarbuds() { startControlOnly(); }
             @Override public void enableHandoff() { startAutomatic(); }
             @Override public void disableHandoff() { MainActivity.this.disableHandoff(); }
+            @Override public void manualHandoff() {
+                String notice;
+                if (!hasPermission()) {
+                    notice = "缺少附近设备权限，请先授予附近设备权限。";
+                } else {
+                    BluetoothDevice target = selected();
+                    if (target == null) {
+                        notice = "未选择耳机，请先在设置中选择目标耳机。";
+                    } else if (!HandoffService.isRunning()) {
+                        notice = "控制服务未运行，请先连接当前耳机并启用自动交接。";
+                    } else if (!target.getAddress().equalsIgnoreCase(HandoffService.activeTarget())) {
+                        notice = "当前服务连接的是其他耳机，请重新连接当前选中的耳机。";
+                    } else if (HandoffService.currentMode() != SessionMode.AUTO_HANDOFF) {
+                        notice = "当前处于纯控制模式，请先启用自动交接。";
+                    } else if (HandoffService.manualHandoff(target.getAddress())) {
+                        notice = "已发起手动切换到此耳机，请按实际出声确认。";
+                    } else {
+                        notice = "控制通道尚未就绪，请稍候或重新连接。";
+                    }
+                }
+                log(notice);
+                android.widget.Toast.makeText(MainActivity.this, notice, android.widget.Toast.LENGTH_SHORT).show();
+                refreshStatus();
+                refreshControls();
+            }
             @Override public void stopConnection() { stopSession(); }
             @Override public void stopHandoff() { stopSession(); }
             @Override public void checkEnvironment() { prepareEnvironment(false); }
