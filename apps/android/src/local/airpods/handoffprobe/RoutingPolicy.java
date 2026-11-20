@@ -6,6 +6,7 @@ import java.util.Map;
 /** Playback-state edges distinguish a replay from route/configuration churn. */
 final class RoutingPolicy {
     enum Action { NONE, TAKE, RELEASE }
+    enum TakeDecision { WAIT, TAKE, SKIP }
     private final Map<String, Boolean> playing = new HashMap<>();
     private boolean pending;
     void seed(String player, int state) { playing.put(player, state == 3); }
@@ -27,9 +28,18 @@ final class RoutingPolicy {
         if (!hasPlayback()) pending = false;
     }
     boolean consumeTake(boolean ready, boolean hasPeer) {
-        if (!pending || !ready || !hasPeer || !hasPlayback()) return false;
+        return evaluateTake(ready, hasPeer, true) == TakeDecision.TAKE;
+    }
+
+    /**
+     * Evaluates a pending playback takeover once control session and peer are ready.
+     * Consumes the pending edge even when target output is not confirmed so speaker
+     * playback never triggers a delayed takeover later.
+     */
+    TakeDecision evaluateTake(boolean ready, boolean hasPeer, boolean targetOutputConfirmed) {
+        if (!pending || !ready || !hasPeer || !hasPlayback()) return TakeDecision.WAIT;
         pending = false;
-        return true;
+        return targetOutputConfirmed ? TakeDecision.TAKE : TakeDecision.SKIP;
     }
     Action onRemoteRequest() { pending = false; return Action.RELEASE; }
 }

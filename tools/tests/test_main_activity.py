@@ -262,7 +262,7 @@ import android.app.Activity;import android.widget.*;
 final class LinkPodsUi {
  interface Actions {
   void openBluetooth();void requestNearby();void openMediaAccess();void requestNotifications();
-  void refreshDevices();void connectEarbuds();void enableHandoff();void disableHandoff();
+  void refreshDevices();void connectEarbuds();void enableHandoff();void disableHandoff();void manualHandoff();
   void stopConnection();void stopHandoff();void checkEnvironment();void prepareBridge();
   boolean setSetting(int id,int value);String deviceName();String connectionStatus();
  }

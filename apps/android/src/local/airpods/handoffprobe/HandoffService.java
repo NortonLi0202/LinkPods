@@ -64,6 +64,9 @@ public final class HandoffService extends Service {
     private int sourceType;
     private Boolean lastMediaState;
     private Runnable pendingReconnect;
+    private long handoffAttemptGeneration;
+    private Runnable pendingHandoffCheck;
+    private volatile String handoffNotice = "";
     private final ControlSession.Listener controlEvents = new ControlSession.Listener() {
         @Override public void onReady(long connectionGeneration, String address) {
             if (stopped || current != HandoffService.this || deviceConfig == null || !address.equals(deviceConfig.target)) return;
@@ -189,10 +192,30 @@ public final class HandoffService extends Service {
         boolean watchActive = service.playbackWatch != null && service.playbackWatch.isActive();
         ConnectionPolicy.Snapshot conn = service.connection.snapshot(targetAddress);
         String ctrl = ready ? (service.nativeBackendReady ? "桥接控制通道已连接" : "直连控制通道已连接") : conn.description;
-        String handoff = mode == SessionMode.AUTO_HANDOFF
-            ? (watchActive ? "运行中（随播放交接）" : "已开启（等待媒体权限）")
-            : "关闭（纯控制模式）";
+        String handoff;
+        if (mode == SessionMode.AUTO_HANDOFF) {
+            if (!watchActive) {
+                handoff = "已开启（等待媒体权限）";
+            } else if (!service.handoffNotice.isEmpty()) {
+                handoff = service.handoffNotice;
+            } else {
+                handoff = "运行中（随播放交接）";
+            }
+        } else {
+            handoff = "关闭（纯控制模式）";
+        }
         return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff);
+    }
+
+    public static boolean manualHandoff(String targetAddress) {
+        HandoffService service = current;
+        if (service == null || service.stopped || service.deviceConfig == null) return false;
+        if (!service.deviceConfig.target.equalsIgnoreCase(targetAddress)) return false;
+        if (!service.mode.allowsRouting() || !service.controlSession.isReady()) return false;
+        service.cancelPendingHandoffCheck();
+        service.handoffNotice = "";
+        service.take("manual");
+        return true;
     }
 
     /** Accept a validated request on the existing session; only a real reply confirms it. */
@@ -210,6 +233,10 @@ public final class HandoffService extends Service {
         @Override public void onA2dpStateChanged(String address, int state) {
             if (stopped || target == null || !target.getAddress().equalsIgnoreCase(address)) return;
             log("A2DP_STATE " + state);
+            if (state == BluetoothProfile.STATE_CONNECTED && Boolean.TRUE.equals(owns)) {
+                cancelPendingHandoffCheck();
+                handoffNotice = "";
+            }
             if (mode.allowsRouting()) applyAudioLink(audioLink.update(state));
         }
         @Override public void onA2dpProxyReady(BluetoothProfile proxy) {
@@ -302,6 +329,8 @@ public final class HandoffService extends Service {
                 audioLink.reset();
                 lastMediaState = null;
                 owns = null;
+                cancelPendingHandoffCheck();
+                handoffNotice = "";
             }
         }
         if (requestedMode == SessionMode.AUTO_HANDOFF
@@ -371,8 +400,61 @@ public final class HandoffService extends Service {
     }
 
     private void finishPendingTake(String reason) {
-        if (!mode.allowsRouting() || !watch().isActive()) return;
-        if (policy.consumeTake(controlSession.isReady(),!peers.isEmpty())) take(reason);
+        if (!mode.allowsRouting() || !watch().isActive() || deviceConfig == null) return;
+        SamsungAudioSnapshot audioState = audioMonitor == null
+                ? SamsungAudioSnapshot.unavailable(deviceConfig.target)
+                : audioMonitor.snapshot(deviceConfig.target);
+        boolean targetConfirmed = SamsungAudioPolicy.isTargetOutputConfirmed(audioState);
+        RoutingPolicy.TakeDecision decision = policy.evaluateTake(
+                controlSession.isReady(),
+                !peers.isEmpty(),
+                targetConfirmed);
+        if (decision == RoutingPolicy.TakeDecision.TAKE) {
+            handoffNotice = "";
+            take(reason);
+        } else if (decision == RoutingPolicy.TakeDecision.SKIP) {
+            handoffNotice = "目标输出未指向此耳机，已保留当前播放（可手动切换）";
+            log("TAKE skipped; target-output-not-confirmed routeState=" + audioState.routeState
+                    + " mediaAvailable=" + audioState.mediaOutputAvailable);
+        }
+    }
+
+    private void cancelPendingHandoffCheck() {
+        ++handoffAttemptGeneration;
+        if (pendingHandoffCheck != null) {
+            handler.removeCallbacks(pendingHandoffCheck);
+            pendingHandoffCheck = null;
+        }
+    }
+
+    private void scheduleHandoffCheck() {
+        cancelPendingHandoffCheck();
+        final long routingGeneration = routingModeGeneration;
+        final long attemptGeneration = handoffAttemptGeneration;
+        final Runnable[] ref = new Runnable[1];
+        ref[0] = () -> {
+            if (pendingHandoffCheck == ref[0]) pendingHandoffCheck = null;
+            if (stopped || current != this || !mode.allowsRouting()
+                    || routingGeneration != routingModeGeneration
+                    || attemptGeneration != handoffAttemptGeneration) {
+                return;
+            }
+            BluetoothProfile a2dp = a2dpProxy();
+            boolean a2dpConnected = a2dp != null && target != null
+                    && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED;
+            if (Boolean.TRUE.equals(owns) && a2dpConnected) {
+                handoffNotice = "";
+                return;
+            }
+            if (!hasActiveHostStream()) {
+                handoffNotice = "自动交接未成功，请点击手动切换或重新播放";
+                log("HANDOFF_CHECK failed-audio-interrupted");
+            } else {
+                log("HANDOFF_CHECK unconfirmed; keeping current playback");
+            }
+        };
+        pendingHandoffCheck = ref[0];
+        handler.postDelayed(ref[0], 4000);
     }
 
     private void cancelPendingReconnect() {
@@ -488,6 +570,13 @@ public final class HandoffService extends Service {
             Boolean previous = this.owns;
             this.owns = owns;
             log("OWNERSHIP " + owns);
+            if (owns) {
+                BluetoothProfile a2dp = a2dpProxy();
+                if (a2dp != null && target != null && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
+                    cancelPendingHandoffCheck();
+                    handoffNotice = "";
+                }
+            }
             if (mode.allowsRouting() && !owns && !Boolean.FALSE.equals(previous)) release("ownership-loss", false);
         }
         SmartRouting.Message message = SmartRouting.decode(data);
@@ -562,6 +651,9 @@ public final class HandoffService extends Service {
         applyAudioLink(audioLink.want(true,a2dp == null ? 0 : a2dp.getConnectionState(target)));
         if (reason.equals("call") && headset != null && headset.getConnectionState(target) == BluetoothProfile.STATE_DISCONNECTED)
             profileAction(headset, "connect");
+        if (!"call".equals(reason) && !"manual".equals(reason)) {
+            scheduleHandoffCheck();
+        }
     }
 
     private void mediaInformation(boolean active) {
@@ -622,6 +714,8 @@ public final class HandoffService extends Service {
     @Override public void onDestroy() {
         stopped = true;
         cancelPendingReconnect();
+        cancelPendingHandoffCheck();
+        handoffNotice = "";
         connection.stop();
         RootEnvironment.Prepared pending=pendingBridge.getAndSet(null);
         if(pending!=null)RootEnvironment.queueBridgeStop(pending);

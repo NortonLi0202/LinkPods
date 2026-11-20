@@ -109,6 +109,13 @@ public class MainActivity extends Activity {
             @Override public void connectEarbuds() { startControlOnly(); }
             @Override public void enableHandoff() { startAutomatic(); }
             @Override public void disableHandoff() { MainActivity.this.disableHandoff(); }
+            @Override public void manualHandoff() {
+                BluetoothDevice target = hasPermission() ? selected() : null;
+                boolean accepted = target != null && HandoffService.manualHandoff(target.getAddress());
+                log(accepted ? "已发起手动切换到此耳机，请按实际出声确认。" : "当前无法手动切换：请先启用自动交接并等待控制通道就绪。");
+                refreshStatus();
+                refreshControls();
+            }
             @Override public void stopConnection() { stopSession(); }
             @Override public void stopHandoff() { stopSession(); }
             @Override public void checkEnvironment() { prepareEnvironment(false); }
