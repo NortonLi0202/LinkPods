@@ -287,7 +287,9 @@ public final class HandoffService extends Service {
         Notification notification = new Notification.Builder(this, "handoff")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setContentTitle(handoff ? "LinkPods 自动交接" : "LinkPods 耳机控制")
-            .setContentText(handoff ? "保持控制通道，随媒体播放交接；可在应用内停止" : "保持耳机控制通道；可在应用内停止")
+            .setContentText(handoff
+                ? (handoffNotice.isEmpty() ? "保持控制通道，随媒体播放交接；可在应用内停止" : handoffNotice)
+                : "保持耳机控制通道；可在应用内停止")
             .setOngoing(true).build();
         nm.notify(42, notification);
     }
@@ -410,10 +412,14 @@ public final class HandoffService extends Service {
                 !peers.isEmpty(),
                 targetConfirmed);
         if (decision == RoutingPolicy.TakeDecision.TAKE) {
-            handoffNotice = "";
+            if (!handoffNotice.isEmpty()) {
+                handoffNotice = "";
+                updateForegroundNotification();
+            }
             take(reason);
         } else if (decision == RoutingPolicy.TakeDecision.SKIP) {
             handoffNotice = "目标输出未指向此耳机，已保留当前播放（可手动切换）";
+            updateForegroundNotification();
             log("TAKE skipped; target-output-not-confirmed routeState=" + audioState.routeState
                     + " mediaAvailable=" + audioState.mediaOutputAvailable);
         }
@@ -448,6 +454,7 @@ public final class HandoffService extends Service {
             }
             if (!hasActiveHostStream()) {
                 handoffNotice = "自动交接未成功，请点击手动切换或重新播放";
+                updateForegroundNotification();
                 log("HANDOFF_CHECK failed-audio-interrupted");
             } else {
                 log("HANDOFF_CHECK unconfirmed; keeping current playback");
@@ -559,6 +566,7 @@ public final class HandoffService extends Service {
             log("CONNECTION " + connection.snapshot(address).description);return;
         }
         peers.clear();
+        peerPolicy.reset();
         lastMediaState = null;
         controlSession.connect(target, address, connectionGeneration);
     }
@@ -669,6 +677,11 @@ public final class HandoffService extends Service {
         if (!mode.allowsRouting()) {
             log("RELEASE skipped mode=" + mode + " reason=" + reason);
             return;
+        }
+        cancelPendingHandoffCheck();
+        if (!handoffNotice.isEmpty()) {
+            handoffNotice = "";
+            updateForegroundNotification();
         }
         policy.onRemoteRequest();
         owns = false;

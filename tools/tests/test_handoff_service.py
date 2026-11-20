@@ -882,6 +882,18 @@ public class HandoffLifecycleTest {
    if(Arrays.equals(p,ownershipTrue)) manualTook=true;
   }
   expect(manualTook,"manualHandoff sends ownership(true)");
+  audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods"));
+  player.setPlaybackState(PlaybackState.STATE_PAUSED);
+  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  player.setPlaybackState(PlaybackState.STATE_PLAYING);
+  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  probe.listener.packet(RoutingPackets.ownership(true));
+  probe.listener.packet(RoutingPackets.ownership(false));
+  player.setPlaybackState(PlaybackState.STATE_PAUSED);
+  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  ((Handler)get(s,"handler")).flushDelayed();
+  expect(!HandoffService.sessionStatus(TARGET).handoffDescription.contains("未成功"),
+   "normal ownership release invalidates pending handoff check");
   s.onDestroy();
  }
 }''',
