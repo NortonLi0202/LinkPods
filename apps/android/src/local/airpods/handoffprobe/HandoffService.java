@@ -213,7 +213,7 @@ public final class HandoffService extends Service {
         if (!service.deviceConfig.target.equalsIgnoreCase(targetAddress)) return false;
         if (!service.mode.allowsRouting() || !service.controlSession.isReady()) return false;
         service.cancelPendingHandoffCheck();
-        service.handoffNotice = "";
+        service.setHandoffNotice("");
         service.take("manual");
         return true;
     }
@@ -235,7 +235,7 @@ public final class HandoffService extends Service {
             log("A2DP_STATE " + state);
             if (state == BluetoothProfile.STATE_CONNECTED && Boolean.TRUE.equals(owns)) {
                 cancelPendingHandoffCheck();
-                handoffNotice = "";
+                setHandoffNotice("");
             }
             if (mode.allowsRouting()) applyAudioLink(audioLink.update(state));
         }
@@ -278,6 +278,14 @@ public final class HandoffService extends Service {
         audioMonitor = new SamsungAudioMonitor(this, handler, audioMonitorListener);
         audioMonitor.start();
         log("SERVICE created");
+    }
+
+    private void setHandoffNotice(String notice) {
+        String next = notice == null ? "" : notice;
+        if (!next.equals(handoffNotice)) {
+            handoffNotice = next;
+            updateForegroundNotification();
+        }
     }
 
     private void updateForegroundNotification() {
@@ -412,14 +420,10 @@ public final class HandoffService extends Service {
                 !peers.isEmpty(),
                 targetConfirmed);
         if (decision == RoutingPolicy.TakeDecision.TAKE) {
-            if (!handoffNotice.isEmpty()) {
-                handoffNotice = "";
-                updateForegroundNotification();
-            }
+            setHandoffNotice("");
             take(reason);
         } else if (decision == RoutingPolicy.TakeDecision.SKIP) {
-            handoffNotice = "目标输出未指向此耳机，已保留当前播放（可手动切换）";
-            updateForegroundNotification();
+            setHandoffNotice("目标输出未指向此耳机，已保留当前播放（可手动切换）");
             log("TAKE skipped; target-output-not-confirmed routeState=" + audioState.routeState
                     + " mediaAvailable=" + audioState.mediaOutputAvailable);
         }
@@ -449,12 +453,11 @@ public final class HandoffService extends Service {
             boolean a2dpConnected = a2dp != null && target != null
                     && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED;
             if (Boolean.TRUE.equals(owns) && a2dpConnected) {
-                handoffNotice = "";
+                setHandoffNotice("");
                 return;
             }
             if (!hasActiveHostStream()) {
-                handoffNotice = "自动交接未成功，请点击手动切换或重新播放";
-                updateForegroundNotification();
+                setHandoffNotice("自动交接未成功，请点击手动切换或重新播放");
                 log("HANDOFF_CHECK failed-audio-interrupted");
             } else {
                 log("HANDOFF_CHECK unconfirmed; keeping current playback");
@@ -582,7 +585,7 @@ public final class HandoffService extends Service {
                 BluetoothProfile a2dp = a2dpProxy();
                 if (a2dp != null && target != null && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
                     cancelPendingHandoffCheck();
-                    handoffNotice = "";
+                    setHandoffNotice("");
                 }
             }
             if (mode.allowsRouting() && !owns && !Boolean.FALSE.equals(previous)) release("ownership-loss", false);
@@ -679,10 +682,7 @@ public final class HandoffService extends Service {
             return;
         }
         cancelPendingHandoffCheck();
-        if (!handoffNotice.isEmpty()) {
-            handoffNotice = "";
-            updateForegroundNotification();
-        }
+        setHandoffNotice("");
         policy.onRemoteRequest();
         owns = false;
         log("RELEASE reason=" + reason);
