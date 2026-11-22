@@ -935,6 +935,7 @@ public class HandoffLifecycleTest {
    case "session-lifecycle":sessionLifecycleStability();break;
    case "target-output-gate":speakerRouteSkipsHandoffAndManualTakeWorks();break;
    case "auto-start-and-notification":autoStartAndNotificationActions();break;
+   case "remote-audio-source-release":remoteAudioSourceReleasesStaleA2dp();break;
    default:throw new AssertionError("unknown scenario");
   }
   System.out.println("PASS: service lifecycle "+args[0]);
@@ -1067,6 +1068,38 @@ public class HandoffLifecycleTest {
   expect(failed.stopRequested,"full disconnect stops a target-matched auto-started service");
   failed.onDestroy();
  }
+ static void remoteAudioSourceReleasesStaleA2dp()throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();
+  MediaSessionManager manager=new MediaSessionManager();
+  HandoffService s=service(manager);
+  s.onCreate();
+  final int[] disconnects={0};
+  BluetoothProfile a2dp=new BluetoothProfile(){
+   @Override public int getConnectionState(BluetoothDevice d){return BluetoothProfile.STATE_CONNECTED;}
+   public boolean connect(BluetoothDevice d){return true;}
+   public boolean disconnect(BluetoothDevice d){disconnects[0]++;return true;}
+  };
+  BluetoothManager btManager=(BluetoothManager)s.getSystemService(BluetoothManager.class);
+  btManager.adapter.lastA2dpListener.onServiceConnected(BluetoothProfile.A2DP,a2dp);
+  s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
+  AapProbe probe=AapProbe.created.get(0);
+  probe.listener.ready();
+
+  // 0x0e AUDIO_SOURCE for PEER (AA:BB:CC:DD:EE:03 -> reversed 03,EE,DD,CC,BB,AA), type=2
+  byte[] remoteSource=new byte[]{4,0,4,0,0x0e,0,0x03,(byte)0xEE,(byte)0xDD,(byte)0xCC,(byte)0xBB,(byte)0xAA,2};
+  MediaController player=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.add(player);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(player));
+  probe.listener.packet(remoteSource);
+  expect(disconnects[0]==0,"active local playback must not release A2DP on remote AUDIO_SOURCE");
+
+  player.setPlaybackState(PlaybackState.STATE_PAUSED);
+  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  probe.listener.packet(remoteSource);
+  expect(disconnects[0]==1,"idle host with remote AUDIO_SOURCE releases stale A2DP link");
+  s.onDestroy();
+ }
 }''',
 }
 
@@ -1107,6 +1140,9 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_auto_start_receiver_and_notification_actions(self):
         self.run_scenario('auto-start-and-notification')
+
+    def test_remote_audio_source_releases_stale_a2dp_when_idle(self):
+        self.run_scenario('remote-audio-source-release')
 
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None

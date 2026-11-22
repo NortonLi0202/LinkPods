@@ -838,6 +838,16 @@ public final class HandoffService extends Service {
             sourceMac = RoutingPackets.audioSourceMac(data);
             sourceType = data[12] & 255;
             log("AUDIO_SOURCE mac=" + sourceMac + " type=" + sourceType + " local=" + selfMac.equalsIgnoreCase(sourceMac));
+            boolean remoteAudioActive = sourceType != 0
+                    && BluetoothAdapter.checkBluetoothAddress(sourceMac)
+                    && !"00:00:00:00:00:00".equals(sourceMac)
+                    && !selfMac.equalsIgnoreCase(sourceMac);
+            if (remoteAudioActive && mode.allowsRouting() && !hasActiveHostStream()) {
+                BluetoothProfile a2dp = a2dpProxy();
+                if (a2dp != null && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
+                    release("audio-source-remote", false);
+                }
+            }
         }
     }
 
