@@ -108,26 +108,34 @@ public class Context {
  public FileOutputStream openFileOutput(String name,int mode)throws IOException{throw new IOException("host logging disabled");}
  public SharedPreferences getSharedPreferences(String name,int mode){return new SharedPreferences();}
  public ComponentName startForegroundService(Intent i){startedServices.add(i);if(serviceStarter!=null)serviceStarter.accept(i);return null;}
+ public ComponentName startService(Intent i){return null;}
  public boolean stopService(Intent i){return true;}
  public void startActivity(Intent i){}
 }''',
     'android/content/SharedPreferences.java': '''package android.content;
 public class SharedPreferences {
  public String getString(String k,String d){return d;}
+ public boolean getBoolean(String k,boolean d){return d;}
  public Editor edit(){return new Editor();}
- public static class Editor {public Editor putString(String k,String v){return this;}public void apply(){}}
+ public static class Editor {public Editor putString(String k,String v){return this;}public Editor putBoolean(String k,boolean v){return this;}public void apply(){}}
 }''',
     'android/content/Intent.java': '''package android.content;
 import java.util.*;
 public class Intent {
+ public static final int FLAG_ACTIVITY_NEW_TASK=0x10000000,FLAG_ACTIVITY_CLEAR_TOP=0x04000000,FLAG_ACTIVITY_SINGLE_TOP=0x20000000;
  private String action;
  private final Map<String,Object> extras=new HashMap<>();
  public Intent(){}
  public Intent(String a){action=a;}
  public Intent(Context c,Class<?> cls){}
  public String getAction(){return action;}
+ public Intent setAction(String a){action=a;return this;}
+ public Intent addFlags(int f){return this;}
  public Intent putExtra(String k,String v){extras.put(k,v);return this;}
  public Intent putExtra(String k,boolean v){extras.put(k,v);return this;}
+ public Intent putExtra(String k,int v){extras.put(k,v);return this;}
+ public boolean hasExtra(String k){return extras.containsKey(k);}
+ public void removeExtra(String k){extras.remove(k);}
  public String getStringExtra(String k){return (String)extras.get(k);}
  public boolean getBooleanExtra(String k,boolean d){return extras.containsKey(k)?(Boolean)extras.get(k):d;}
  public int getIntExtra(String k,int d){return extras.containsKey(k)?(Integer)extras.get(k):d;}
@@ -136,12 +144,16 @@ public class Intent {
 }''',
     'android/content/ComponentName.java': 'package android.content; public class ComponentName {public ComponentName(Context c,Class<?> t){}}',
     'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(){}public IntentFilter(String a){}public void addAction(String a){}}',
-    'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i);}',
+    'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i); public final PendingResult goAsync(){return new PendingResult();} public static class PendingResult {public void finish(){}}}',
     'android/service/notification/NotificationListenerService.java': 'package android.service.notification; public class NotificationListenerService {public void onListenerConnected(){}public void onListenerDisconnected(){}}',
     'android/app/Activity.java': '''package android.app;
 public class Activity extends android.content.Context {
  public void setTheme(int r){}
  public void onCreate(android.os.Bundle b){}
+ protected void onNewIntent(android.content.Intent i){}
+ private android.content.Intent intent;
+ public void setIntent(android.content.Intent i){intent=i;}
+ public android.content.Intent getIntent(){return intent;}
  protected void onStart(){}
  protected void onResume(){}
  protected void onPause(){}
@@ -163,12 +175,33 @@ public class Service extends android.content.Context {
  public int onStartCommand(android.content.Intent i,int flags,int id){return 2;}
  public android.os.IBinder onBind(android.content.Intent i){return null;}
 }''',
+    'android/graphics/drawable/Icon.java': 'package android.graphics.drawable; public class Icon {}',
+    'android/app/PendingIntent.java': '''package android.app;
+public class PendingIntent {
+ public static final int FLAG_UPDATE_CURRENT=134217728,FLAG_IMMUTABLE=67108864;
+ public static PendingIntent getActivity(android.content.Context c,int r,android.content.Intent i,int f){return new PendingIntent();}
+ public static PendingIntent getService(android.content.Context c,int r,android.content.Intent i,int f){return new PendingIntent();}
+ public static PendingIntent getBroadcast(android.content.Context c,int r,android.content.Intent i,int f){return new PendingIntent();}
+}''',
     'android/app/Notification.java': '''package android.app;
-public class Notification {public static class Builder {
- public Builder(android.content.Context c,String id){}
- public Builder setSmallIcon(int i){return this;} public Builder setContentTitle(String s){return this;}
- public Builder setContentText(String s){return this;} public Builder setOngoing(boolean b){return this;}
- public Notification build(){return new Notification();}}}''',
+public class Notification {
+ public static class Style {}
+ public static class BigTextStyle extends Style {public BigTextStyle bigText(CharSequence cs){return this;}}
+ public static class Action {
+  public static class Builder {
+   public Builder(android.graphics.drawable.Icon i,CharSequence t,PendingIntent p){}
+   public Action build(){return new Action();}
+  }
+ }
+ public static class Builder {
+  public Builder(android.content.Context c,String id){}
+  public Builder setSmallIcon(int i){return this;} public Builder setContentTitle(String s){return this;}
+  public Builder setContentText(String s){return this;} public Builder setOngoing(boolean b){return this;}
+  public Builder setAutoCancel(boolean b){return this;}
+  public Builder setContentIntent(PendingIntent p){return this;}
+  public Builder setStyle(Style s){return this;}
+  public Builder addAction(Action a){return this;}
+  public Notification build(){return new Notification();}}}''',
     'android/app/NotificationChannel.java': 'package android.app; public class NotificationChannel {public NotificationChannel(String a,String b,int c){}}',
     'android/app/NotificationManager.java': '''package android.app;
 public class NotificationManager {
@@ -186,6 +219,10 @@ public class R {
     'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth;
 public class BluetoothDevice {
  public static final String EXTRA_DEVICE="device";
+ public static final String EXTRA_TRANSPORT="transport";
+ public static final int TRANSPORT_BREDR=1,TRANSPORT_LE=2;
+ public static final String ACTION_ACL_CONNECTED="android.bluetooth.device.action.ACL_CONNECTED";
+ public static final String ACTION_ACL_DISCONNECTED="android.bluetooth.device.action.ACL_DISCONNECTED";
  private final String address,name;
  public BluetoothDevice(String a){this(a,"AirPods");}
  public BluetoothDevice(String a,String n){address=a;name=n;}
@@ -205,10 +242,10 @@ public class BluetoothAdapter {
  public boolean getProfileProxy(android.content.Context c,BluetoothProfile.ServiceListener l,int k){return true;}
  public boolean isEnabled(){return true;}
 }''',
-    'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; public class BluetoothManager {public BluetoothAdapter getAdapter(){return new BluetoothAdapter();}}',
+    'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; import java.util.*; public class BluetoothManager {public BluetoothAdapter getAdapter(){return new BluetoothAdapter();} public List<BluetoothDevice> getConnectedDevices(int p){return Collections.emptyList();}}',
     'android/bluetooth/BluetoothProfile.java': '''package android.bluetooth;
 public interface BluetoothProfile {
- int A2DP=2,HEADSET=1,STATE_CONNECTED=2,STATE_CONNECTING=1,STATE_DISCONNECTING=3,STATE_DISCONNECTED=0;
+ int A2DP=2,HEADSET=1,GATT=7,STATE_CONNECTED=2,STATE_CONNECTING=1,STATE_DISCONNECTING=3,STATE_DISCONNECTED=0;
  String EXTRA_STATE="state";
  int getConnectionState(BluetoothDevice d);
  interface ServiceListener {void onServiceConnected(int k,BluetoothProfile p);void onServiceDisconnected(int k);}
@@ -260,11 +297,13 @@ public class AudioDeviceInfo {
     PACKAGE + 'LinkPodsUi.java': '''package local.airpods.handoffprobe;
 import android.app.Activity;import android.widget.*;
 final class LinkPodsUi {
+ static final String HOME="设备",AUDIO="音频与聆听",PRESS="按压控制",CONNECTION="连接",SETTINGS="LinkPods 设置";
  interface Actions {
   void openBluetooth();void requestNearby();void openMediaAccess();void requestNotifications();
   void refreshDevices();void connectEarbuds();void enableHandoff();void disableHandoff();void manualHandoff();
   void stopConnection();void stopHandoff();void checkEnvironment();void prepareBridge();
   boolean setSetting(int id,int value);String deviceName();String connectionStatus();
+  void runPrimaryAction(StatusSummary.PrimaryAction action);
  }
  final TextView environmentStatus,logOutput;
  final Actions actions;
@@ -272,10 +311,12 @@ final class LinkPodsUi {
   this.actions=actions;this.environmentStatus=new TextView(a);this.logOutput=new TextView(a);
  }
  String page(){return "设备";}
+ void show(String page){}
  boolean back(){return false;}
  void bind(EarbudSnapshot s,String a,SessionStatus st){}
  void bindAudio(SamsungAudioSnapshot s){}
  void bindCapabilities(ConnectionPolicy.Snapshot c,boolean m){}
+ void bindSummary(StatusSummary s){}
 }''',
     PACKAGE + 'RootEnvironment.java': '''package local.airpods.handoffprobe;
 class RootEnvironment {
@@ -322,7 +363,9 @@ public class MainActivityTest {
  static Object get(Object o,String n)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);return f.get(o);}
  static void set(Object o,String n,Object v)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);f.set(o,v);}
  static MainActivity createActivity(Bundle state)throws Exception{
-  MainActivity a=new MainActivity();
+  return createActivity(new MainActivity(),state);
+ }
+ static MainActivity createActivity(MainActivity a,Bundle state)throws Exception{
   a.services.put(BluetoothManager.class,new BluetoothManager());
   a.services.put(NotificationManager.class,new NotificationManager());
   a.services.put(AudioManager.class,new AudioManager());
@@ -419,6 +462,29 @@ public class MainActivityTest {
   backgrounded.onDestroy();
   expect(!bgMonitor.isStarted(),"onDestroy stops localAudioMonitor cleanly");
 
+  MainActivity launcher=createActivity(null);
+  launcher.onNewIntent(new Intent().putExtra(HandoffService.EXTRA_PENDING_ACTION,"ENABLE_HANDOFF"));
+  expect(launcher.startedServices.isEmpty(),"exported launcher ignores notification commands");
+  ((LinkPodsUi)get(launcher,"ui")).actions.runPrimaryAction(StatusSummary.PrimaryAction.START_CONTROL);
+  expect(launcher.startedServices.size()==1&&"CONTROL_ONLY".equals(
+   launcher.startedServices.get(0).getStringExtra(HandoffService.EXTRA_SESSION_MODE)),
+   "connect-earbuds summary action starts CONTROL_ONLY");
+  launcher.onDestroy();
+
+  MainActivity notification=createActivity(new MainActivity.NotificationEntry(),null);
+  notification.onNewIntent(new Intent().putExtra(HandoffService.EXTRA_PENDING_ACTION,"ENABLE_HANDOFF"));
+  expect(notification.startedServices.size()==1&&"AUTO_HANDOFF".equals(
+   notification.startedServices.get(0).getStringExtra(HandoffService.EXTRA_SESSION_MODE)),
+   "private notification entry executes the explicit Enable Handoff action");
+  notification.onDestroy();
+
+  MainActivity restored=new MainActivity.NotificationEntry();
+  restored.setIntent(new Intent().putExtra(HandoffService.EXTRA_PENDING_ACTION,"ENABLE_HANDOFF"));
+  createActivity(restored,new Bundle());
+  restored.onStart();
+  expect(restored.startedServices.isEmpty(),"restoring the notification activity does not rerun its action");
+  restored.onDestroy();
+
   System.out.println("PASS: main activity bridge preparation and session lifecycle recovery");
  }
 }''',
@@ -442,7 +508,8 @@ class MainActivityBridgeTests(unittest.TestCase):
                 files.append(str(target))
             package = ROOT / 'apps/android/src' / PACKAGE
             names = ('MainActivity', 'HandoffService', 'PlaybackListener', 'PlaybackWatch', 'ControlSession', 'SessionMode',
-                     'SessionStatus', 'SamsungAudioMonitor', 'SamsungAudioSnapshot',
+                     'SessionStatus', 'StatusSummary', 'StatusSummaryPolicy', 'AutoStartPolicy', 'BluetoothAutoStartReceiver', 'NotificationActionReceiver',
+                     'SamsungAudioMonitor', 'SamsungAudioSnapshot',
                      'SamsungAudioPolicy', 'RoutingPolicy', 'AudioLinkPolicy',
                      'PeerRoutingPolicy', 'DeviceConfig', 'ConnectionPolicy', 'RequestGate',
                      'RootAccess', 'RoutingPackets', 'AapPackets', 'SmartRouting',

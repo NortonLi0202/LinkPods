@@ -28,6 +28,7 @@ final class LinkPodsUi {
         void refreshDevices(); void connectEarbuds(); void enableHandoff(); void disableHandoff(); void manualHandoff(); void stopConnection(); void stopHandoff(); void checkEnvironment(); void prepareBridge();
         boolean setSetting(int id,int value);
         String deviceName(); String connectionStatus();
+        void runPrimaryAction(StatusSummary.PrimaryAction action);
     }
     static final String HOME="设备", AUDIO="音频与聆听", PRESS="按压控制", CONNECTION="连接", SETTINGS="LinkPods 设置";
     private final Activity activity;
@@ -49,6 +50,8 @@ final class LinkPodsUi {
     private SamsungAudioSnapshot audioSnapshot;
     private ConnectionPolicy.Snapshot capabilities;
     private boolean mediaGranted;
+    private StatusSummary currentSummary;
+    private TextView summaryBadge,summaryHeadline,summaryDetail,summaryAction;
     private TextView capabilitiesStatus,audioDetails;
     private Integer lastLeft,lastRight,lastCase;
     private String target="",page=HOME;
@@ -93,7 +96,7 @@ final class LinkPodsUi {
         body=new LinearLayout(activity){@Override protected void onMeasure(int ws,int hs){int available=View.MeasureSpec.getSize(ws);super.onMeasure(View.MeasureSpec.makeMeasureSpec(Math.min(dp(620),available),View.MeasureSpec.EXACTLY),hs);}};
         body.setOrientation(LinearLayout.VERTICAL);body.setPadding(dp(width<400?16:24),dp(4),dp(width<400?16:24),dp(28));
         FrameLayout.LayoutParams content=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);frame.addView(body,content);
-        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;audioCallStatus=null;audioRouteStatus=null;session=null;handoff=null;modeStatus=null;feedback=null;capabilitiesStatus=null;audioDetails=null;artwork=null;genericArtwork=null;modelStatus=null;
+        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;audioCallStatus=null;audioRouteStatus=null;session=null;handoff=null;modeStatus=null;feedback=null;capabilitiesStatus=null;audioDetails=null;artwork=null;genericArtwork=null;modelStatus=null;summaryBadge=null;summaryHeadline=null;summaryDetail=null;summaryAction=null;
         if(HOME.equals(page))home();
         else if(AUDIO.equals(page))audioPage();
         else if(PRESS.equals(page))pressPage();
@@ -104,6 +107,7 @@ final class LinkPodsUi {
         if(snapshot!=null)bind(snapshot,target,sessionStatus);else updateLocalVolume();
         bindAudio(audioSnapshot);
         bindCapabilities(capabilities,mediaGranted);
+        if(currentSummary!=null)bindSummary(currentSummary);
     }
     private void buildSidebar(int width){
         sidebar=column();sidebar.setPadding(dp(12),dp(20),dp(12),dp(16));sidebar.setBackgroundColor(side);
@@ -121,7 +125,7 @@ final class LinkPodsUi {
         boolean selected=page.equals(destination)||(destination.equals(PRESS)&&(page.contains("长按")||page.equals("按压速度")))||(destination.equals(AUDIO)&&(page.equals("麦克风")||page.equals("辅助功能")));
         row.setSelected(selected);if(selected){row.setTextColor(Color.WHITE);row.setBackground(shape(blue,13));}
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(4);sidebar.addView(row,p);}
-    private void show(String destination){if(!page.equals(destination)){history.add(page);page=destination;build();}}
+    void show(String destination){if(!page.equals(destination)){history.add(page);page=destination;build();}}
     boolean back(){if(HOME.equals(page))return false;page=history.isEmpty()?HOME:history.remove(history.size()-1);build();return true;}
     private void caption(String value){TextView t=text(value,12,muted);t.setPadding(dp(16),dp(12),dp(12),dp(10));body.addView(t);}
     private void help(String value){TextView t=text(value,12,muted);t.setPadding(dp(16),dp(4),dp(12),dp(16));t.setLineSpacing(dp(3),1);body.addView(t);}
@@ -147,7 +151,32 @@ final class LinkPodsUi {
         handoff=text("自动交接：关闭",12,muted);handoff.setGravity(Gravity.CENTER);handoff.setPadding(dp(8),0,dp(8),dp(18));body.addView(handoff);
         capabilitiesStatus=text("",12,muted);capabilitiesStatus.setGravity(Gravity.CENTER);capabilitiesStatus.setPadding(dp(8),0,dp(8),dp(14));body.addView(capabilitiesStatus);
     }
-    private void home(){hero();LinearLayout name=group();deviceNameValue=navigation(name,"名称",actions.deviceName(),"名称");noiseGroup();
+    private void summaryCard(){
+        LinearLayout card=group();card.setPadding(dp(20),dp(14),dp(20),dp(14));
+        LinearLayout header=new LinearLayout(activity);header.setOrientation(LinearLayout.HORIZONTAL);header.setGravity(Gravity.CENTER_VERTICAL);
+        summaryBadge=text("状态",12,ink);summaryBadge.setTypeface(null,Typeface.BOLD);summaryBadge.setPadding(0,0,dp(10),0);header.addView(summaryBadge);
+        summaryHeadline=text("正在检查状态",15,ink);summaryHeadline.setTypeface(null,Typeface.BOLD);header.addView(summaryHeadline,new LinearLayout.LayoutParams(0,-2,1));
+        card.addView(header);
+        summaryDetail=text("",12,muted);summaryDetail.setPadding(0,dp(6),0,0);summaryDetail.setLineSpacing(dp(2),1);card.addView(summaryDetail);
+        summaryAction=text("",14,blue);summaryAction.setTypeface(null,Typeface.BOLD);summaryAction.setPadding(0,dp(10),0,0);summaryAction.setVisibility(View.GONE);
+        clickable(summaryAction,()->{if(currentSummary!=null&&currentSummary.hasPrimaryAction())actions.runPrimaryAction(currentSummary.primaryAction);});
+        card.addView(summaryAction);
+    }
+    void bindSummary(StatusSummary summary){
+        currentSummary=summary;
+        if(summary==null||summaryBadge==null||summaryHeadline==null)return;
+        int color=summary.level==StatusSummary.Level.NORMAL?(dark?0xFF32D74B:0xFF248A3D)
+            :summary.level==StatusSummary.Level.ATTENTION?(dark?0xFFFFD60A:0xFFB25000)
+            :(dark?0xFFFF453A:0xFFD70015);
+        summaryBadge.setText(summary.levelLabel());summaryBadge.setTextColor(color);
+        summaryHeadline.setText(summary.headline);
+        if(summaryDetail!=null){summaryDetail.setText(summary.detail);summaryDetail.setVisibility(summary.detail.isEmpty()?View.GONE:View.VISIBLE);}
+        if(summaryAction!=null){
+            if(summary.hasPrimaryAction()){summaryAction.setText(summary.primaryActionLabel());summaryAction.setVisibility(View.VISIBLE);}
+            else summaryAction.setVisibility(View.GONE);
+        }
+    }
+    private void home(){hero();summaryCard();LinearLayout name=group();deviceNameValue=navigation(name,"名称",actions.deviceName(),"名称");noiseGroup();
         caption("按住 AirPods");LinearLayout press=group();navigation(press,"左耳","暂未接入","左耳长按");navigation(press,"右耳","暂未接入","右耳长按");
         commonSwitches();volumeGroup();LinearLayout extras=group();navigation(extras,"自动设备切换","前往设置",CONNECTION);navigation(extras,"麦克风","暂未接入","麦克风");navigation(extras,"辅助功能","","辅助功能");
         LinearLayout app=group();navigation(app,"LinkPods 设置","",SETTINGS);feedback=text("",12,muted);feedback.setPadding(dp(16),0,dp(16),dp(12));body.addView(feedback);
@@ -164,7 +193,7 @@ final class LinkPodsUi {
         TextView local=text("此 Android 设备的音量",11,muted);local.setPadding(0,0,0,dp(3));g.addView(local);}
     private void audioPage(){pageTitle(AUDIO);noiseGroup();volumeGroup();commonSwitches();LinearLayout g=group();setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"麦克风","暂未接入","麦克风");}
     private void pressPage(){pageTitle(PRESS);LinearLayout g=group();navigation(g,"左耳长按","暂未接入","左耳长按");navigation(g,"右耳长按","暂未接入","右耳长按");navigation(g,"按压速度","暂未接入","按压速度");help("按压设置当前暂不可用。");}
-    private void connectionPage(){pageTitle("自动设备切换");help("启用后，LinkPods 根据此设备的播放状态协调耳机交接。请先在应用设置中选择耳机，并允许读取媒体播放状态。");
+    private void connectionPage(){pageTitle("自动设备切换");summaryCard();help("启用后，LinkPods 根据此设备的播放状态协调耳机交接。请先在应用设置中选择耳机，并允许读取媒体播放状态。");
         LinearLayout g=group();action(g,"连接耳机（仅控制）",actions::connectEarbuds);action(g,"启用自动交接",actions::enableHandoff);action(g,"手动切换到此耳机",actions::manualHandoff);action(g,"关闭自动交接（保留控制）",actions::disableHandoff);action(g,"停止连接",actions::stopConnection);action(g,"准备兼容桥接",actions::prepareBridge);navigation(g,"设备与权限","",SETTINGS);attachStatus();help("启用时先直接连接耳机，直连可用就不请求 Root。明确缺少系统兼容能力时才尝试已有 Root 桥接；也可手动准备桥接。临时 Root 需要单独确认，实际声音与双向切换仍需确认。");}
     private void appSettings(){pageTitle(SETTINGS);caption("设备");LinearLayout device=group();detach(picker);picker.setContentDescription("选择已配对的耳机");device.addView(picker,new LinearLayout.LayoutParams(-1,dp(56)));action(device,"连接耳机",actions::connectEarbuds);action(device,"停止连接",actions::stopConnection);action(device,"允许附近设备权限",actions::requestNearby);action(device,"配对或管理耳机",actions::openBluetooth);action(device,"刷新设备与连接状态",actions::refreshDevices);
         caption("权限");LinearLayout permissions=group();action(permissions,"允许读取媒体播放状态",actions::openMediaAccess);action(permissions,"允许服务通知",actions::requestNotifications);

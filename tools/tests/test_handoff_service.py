@@ -22,6 +22,8 @@ public class Context {
  public int registeredReceivers,unregisteredReceivers;
  public BroadcastReceiver lastReceiver;
  public boolean bluetoothPermissionGranted=true,baseAttached=false;
+ public final List<Intent> startedForegroundServices=new ArrayList<>();
+ public final SharedPreferences prefs=new SharedPreferences();
  public <T>T getSystemService(Class<T> type){return type.cast(services.get(type));}
  public Context getApplicationContext(){return this;}
  public java.util.concurrent.Executor getMainExecutor(){return Runnable::run;}
@@ -30,21 +32,46 @@ public class Context {
  public void registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){registeredReceivers++;lastReceiver=r;}
  public void unregisterReceiver(BroadcastReceiver r){unregisteredReceivers++;}
  public FileOutputStream openFileOutput(String name,int mode)throws IOException{throw new IOException("host logging disabled");}
- public SharedPreferences getSharedPreferences(String name,int mode){return new SharedPreferences();}
+ public SharedPreferences getSharedPreferences(String name,int mode){return prefs;}
+ public ComponentName startForegroundService(Intent i){startedForegroundServices.add(i);return null;}
+ public ComponentName startService(Intent i){return null;}
+ public boolean stopService(Intent i){return true;}
+ public void startActivity(Intent i){}
 }''',
     'android/content/SharedPreferences.java': '''package android.content;
-public class SharedPreferences {public Editor edit(){return new Editor();}
- public static class Editor {public Editor putString(String k,String v){return this;}public void apply(){}}}''',
+import java.util.*;
+public class SharedPreferences {
+ public final Map<String,String> values=new HashMap<>();
+ public final Map<String,Boolean> booleans=new HashMap<>();
+ public String getString(String k,String d){return values.containsKey(k)?values.get(k):d;}
+ public boolean getBoolean(String k,boolean d){return booleans.containsKey(k)?booleans.get(k):d;}
+ public Editor edit(){return new Editor(this);}
+ public static class Editor {
+  private final SharedPreferences owner;
+  Editor(SharedPreferences o){owner=o;}
+  public Editor putString(String k,String v){owner.values.put(k,v);return this;}
+  public Editor putBoolean(String k,boolean v){owner.booleans.put(k,v);return this;}
+  public void apply(){}
+ }}''',
     'android/content/Intent.java': '''package android.content;
 import java.util.*;
 public class Intent {
+ public static final int FLAG_ACTIVITY_NEW_TASK=0x10000000,FLAG_ACTIVITY_CLEAR_TOP=0x04000000,FLAG_ACTIVITY_SINGLE_TOP=0x20000000;
+ public Class<?> component;
  private String action;
  private final Map<String,Object> extras=new HashMap<>();
  public Intent(){}
  public Intent(String a){action=a;}
+ public Intent(Context c,Class<?> cls){component=cls;}
  public String getAction(){return action;}
+ public Intent setAction(String a){action=a;return this;}
+ public Intent addFlags(int f){return this;}
  public Intent putExtra(String k,String v){extras.put(k,v);return this;}
  public Intent putExtra(String k,boolean v){extras.put(k,v);return this;}
+ public Intent putExtra(String k,int v){extras.put(k,v);return this;}
+ public Intent putExtra(String k,Object v){extras.put(k,v);return this;}
+ public boolean hasExtra(String k){return extras.containsKey(k);}
+ public void removeExtra(String k){extras.remove(k);}
  public String getStringExtra(String k){return (String)extras.get(k);}
  public boolean getBooleanExtra(String k,boolean d){return extras.containsKey(k)?(Boolean)extras.get(k):d;}
  public int getIntExtra(String k,int d){return extras.containsKey(k)?(Integer)extras.get(k):d;}
@@ -53,7 +80,7 @@ public class Intent {
 }''',
     'android/content/ComponentName.java': 'package android.content; public class ComponentName {public ComponentName(Context c,Class<?> t){if(!c.baseAttached)throw new NullPointerException("base context not attached");}}',
     'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(){}public IntentFilter(String a){}public void addAction(String a){}}',
-    'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i);}',
+    'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i); public final PendingResult goAsync(){return new PendingResult();} public static class PendingResult {public void finish(){}}}',
     'android/service/notification/NotificationListenerService.java': '''package android.service.notification;
 public class NotificationListenerService {
  public void onListenerConnected(){}
@@ -62,24 +89,64 @@ public class NotificationListenerService {
     'android/app/Service.java': '''package android.app;
 public class Service extends android.content.Context {
  public static final int START_NOT_STICKY=2;
- public void onCreate(){} public void onDestroy(){} public void stopSelf(){}
+ public boolean stopRequested;
+ public void onCreate(){} public void onDestroy(){} public void stopSelf(){stopRequested=true;}
  public void startForeground(int id,Notification n){}
  public int onStartCommand(android.content.Intent i,int flags,int id){return 2;}
  public android.os.IBinder onBind(android.content.Intent i){return null;}
 }''',
+    'android/graphics/drawable/Icon.java': 'package android.graphics.drawable; public class Icon {}',
+    'android/app/PendingIntent.java': '''package android.app;
+public class PendingIntent {
+ public static final int FLAG_UPDATE_CURRENT=134217728,FLAG_IMMUTABLE=67108864;
+ public final android.content.Intent intent;
+ public final boolean activity;
+ private PendingIntent(android.content.Intent i,boolean a){intent=i;activity=a;}
+ public static PendingIntent getActivity(android.content.Context c,int r,android.content.Intent i,int f){return new PendingIntent(i,true);}
+ public static PendingIntent getBroadcast(android.content.Context c,int r,android.content.Intent i,int f){return new PendingIntent(i,false);}
+}''',
+    'local/airpods/handoffprobe/MainActivity.java': 'package local.airpods.handoffprobe; public class MainActivity {public static final class NotificationEntry extends MainActivity {}}',
     'android/app/Notification.java': '''package android.app;
-public class Notification {public static class Builder {
- public Builder(android.content.Context c,String id){}
- public Builder setSmallIcon(int i){return this;} public Builder setContentTitle(String s){return this;}
- public Builder setContentText(String s){return this;} public Builder setOngoing(boolean b){return this;}
- public Notification build(){return new Notification();}}}''',
+import java.util.*;
+public class Notification {
+ public String title="",text="";
+ public PendingIntent contentIntent;
+ public final List<String> actionTitles=new ArrayList<>();
+ public final List<PendingIntent> actionIntents=new ArrayList<>();
+ public static class Style {}
+ public static class BigTextStyle extends Style {public BigTextStyle bigText(CharSequence cs){return this;}}
+ public static class Action {
+  public final String title;
+  public final PendingIntent intent;
+  Action(String t,PendingIntent p){title=t;intent=p;}
+  public static class Builder {
+   private final String title;
+   private final PendingIntent intent;
+   public Builder(android.graphics.drawable.Icon i,CharSequence t,PendingIntent p){title=t==null?"":t.toString();intent=p;}
+   public Action build(){return new Action(title,intent);}
+  }
+ }
+ public static class Builder {
+  private final Notification n=new Notification();
+  public Builder(android.content.Context c,String id){}
+  public Builder setSmallIcon(int i){return this;}
+  public Builder setContentTitle(String s){n.title=s==null?"":s;return this;}
+  public Builder setContentText(String s){n.text=s==null?"":s;return this;}
+  public Builder setOngoing(boolean b){return this;}
+  public Builder setAutoCancel(boolean b){return this;}
+  public Builder setContentIntent(PendingIntent p){n.contentIntent=p;return this;}
+  public Builder setStyle(Style s){return this;}
+  public Builder addAction(Action a){if(a!=null){n.actionTitles.add(a.title);n.actionIntents.add(a.intent);}return this;}
+  public Notification build(){return n;}}}''',
     'android/app/NotificationChannel.java': 'package android.app; public class NotificationChannel {public NotificationChannel(String a,String b,int c){}}',
     'android/app/NotificationManager.java': '''package android.app;
 public class NotificationManager {
  public static final int IMPORTANCE_LOW=2;
  public boolean notificationAccessGranted=true;
+ public int lastNotifyId=-1;
+ public Notification lastNotification;
  public void createNotificationChannel(NotificationChannel c){}
- public void notify(int i,Notification n){}
+ public void notify(int i,Notification n){lastNotifyId=i;lastNotification=n;}
  public boolean isNotificationListenerAccessGranted(android.content.ComponentName c){return notificationAccessGranted;}
 }''',
     'android/R.java': 'package android; public class R {public static class drawable {public static final int stat_sys_data_bluetooth=1;}}',
@@ -103,13 +170,25 @@ public class BluetoothAdapter {
  public boolean isEnabled(){return enabled;}
 }''',
     'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth;
-public class BluetoothDevice {public static final String EXTRA_DEVICE="device";public final String address;public BluetoothDevice(String a){address=a;}public String getAddress(){return address;}}''',
+public class BluetoothDevice {
+ public static final String EXTRA_DEVICE="device";
+ public static final String EXTRA_TRANSPORT="transport";
+ public static final int TRANSPORT_BREDR=1,TRANSPORT_LE=2;
+ public static final String ACTION_ACL_CONNECTED="android.bluetooth.device.action.ACL_CONNECTED";
+ public static final String ACTION_ACL_DISCONNECTED="android.bluetooth.device.action.ACL_DISCONNECTED";
+ public final String address;public BluetoothDevice(String a){address=a;}public String getAddress(){return address;}}''',
     'android/bluetooth/BluetoothA2dp.java': 'package android.bluetooth; public class BluetoothA2dp {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED";}',
     'android/bluetooth/BluetoothHeadset.java': 'package android.bluetooth; public class BluetoothHeadset {public static final String ACTION_CONNECTION_STATE_CHANGED="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED",ACTION_AUDIO_STATE_CHANGED="android.bluetooth.headset.profile.action.AUDIO_STATE_CHANGED";}',
-    'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; public class BluetoothManager {public final BluetoothAdapter adapter=new BluetoothAdapter();public BluetoothAdapter getAdapter(){return adapter;}}',
+    'android/bluetooth/BluetoothManager.java': '''package android.bluetooth;
+import java.util.*;
+public class BluetoothManager {
+ public final BluetoothAdapter adapter=new BluetoothAdapter();
+ public BluetoothAdapter getAdapter(){return adapter;}
+ public List<BluetoothDevice> getConnectedDevices(int profile){return Collections.emptyList();}
+}''',
     'android/bluetooth/BluetoothProfile.java': '''package android.bluetooth;
 public interface BluetoothProfile {
- int A2DP=2,HEADSET=1,STATE_DISCONNECTED=0,STATE_CONNECTED=2; String EXTRA_STATE="state";
+ int A2DP=2,HEADSET=1,GATT=7,STATE_DISCONNECTED=0,STATE_CONNECTED=2; String EXTRA_STATE="state";
  int getConnectionState(BluetoothDevice d);
  interface ServiceListener {void onServiceConnected(int k,BluetoothProfile p);void onServiceDisconnected(int k);}
 }''',
@@ -362,6 +441,7 @@ public class HandoffLifecycleTest {
   listener.onListenerConnected();
   expect(manager.added==1,"initial grant registers media listener once");
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("运行中"),"UI reports handoff running when watch active");
+  expect(!nm.lastNotification.title.contains("需要媒体监听权限"),"grant updates the notification immediately");
 
   // Path 1: Android revokes access -> removes server listener and emits empty list.
   nm.notificationAccessGranted=false;
@@ -384,6 +464,14 @@ public class HandoffLifecycleTest {
   listener.onListenerDisconnected();
   expect(manager.removed==2,"onListenerDisconnected removes active listener registration");
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("等待媒体权限"),"UI reports waiting for media access after disconnect");
+  expect(nm.lastNotification.title.contains("需要媒体监听权限"),"revocation updates the ongoing notification immediately");
+  expect(nm.lastNotification.contentIntent.activity
+          && nm.lastNotification.contentIntent.intent.component==MainActivity.class
+          && !nm.lastNotification.contentIntent.intent.hasExtra(HandoffService.EXTRA_PENDING_ACTION),
+   "notification body opens the launcher without executing any action");
+  PendingIntent permission=nm.lastNotification.actionIntents.get(nm.lastNotification.actionTitles.indexOf("授予媒体监听权限"));
+  expect(permission.activity && permission.intent.component==MainActivity.NotificationEntry.class,
+   "notification repair uses a direct PendingIntent to the private activity");
   byte[] mediaFalse=RoutingPackets.mediaInformation(SELF,PEER,false);
   boolean sentFalseOnDisconnect=false;
   for(byte[] p:probe.packets) if(Arrays.equals(p,mediaFalse)) sentFalseOnDisconnect=true;
@@ -846,6 +934,7 @@ public class HandoffLifecycleTest {
    case "audio-snapshot":audioSnapshotObservation();break;
    case "session-lifecycle":sessionLifecycleStability();break;
    case "target-output-gate":speakerRouteSkipsHandoffAndManualTakeWorks();break;
+   case "auto-start-and-notification":autoStartAndNotificationActions();break;
    default:throw new AssertionError("unknown scenario");
   }
   System.out.println("PASS: service lifecycle "+args[0]);
@@ -896,6 +985,88 @@ public class HandoffLifecycleTest {
    "normal ownership release invalidates pending handoff check");
   s.onDestroy();
  }
+ static void autoStartAndNotificationActions()throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();
+  Context ctx=new Context();
+  NotificationManager nm=new NotificationManager();
+  ctx.services.put(NotificationManager.class,nm);
+  ctx.prefs.values.put("target",TARGET);
+  ctx.prefs.values.put("local",SELF);
+  ctx.prefs.values.put("peer",PEER);
+  BluetoothAutoStartReceiver receiver=new BluetoothAutoStartReceiver();
+  ctx.bluetoothPermissionGranted=false;
+  Intent connectIntent=new Intent(BluetoothDevice.ACTION_ACL_CONNECTED).putExtra(BluetoothDevice.EXTRA_DEVICE,(Object)new BluetoothDevice(TARGET));
+  receiver.onReceive(ctx,connectIntent);
+  expect(ctx.startedForegroundServices.isEmpty(),"missing permission never auto-starts service");
+
+  ctx.bluetoothPermissionGranted=true;
+  ctx.prefs.booleans.put(BluetoothAutoStartReceiver.PREF_AUTO_START_OPT_IN,false);
+  receiver.onReceive(ctx,connectIntent);
+  expect(ctx.startedForegroundServices.isEmpty(),"remembered target without opt-in never auto-starts AUTO_HANDOFF");
+
+  ctx.prefs.booleans.put(BluetoothAutoStartReceiver.PREF_AUTO_START_OPT_IN,true);
+  receiver.onReceive(ctx,connectIntent);
+  expect(ctx.startedForegroundServices.size()==1,"opted-in target ACL connect auto-starts service");
+  Intent launched=ctx.startedForegroundServices.get(0);
+  expect("AUTO_HANDOFF".equals(launched.getStringExtra(HandoffService.EXTRA_SESSION_MODE)),"auto-start requests AUTO_HANDOFF");
+  expect(launched.getBooleanExtra(HandoffService.EXTRA_AUTO_STARTED,false),"auto-start marks EXTRA_AUTO_STARTED");
+
+  MediaSessionManager manager=new MediaSessionManager();
+  HandoffService s=service(manager);
+  s.onCreate();
+  s.onStartCommand(launched,0,1);
+  AapProbe probe=AapProbe.created.get(0);
+  probe.listener.ready();
+  ((Set<String>)get(s,"peers")).add(PEER);
+  probe.packets.clear();
+  NotificationActionReceiver actionReceiver=new NotificationActionReceiver();
+  actionReceiver.onReceive(ctx,new Intent(HandoffService.ACTION_MANUAL_HANDOFF).putExtra("address",TARGET));
+  boolean manualTook=false;
+  for(byte[] p:probe.packets){
+   if(Arrays.equals(p,RoutingPackets.ownership(true))) manualTook=true;
+  }
+  expect(manualTook,"NotificationActionReceiver ACTION_MANUAL_HANDOFF executes manual take");
+  s.onDestroy();
+
+  BluetoothAutoStartReceiver.onUserStoppedOrDowngraded();
+  ctx.services.put(BluetoothManager.class,new BluetoothManager());
+  Field receiverHandler=BluetoothAutoStartReceiver.class.getDeclaredField("HANDLER");
+  receiverHandler.setAccessible(true);
+  Handler debounce=(Handler)receiverHandler.get(null);
+  Intent headset=new Intent(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+          .putExtra(BluetoothDevice.EXTRA_DEVICE,(Object)new BluetoothDevice(TARGET));
+  receiver.onReceive(ctx,headset.putExtra(BluetoothProfile.EXTRA_STATE,BluetoothProfile.STATE_DISCONNECTED));
+  debounce.flushDelayed();
+  receiver.onReceive(ctx,headset.putExtra(BluetoothProfile.EXTRA_STATE,BluetoothProfile.STATE_CONNECTED));
+  expect(ctx.startedForegroundServices.size()==1,"profile-only disconnect preserves suppression with the service stopped");
+  Intent leConnect=new Intent(BluetoothDevice.ACTION_ACL_CONNECTED)
+          .putExtra(BluetoothDevice.EXTRA_DEVICE,(Object)new BluetoothDevice(TARGET))
+          .putExtra(BluetoothDevice.EXTRA_TRANSPORT,BluetoothDevice.TRANSPORT_LE);
+  receiver.onReceive(ctx,leConnect);
+  Intent aclDisconnect=new Intent(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+          .putExtra(BluetoothDevice.EXTRA_DEVICE,(Object)new BluetoothDevice(TARGET));
+  receiver.onReceive(ctx,aclDisconnect.putExtra(BluetoothDevice.EXTRA_TRANSPORT,BluetoothDevice.TRANSPORT_BREDR));
+  debounce.flushDelayed();
+  expect(ctx.startedForegroundServices.size()==1,"classic disconnect preserves suppression while LE remains");
+  receiver.onReceive(ctx,aclDisconnect.putExtra(BluetoothDevice.EXTRA_TRANSPORT,BluetoothDevice.TRANSPORT_LE));
+  debounce.flushDelayed();
+  receiver.onReceive(ctx,connectIntent);
+  expect(ctx.startedForegroundServices.size()==2,"full Bluetooth disconnect clears suppression for the next connection");
+
+  HandoffService failed=service(manager);
+  failed.onCreate();
+  failed.onStartCommand(ctx.startedForegroundServices.get(1),0,1);
+  AapProbe incompatible=AapProbe.created.get(AapProbe.created.size()-1);
+  incompatible.listener.failure(AapProbe.Failure.COMPATIBILITY_REQUIRED);
+  incompatible.listener.ended();
+  ConnectionPolicy.Snapshot state=HandoffService.capabilities(TARGET);
+  expect(state.phase==ConnectionPolicy.Phase.FAILED && state.compatibilityRequired,
+   "automatic compatibility failure offers explicit bridge preparation without preparing one");
+  receiver.onReceive(ctx,aclDisconnect.putExtra(BluetoothDevice.EXTRA_TRANSPORT,BluetoothDevice.TRANSPORT_BREDR));
+  debounce.flushDelayed();
+  expect(failed.stopRequested,"full disconnect stops a target-matched auto-started service");
+  failed.onDestroy();
+ }
 }''',
 }
 
@@ -934,6 +1105,9 @@ class HandoffLifecycleTests(unittest.TestCase):
     def test_speaker_route_skips_handoff_and_manual_take_works(self):
         self.run_scenario('target-output-gate')
 
+    def test_auto_start_receiver_and_notification_actions(self):
+        self.run_scenario('auto-start-and-notification')
+
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None
         javac = shutil.which('javac', path=str(jdk) if jdk else None)
@@ -950,6 +1124,7 @@ class HandoffLifecycleTests(unittest.TestCase):
                 files.append(str(target))
             package = ROOT / 'apps/android/src' / PACKAGE
             names = ('HandoffService', 'PlaybackListener', 'PlaybackWatch', 'ControlSession', 'SessionMode', 'SessionStatus',
+                     'StatusSummary', 'StatusSummaryPolicy', 'AutoStartPolicy', 'BluetoothAutoStartReceiver', 'NotificationActionReceiver',
                      'SamsungAudioMonitor', 'SamsungAudioSnapshot', 'SamsungAudioPolicy',
                      'RoutingPolicy', 'AudioLinkPolicy', 'PeerRoutingPolicy', 'DeviceConfig',
                      'ConnectionPolicy', 'RoutingPackets', 'AapPackets', 'SmartRouting',

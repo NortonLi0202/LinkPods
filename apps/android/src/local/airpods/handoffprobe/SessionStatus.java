@@ -8,17 +8,23 @@ public final class SessionStatus {
     public final boolean channelReady;
     public final String controlDescription;
     public final String handoffDescription;
+    public final String handoffNotice;
 
     public SessionStatus(String targetAddress, SessionMode mode, boolean serviceRunning, boolean channelReady, String controlDescription, String handoffDescription) {
+        this(targetAddress, mode, serviceRunning, channelReady, controlDescription, handoffDescription, "");
+    }
+
+    public SessionStatus(String targetAddress, SessionMode mode, boolean serviceRunning, boolean channelReady, String controlDescription, String handoffDescription, String handoffNotice) {
         this.targetAddress = targetAddress == null ? "" : targetAddress;
         this.mode = mode;
         this.serviceRunning = serviceRunning;
         this.channelReady = channelReady;
         this.controlDescription = controlDescription == null ? "" : controlDescription;
         this.handoffDescription = handoffDescription == null ? "" : handoffDescription;
+        this.handoffNotice = handoffNotice == null ? "" : handoffNotice;
     }
 
     public static SessionStatus idle(String targetAddress) {
-        return new SessionStatus(targetAddress, null, false, false, "控制服务未运行", "关闭");
+        return new SessionStatus(targetAddress, null, false, false, "控制服务未运行", "关闭", "");
     }
 }

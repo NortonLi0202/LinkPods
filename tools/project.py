@@ -211,11 +211,11 @@ def test(root):
         raise RuntimeError('JDK (JAVA_HOME or PATH) and Node.js are required')
     source = root / APPS[0]
     package = source / 'src/local/airpods/handoffprobe'
-    tests = ['RoutingTest', 'AudioLinkTest', 'PeerRoutingTest', 'DeviceConfigTest', 'RootAccessTest', 'BackendPolicyTest', 'RequestGateTest', 'RootProtocolTest', 'RootTargetTest', 'RootWorkQueueTest', 'EarbudCommandsTest', 'EarbudUiPolicyTest', 'AapPacketsTest', 'ConnectionPolicyTest', 'BridgeAdapterRegistryTest', 'BridgeRuntimeLeaseTest', 'SessionModeTest', 'AirPodsModelsTest', 'AirPodsInformationTest', 'MultiGenerationEarbudTest', 'SamsungAudioPolicyTest']
+    tests = ['RoutingTest', 'AudioLinkTest', 'PeerRoutingTest', 'DeviceConfigTest', 'RootAccessTest', 'BackendPolicyTest', 'RequestGateTest', 'RootProtocolTest', 'RootTargetTest', 'RootWorkQueueTest', 'EarbudCommandsTest', 'EarbudUiPolicyTest', 'AapPacketsTest', 'ConnectionPolicyTest', 'BridgeAdapterRegistryTest', 'BridgeRuntimeLeaseTest', 'SessionModeTest', 'AirPodsModelsTest', 'AirPodsInformationTest', 'MultiGenerationEarbudTest', 'SamsungAudioPolicyTest', 'StatusSummaryPolicyTest', 'AutoStartPolicyTest']
     with tempfile.TemporaryDirectory(prefix='handoff-host-tests-') as output:
         sources = [package / (name + '.java') for name in ('RoutingPackets', 'RoutingPolicy', 'AudioLinkPolicy', 'PeerRoutingPolicy', 'SmartRouting', 'DeviceConfig', 'RootAccess', 'BackendPolicy', 'RequestGate', 'RootProtocol', 'RootTarget', 'RootWorkQueue', 'EarbudCommands', 'EarbudSnapshot', 'EarbudUiPolicy', 'AirPodsModels', 'AirPodsInformation', 'SamsungAudioSnapshot', 'SamsungAudioPolicy')]
         sources += [package / 'AapPackets.java']
-        sources += [package / (name+'.java') for name in ('ConnectionPolicy','BridgeAdapterRegistry','BridgeRuntimeLease','SessionMode','SessionStatus')]
+        sources += [package / (name+'.java') for name in ('ConnectionPolicy','BridgeAdapterRegistry','BridgeRuntimeLease','SessionMode','SessionStatus','StatusSummary','StatusSummaryPolicy','AutoStartPolicy')]
         sources += [source / 'tests' / (name + '.java') for name in tests]
         run([javac, '-encoding', 'UTF-8', '-d', output, *sources], root)
         for name in tests:

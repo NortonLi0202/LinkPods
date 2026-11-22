@@ -17,6 +17,7 @@ final class ControlSession {
         void onReady(long connectionGeneration, String address);
         void onPacket(byte[] data);
         void onEnded(long connectionGeneration, String address, boolean compatibilityRequired);
+        default void onStateChanged() {}
     }
 
     private final Handler handler;
@@ -151,7 +152,10 @@ final class ControlSession {
             if (!isCurrentSession(generation, active)) return;
             active.sendPacketAsync(write.packet, sent -> handler.post(() -> {
                 if (!isCurrentSession(generation, active)) return;
-                if (!sent) earbudState.failed(id, write.token);
+                if (!sent) {
+                    earbudState.failed(id, write.token);
+                    listener.onStateChanged();
+                }
                 else {
                     earbudState.sent(id, write.token);
                     active.requestState();
@@ -161,6 +165,7 @@ final class ControlSession {
         });
         if (!queued && generation == sessionGeneration) {
             earbudState.failed(id, write.token);
+            listener.onStateChanged();
         }
         return queued;
     }
