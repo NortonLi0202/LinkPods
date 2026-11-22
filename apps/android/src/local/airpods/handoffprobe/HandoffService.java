@@ -131,6 +131,7 @@ public final class HandoffService extends Service {
             boolean ready = controlSession.isReady();
             log("PLAYER package=" + packageName + " token=" + playerId
                 + " state=" + state + " ready=" + ready);
+            if (state == 3) cancelPendingRemoteRelease();
             if (policy.onPlayback(playerId, state) == RoutingPolicy.Action.TAKE) {
                 finishPendingTake("player-play");
             }
@@ -634,7 +635,11 @@ public final class HandoffService extends Service {
         SamsungAudioSnapshot audioState = audioMonitor == null
                 ? SamsungAudioSnapshot.unavailable(deviceConfig.target)
                 : audioMonitor.snapshot(deviceConfig.target);
-        boolean targetConfirmed = SamsungAudioPolicy.isTargetOutputConfirmed(audioState);
+        boolean targetConfirmed = SamsungAudioPolicy.isTargetOutputConfirmed(audioState)
+                || (audioState.permissionGranted
+                    && !audioState.targetAddress.isEmpty()
+                    && !audioState.mediaOutputAvailable
+                    && audioState.a2dpState == SamsungAudioSnapshot.ConnectionState.DISCONNECTED);
         RoutingPolicy.TakeDecision decision = policy.evaluateTake(
                 controlSession.isReady(),
                 !peers.isEmpty(),
@@ -842,13 +847,41 @@ public final class HandoffService extends Service {
                     && BluetoothAdapter.checkBluetoothAddress(sourceMac)
                     && !"00:00:00:00:00:00".equals(sourceMac)
                     && !selfMac.equalsIgnoreCase(sourceMac);
-            if (remoteAudioActive && mode.allowsRouting() && !hasActiveHostStream()) {
-                BluetoothProfile a2dp = a2dpProxy();
-                if (a2dp != null && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
-                    release("audio-source-remote", false);
+            if (remoteAudioActive) {
+                if (peers.add(sourceMac)) {
+                    if (peerMac.isEmpty()) peerMac = sourceMac;
+                    finishPendingTake("audio-source-peer");
                 }
+                if (mode.allowsRouting() && !hasActiveHostStream()) {
+                    scheduleRemoteSourceRelease(sourceMac);
+                }
+            } else {
+                cancelPendingRemoteRelease();
             }
         }
+    }
+
+    private Runnable pendingRemoteRelease;
+
+    private void cancelPendingRemoteRelease() {
+        if (pendingRemoteRelease != null) {
+            handler.removeCallbacks(pendingRemoteRelease);
+            pendingRemoteRelease = null;
+        }
+    }
+
+    private void scheduleRemoteSourceRelease(final String expectedRemoteMac) {
+        cancelPendingRemoteRelease();
+        pendingRemoteRelease = () -> {
+            pendingRemoteRelease = null;
+            if (stopped || current != HandoffService.this || !mode.allowsRouting() || hasActiveHostStream()) return;
+            if (sourceType == 0 || !expectedRemoteMac.equalsIgnoreCase(sourceMac)) return;
+            BluetoothProfile a2dp = a2dpProxy();
+            if (a2dp != null && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
+                release("audio-source-remote", false);
+            }
+        };
+        handler.postDelayed(pendingRemoteRelease, 1500L);
     }
 
     private void announcePeers() {

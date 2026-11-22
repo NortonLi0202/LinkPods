@@ -1097,7 +1097,8 @@ public class HandoffLifecycleTest {
   player.setPlaybackState(PlaybackState.STATE_PAUSED);
   player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
   probe.listener.packet(remoteSource);
-  expect(disconnects[0]==1,"idle host with remote AUDIO_SOURCE releases stale A2DP link");
+  ((Handler)get(s,"handler")).flushDelayed();
+  expect(disconnects[0]==1,"idle host with remote AUDIO_SOURCE releases stale A2DP link after debounce");
   s.onDestroy();
  }
 }''',
