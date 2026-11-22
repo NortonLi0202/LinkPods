@@ -109,7 +109,7 @@ public class BluetoothDevice {public static final String EXTRA_DEVICE="device";p
     'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; public class BluetoothManager {public final BluetoothAdapter adapter=new BluetoothAdapter();public BluetoothAdapter getAdapter(){return adapter;}}',
     'android/bluetooth/BluetoothProfile.java': '''package android.bluetooth;
 public interface BluetoothProfile {
- int A2DP=2,HEADSET=1,STATE_DISCONNECTED=0; String EXTRA_STATE="state";
+ int A2DP=2,HEADSET=1,STATE_DISCONNECTED=0,STATE_CONNECTED=2; String EXTRA_STATE="state";
  int getConnectionState(BluetoothDevice d);
  interface ServiceListener {void onServiceConnected(int k,BluetoothProfile p);void onServiceDisconnected(int k);}
 }''',
@@ -283,9 +283,22 @@ public class HandoffLifecycleTest {
   set(s,"audio",audio);
   return s;
  }
+ static void enableTargetOutputRoute(HandoffService s)throws Exception{
+  AudioManager audio=(AudioManager)get(s,"audio");
+  audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods"));
+  SamsungAudioMonitor monitor=(SamsungAudioMonitor)get(s,"audioMonitor");
+  if(monitor==null){
+   SamsungAudioMonitor.Listener l=(SamsungAudioMonitor.Listener)get(s,"audioMonitorListener");
+   monitor=new SamsungAudioMonitor(s,(Handler)get(s,"handler"),l);
+   set(s,"audioMonitor",monitor);
+   monitor.start();
+   monitor.setTargetAddress(TARGET);
+  }
+ }
  static void upgradeWithLocalIdentity(boolean initiallyKnown)throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();
   HandoffService s=service(new MediaSessionManager());
+  enableTargetOutputRoute(s);
   Intent initial=new Intent().putExtra("address",TARGET)
    .putExtra("local_mac",initiallyKnown?SELF:"").putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY");
@@ -336,6 +349,7 @@ public class HandoffLifecycleTest {
   NotificationManager nm=new NotificationManager();
   nm.notificationAccessGranted=false;
   HandoffService s=service(manager);s.services.put(NotificationManager.class,nm);
+  enableTargetOutputRoute(s);
   s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
   AapProbe probe=AapProbe.created.get(0);
@@ -427,6 +441,7 @@ public class HandoffLifecycleTest {
   NotificationManager nm=new NotificationManager();
   HandoffService s=service(manager);s.services.put(NotificationManager.class,nm);
   s.onCreate();
+  enableTargetOutputRoute(s);
   Intent start=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
   s.onStartCommand(start,0,1);
@@ -466,6 +481,7 @@ public class HandoffLifecycleTest {
   NotificationManager rebindNm=new NotificationManager();
   HandoffService s2=service(rebindManager);s2.services.put(NotificationManager.class,rebindNm);
   s2.onCreate();
+  enableTargetOutputRoute(s2);
   s2.onStartCommand(start,0,2);
   expect(AapProbe.created.size()==1,"fresh session creates one probe");
   AapProbe probe2=AapProbe.created.get(0);
@@ -582,6 +598,7 @@ public class HandoffLifecycleTest {
   MediaController activePlayer=new MediaController(PlaybackState.STATE_PLAYING);
   manager.active.add(activePlayer);
   HandoffService s=service(manager);
+  enableTargetOutputRoute(s);
   s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
   AapProbe probe=AapProbe.created.get(0);
@@ -828,9 +845,56 @@ public class HandoffLifecycleTest {
    case "bridge-auto-handoff":bridgeLifecycle("AUTO_HANDOFF");break;
    case "audio-snapshot":audioSnapshotObservation();break;
    case "session-lifecycle":sessionLifecycleStability();break;
+   case "target-output-gate":speakerRouteSkipsHandoffAndManualTakeWorks();break;
    default:throw new AssertionError("unknown scenario");
   }
   System.out.println("PASS: service lifecycle "+args[0]);
+ }
+ static void speakerRouteSkipsHandoffAndManualTakeWorks()throws Exception{
+  AapProbe.failStart=false;AapProbe.created.clear();
+  MediaSessionManager manager=new MediaSessionManager();
+  HandoffService s=service(manager);
+  s.onCreate();
+  AudioManager audio=(AudioManager)get(s,"audio");
+  audio.outputs=new AudioDeviceInfo[]{
+   new AudioDeviceInfo(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,"","Speaker"),
+   new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods")
+  };
+  audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,"","Speaker"));
+  s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
+  AapProbe probe=AapProbe.created.get(0);
+  probe.listener.ready();
+  ((Set<String>)get(s,"peers")).add(PEER);
+  probe.packets.clear();
+  MediaController player=new MediaController(PlaybackState.STATE_PLAYING);
+  manager.active.add(player);
+  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(player));
+  byte[] ownershipTrue=RoutingPackets.ownership(true);
+  for(byte[] p:probe.packets){
+   expect(!Arrays.equals(p,ownershipTrue),"speaker route must skip automatic handoff TAKE");
+  }
+  expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("保留当前播放"),
+   "skipped handoff explains current playback is kept and manual switch is available");
+  expect(HandoffService.manualHandoff(TARGET),"manualHandoff succeeds when AUTO_HANDOFF session is ready");
+  boolean manualTook=false;
+  for(byte[] p:probe.packets){
+   if(Arrays.equals(p,ownershipTrue)) manualTook=true;
+  }
+  expect(manualTook,"manualHandoff sends ownership(true)");
+  audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods"));
+  player.setPlaybackState(PlaybackState.STATE_PAUSED);
+  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  player.setPlaybackState(PlaybackState.STATE_PLAYING);
+  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
+  probe.listener.packet(RoutingPackets.ownership(true));
+  probe.listener.packet(RoutingPackets.ownership(false));
+  player.setPlaybackState(PlaybackState.STATE_PAUSED);
+  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
+  ((Handler)get(s,"handler")).flushDelayed();
+  expect(!HandoffService.sessionStatus(TARGET).handoffDescription.contains("未成功"),
+   "normal ownership release invalidates pending handoff check");
+  s.onDestroy();
  }
 }''',
 }
@@ -866,6 +930,9 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_session_lifecycle_no_duplicate_connections_and_clean_stop(self):
         self.run_scenario('session-lifecycle')
+
+    def test_speaker_route_skips_handoff_and_manual_take_works(self):
+        self.run_scenario('target-output-gate')
 
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None

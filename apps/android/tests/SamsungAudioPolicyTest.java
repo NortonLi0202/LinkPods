@@ -194,12 +194,53 @@ public final class SamsungAudioPolicyTest {
                 "missing permission reports routeState=UNKNOWN");
     }
 
+    static void testTargetOutputConfirmation() {
+        List<SamsungAudioPolicy.OutputDevice> devices = Collections.singletonList(
+                new SamsungAudioPolicy.OutputDevice(TARGET, "AirPods Pro", true, true));
+
+        SamsungAudioSnapshot observed = SamsungAudioPolicy.evaluate(
+                TARGET, true,
+                true, SamsungAudioPolicy.PROFILE_CONNECTED,
+                true, SamsungAudioPolicy.PROFILE_DISCONNECTED,
+                devices, "", "",
+                SamsungAudioPolicy.AUDIO_MODE_NORMAL,
+                new SamsungAudioPolicy.RouteEvidence(true, true, true, false, false, false),
+                7000L);
+        expect(SamsungAudioPolicy.isTargetOutputConfirmed(observed),
+                "ROUTE_OBSERVED with permission confirms target output");
+
+        SamsungAudioSnapshot speaker = SamsungAudioPolicy.evaluate(
+                TARGET, true,
+                true, SamsungAudioPolicy.PROFILE_CONNECTED,
+                true, SamsungAudioPolicy.PROFILE_DISCONNECTED,
+                devices, "", "",
+                SamsungAudioPolicy.AUDIO_MODE_NORMAL,
+                new SamsungAudioPolicy.RouteEvidence(true, true, false, false, false, false),
+                7001L);
+        expect(!SamsungAudioPolicy.isTargetOutputConfirmed(speaker),
+                "DEVICE_AVAILABLE (speaker/other route) does not confirm target output");
+
+        SamsungAudioSnapshot unknown = SamsungAudioPolicy.evaluate(
+                TARGET, true,
+                true, SamsungAudioPolicy.PROFILE_CONNECTED,
+                true, SamsungAudioPolicy.PROFILE_DISCONNECTED,
+                devices, "", "",
+                SamsungAudioPolicy.AUDIO_MODE_NORMAL,
+                SamsungAudioPolicy.RouteEvidence.none(),
+                7002L);
+        expect(!SamsungAudioPolicy.isTargetOutputConfirmed(unknown),
+                "UNKNOWN route does not confirm target output");
+        expect(!SamsungAudioPolicy.isTargetOutputConfirmed(null),
+                "null snapshot does not confirm target output");
+    }
+
     public static void main(String[] args) {
         testConnectionNormalization();
         testDeviceAvailabilityNeverImpliesActiveRouteAndDistinguishesUnsupportedApi();
         testOtherRouteYieldsDeviceAvailableNotObserved();
         testObservedRoutesAndCallModes();
         testTargetIsolationAndPermissionLoss();
+        testTargetOutputConfirmation();
         System.out.println("PASS: Samsung audio profile normalization, device availability boundary and route evidence");
     }
 }

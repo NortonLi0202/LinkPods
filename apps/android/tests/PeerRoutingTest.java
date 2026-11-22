@@ -38,6 +38,11 @@ public final class PeerRoutingTest {
         resetPeer.receive(report("example.media.player", false, 301), true);
         resetPeer.reset();
         expect(!resetPeer.receive(report("example.media.player", true, 301), true), "reset clears armed rising-edge, play without armed edge does not yield");
+        PeerRoutingPolicy dualLive = new PeerRoutingPolicy();
+        expect(!dualLive.receive(report("live.stream", true, 501), true), "initial ongoing high-category peer stream must not pull audio back");
+        expect(!dualLive.receive(report("live.stream", true, 501), true), "continued high-category peer stream must not pull audio back");
+        dualLive.receive(report("live.stream", false, 301), true);
+        expect(dualLive.receive(report("live.stream", true, 501), true), "new high-category replay after peer pause is honored");
         System.out.println("PASS: stale retry versus real phone replay/call/manual routing and sanitized OPACK decoding");
     }
     static byte[] hex(String s) { byte[] b=new byte[s.length()/2]; for(int i=0;i<b.length;i++)b[i]=(byte)Integer.parseInt(s.substring(2*i,2*i+2),16);return b; }
