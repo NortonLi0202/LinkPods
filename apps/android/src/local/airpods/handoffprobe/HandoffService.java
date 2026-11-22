@@ -19,6 +19,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +32,7 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
 /** Runtime AACP experiment; no boot receiver or persistent Root setup. */
 public final class HandoffService extends Service {
+    private static final long REMOTE_SOURCE_DEBOUNCE_MS = 1500L;
     static volatile HandoffService current;
     private static final java.util.concurrent.atomic.AtomicReference<RootEnvironment.Prepared> pendingBridge=
         new java.util.concurrent.atomic.AtomicReference<>();
@@ -76,6 +78,8 @@ public final class HandoffService extends Service {
     private Boolean owns;
     private String sourceMac;
     private int sourceType;
+    private String lastActiveSourceMac;
+    private long sourceIdleSince = -1L;
     private Boolean lastMediaState;
     private Runnable pendingReconnect;
     private long handoffAttemptGeneration;
@@ -102,6 +106,8 @@ public final class HandoffService extends Service {
         @Override public void onEnded(long connectionGeneration, String address, boolean compatibilityRequired) {
             if (stopped || current != HandoffService.this || deviceConfig == null || !address.equals(deviceConfig.target)) return;
             pendingListeningModeLabel = "";
+            lastActiveSourceMac = null;
+            cancelPendingRemoteRelease();
             log("SESSION_ENDED");
             log("BACKEND " + BackendPolicy.select(false, false, false, false));
             applyConnection(connection.ended(connectionGeneration, address, compatibilityRequired, !autoStartedSession));
@@ -538,6 +544,8 @@ public final class HandoffService extends Service {
         if (previousMode != requestedMode) ++routingModeGeneration;
         this.mode = requestedMode;
         if (previousMode != requestedMode) {
+            lastActiveSourceMac = null;
+            cancelPendingRemoteRelease();
             log("SESSION_MODE changed: " + previousMode + " -> " + requestedMode);
             updateForegroundNotification();
             if (requestedMode != SessionMode.AUTO_HANDOFF) {
@@ -796,6 +804,7 @@ public final class HandoffService extends Service {
         peers.clear();
         peerPolicy.reset();
         lastMediaState = null;
+        lastActiveSourceMac = null;
         controlSession.connect(target, address, connectionGeneration);
     }
 
@@ -843,20 +852,34 @@ public final class HandoffService extends Service {
             sourceMac = RoutingPackets.audioSourceMac(data);
             sourceType = data[12] & 255;
             log("AUDIO_SOURCE mac=" + sourceMac + " type=" + sourceType + " local=" + selfMac.equalsIgnoreCase(sourceMac));
-            boolean remoteAudioActive = sourceType != 0
+            boolean activeSource = sourceType != 0
                     && BluetoothAdapter.checkBluetoothAddress(sourceMac)
-                    && !"00:00:00:00:00:00".equals(sourceMac)
-                    && !selfMac.equalsIgnoreCase(sourceMac);
-            if (remoteAudioActive) {
-                if (peers.add(sourceMac)) {
-                    if (peerMac.isEmpty()) peerMac = sourceMac;
-                    finishPendingTake("audio-source-peer");
-                }
-                if (mode.allowsRouting() && !hasActiveHostStream()) {
-                    scheduleRemoteSourceRelease(sourceMac);
-                }
-            } else {
+                    && !"00:00:00:00:00:00".equals(sourceMac);
+            long now = SystemClock.elapsedRealtime();
+            if (!activeSource) {
+                if (sourceIdleSince < 0) sourceIdleSince = now;
                 cancelPendingRemoteRelease();
+                return;
+            }
+            // The earbuds can briefly report no active source during a switch.
+            boolean wasLocal = selfMac.equalsIgnoreCase(lastActiveSourceMac)
+                    && (sourceIdleSince < 0 || now - sourceIdleSince <= REMOTE_SOURCE_DEBOUNCE_MS);
+            lastActiveSourceMac = sourceMac;
+            sourceIdleSince = -1L;
+            if (selfMac.equalsIgnoreCase(sourceMac)) {
+                cancelPendingRemoteRelease();
+                return;
+            }
+            boolean discoveredPeer = peers.add(sourceMac);
+            if (discoveredPeer && peerMac.isEmpty()) peerMac = sourceMac;
+            if (mode.allowsRouting() && wasLocal && peerMac.equalsIgnoreCase(sourceMac)
+                    && !inCallAudioMode() && (!Boolean.FALSE.equals(owns) || audioLink.isWanted())) {
+                release("audio-source-remote-takeover", false);
+                return;
+            }
+            if (discoveredPeer) finishPendingTake("audio-source-peer");
+            if (mode.allowsRouting() && !hasActiveHostStream()) {
+                scheduleRemoteSourceRelease(sourceMac);
             }
         }
     }
@@ -881,7 +904,7 @@ public final class HandoffService extends Service {
                 release("audio-source-remote", false);
             }
         };
-        handler.postDelayed(pendingRemoteRelease, 1500L);
+        handler.postDelayed(pendingRemoteRelease, REMOTE_SOURCE_DEBOUNCE_MS);
     }
 
     private void announcePeers() {
@@ -945,6 +968,7 @@ public final class HandoffService extends Service {
             return;
         }
         cancelPendingHandoffCheck();
+        cancelPendingRemoteRelease();
         setHandoffNotice("");
         policy.onRemoteRequest();
         owns = false;
@@ -990,6 +1014,7 @@ public final class HandoffService extends Service {
     @Override public void onDestroy() {
         stopped = true;
         cancelPendingReconnect();
+        cancelPendingRemoteRelease();
         cancelPendingHandoffCheck();
         handoffNotice = "";
         connection.stop();
