@@ -7,12 +7,16 @@ public final class ConnectionPolicy {
     public static final class Snapshot {
         public final String targetAddress,description;
         public final Phase phase;
-        Snapshot(String target,Phase phase,String description){this.targetAddress=target;this.phase=phase;this.description=description;}
+        public final boolean compatibilityRequired;
+        Snapshot(String target,Phase phase,String description){this(target,phase,description,false);}
+        Snapshot(String target,Phase phase,String description,boolean compatibilityRequired){
+            this.targetAddress=target;this.phase=phase;this.description=description;this.compatibilityRequired=compatibilityRequired;
+        }
     }
     private String target="",description="控制服务未运行";
     private Phase phase=Phase.IDLE;
     private long generation;
-    private boolean fallbackUsed,directWorked,bridge,sessionReady;
+    private boolean fallbackUsed,directWorked,bridge,sessionReady,compatibilityEvidence;
     public synchronized long generation(){return generation;}
     public synchronized boolean fallbackUsed(){return fallbackUsed;}
     public synchronized boolean isStopped(){return phase==Phase.STOPPED;}
@@ -27,14 +31,14 @@ public final class ConnectionPolicy {
     }
     public synchronized Snapshot snapshot(String address){
         return address!=null && address.equalsIgnoreCase(target)
-            ? new Snapshot(target,phase,description) : new Snapshot(address,Phase.IDLE,"此设备没有活动控制会话");
+            ? new Snapshot(target,phase,description,compatibilityEvidence) : new Snapshot(address,Phase.IDLE,"此设备没有活动控制会话",false);
     }
     public synchronized Action start(String address,boolean preparedBridge){
         boolean upgrade=preparedBridge && !bridge && address!=null && address.equalsIgnoreCase(target)
             && (phase==Phase.DIRECT_CONNECTING || phase==Phase.DIRECT_READY
                 || phase==Phase.RECONNECTING || phase==Phase.BRIDGE_PREPARING);
         if(!upgrade && phase!=Phase.IDLE && phase!=Phase.FAILED && phase!=Phase.STOPPED)return Action.NONE;
-        if(!upgrade)directWorked=false;
+        if(!upgrade){directWorked=false;compatibilityEvidence=false;}
         target=address;++generation;bridge=preparedBridge;sessionReady=false;
         phase=bridge?Phase.BRIDGE_CONNECTING:Phase.DIRECT_CONNECTING;
         description=bridge?"已准备桥接，等待控制通道握手；交接未验证":"直接连接控制通道，无需 Root；交接未验证";
@@ -50,10 +54,18 @@ public final class ConnectionPolicy {
     }
     public synchronized Action ended(long expected,String address){return ended(expected,address,false);}
     public synchronized Action ended(long expected,String address,boolean compatibilityRequired){
+        return ended(expected,address,compatibilityRequired,true);
+    }
+    public synchronized Action ended(long expected,String address,boolean compatibilityRequired,boolean allowBridgeFallback){
         if(!accepts(expected,address) || (phase!=Phase.DIRECT_CONNECTING && phase!=Phase.BRIDGE_CONNECTING && phase!=Phase.DIRECT_READY && phase!=Phase.BRIDGE_READY))return Action.NONE;
         if(sessionReady || (!bridge && directWorked)){
             phase=Phase.RECONNECTING;description=bridge?"桥接控制通道断开，等待重连":"直连控制通道断开，等待直接重连（不请求 Root）";
             return Action.RECONNECT;
+        }
+        if(compatibilityRequired) compatibilityEvidence=true;
+        if(!bridge && compatibilityRequired && !allowBridgeFallback){
+            fail("直连需要兼容桥接，请在应用内准备");
+            return Action.NONE;
         }
         if(!bridge && compatibilityRequired && !fallbackUsed){
             fallbackUsed=true;phase=Phase.BRIDGE_PREPARING;
@@ -101,6 +113,7 @@ public final class ConnectionPolicy {
         sessionReady=false;
         directWorked=false;
         bridge=false;
+        compatibilityEvidence=false;
         phase=Phase.STOPPED;
         description="控制服务已停止";
     }

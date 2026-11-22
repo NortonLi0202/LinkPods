@@ -1,8 +1,10 @@
 package local.airpods.handoffprobe;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
@@ -11,7 +13,9 @@ import android.bluetooth.BluetoothProfile;
 import android.content.Intent;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.media.AudioManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -39,7 +43,17 @@ public final class HandoffService extends Service {
             RootEnvironment.queueBridgeStop(prepared);
     }
     public static final String EXTRA_SESSION_MODE = "session_mode";
+    public static final String EXTRA_LISTENING_MODE = "listening_mode";
+    public static final String EXTRA_PENDING_ACTION = "pending_action";
+    public static final String EXTRA_AUTO_STARTED = "auto_started";
+    public static final String ACTION_SET_LISTENING_MODE = "local.airpods.handoffprobe.action.SET_LISTENING_MODE";
+    public static final String ACTION_MANUAL_HANDOFF = "local.airpods.handoffprobe.action.MANUAL_HANDOFF";
+    private static final int NOTIFICATION_ID = 42;
+    private static final int AUTO_START_BLOCKED_NOTIFICATION_ID = 43;
     private volatile SessionMode mode = SessionMode.CONTROL_ONLY;
+    private volatile String pendingListeningModeLabel = "";
+    private volatile String lastNotificationSignature = "";
+    private volatile boolean autoStartedSession;
     private volatile long routingModeGeneration;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final RoutingPolicy policy = new RoutingPolicy();
@@ -77,16 +91,26 @@ public final class HandoffService extends Service {
                 + " handoff=not-verified");
             finishPendingTake("pending-player-play");
             announcePeers();
+            updateForegroundNotification();
         }
         @Override public void onPacket(byte[] data) {
             if (stopped || current != HandoffService.this) return;
             receive(data);
+            syncPendingListeningMode();
+            updateForegroundNotification();
         }
         @Override public void onEnded(long connectionGeneration, String address, boolean compatibilityRequired) {
             if (stopped || current != HandoffService.this || deviceConfig == null || !address.equals(deviceConfig.target)) return;
+            pendingListeningModeLabel = "";
             log("SESSION_ENDED");
             log("BACKEND " + BackendPolicy.select(false, false, false, false));
-            applyConnection(connection.ended(connectionGeneration, address, compatibilityRequired));
+            applyConnection(connection.ended(connectionGeneration, address, compatibilityRequired, !autoStartedSession));
+            updateForegroundNotification();
+        }
+        @Override public void onStateChanged() {
+            if (stopped || current != HandoffService.this) return;
+            syncPendingListeningMode();
+            updateForegroundNotification();
         }
     };
     private final ControlSession controlSession = new ControlSession(handler, this::log, controlEvents);
@@ -126,6 +150,7 @@ public final class HandoffService extends Service {
             if (accessLost && !stopped && mode.allowsRouting() && controlSession.isReady() && !inCallAudioMode()) {
                 mediaInformation(false);
             }
+            if (accessLost && !stopped) updateForegroundNotification();
         }
     };
     private PlaybackWatch playbackWatch;
@@ -204,7 +229,73 @@ public final class HandoffService extends Service {
         } else {
             handoff = "关闭（纯控制模式）";
         }
-        return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff);
+        return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff, service.handoffNotice);
+    }
+
+    /** Evaluates the shared domain StatusSummary for both home UI and persistent notification. */
+    public static StatusSummary evaluateSummary(Context context, String targetAddress, boolean bridgeRequired) {
+        boolean btAllowed = context == null || Build.VERSION.SDK_INT < 31
+                || context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+        boolean mediaAllowed = hasNotificationAccess(context);
+        boolean targetSelected = targetAddress != null && !targetAddress.isEmpty();
+        SessionStatus status = sessionStatus(targetAddress);
+        EarbudSnapshot earbud = earbudSnapshot(targetAddress);
+        SamsungAudioSnapshot audioState = audioSnapshot(targetAddress);
+        return StatusSummaryPolicy.evaluate(btAllowed, mediaAllowed, targetSelected, status, earbud, audioState, bridgeRequired);
+    }
+
+    public static boolean hasNotificationAccess(Context context) {
+        if (context == null || Build.VERSION.SDK_INT < 27) return true;
+        NotificationManager nm = context.getSystemService(NotificationManager.class);
+        if (nm == null) return true;
+        try {
+            return nm.isNotificationListenerAccessGranted(new ComponentName(context, PlaybackListener.class));
+        } catch (RuntimeException ignored) {
+            return true;
+        }
+    }
+
+    /** Notifies user with an actionable solution when background auto-start cannot proceed. */
+    public static void notifyAutoStartBlocked(Context context, String headline, String detail, StatusSummary.PrimaryAction action) {
+        if (context == null) return;
+        NotificationManager nm = context.getSystemService(NotificationManager.class);
+        if (nm == null) return;
+        ensureChannel(nm);
+        Notification.Builder builder = baseNotificationBuilder(
+                context,
+                headline == null ? "无法自动启用自动交接" : headline,
+                detail == null ? "" : detail,
+                detail == null ? "" : detail,
+                activityPendingIntent(context, StatusSummary.PrimaryAction.NONE, 901),
+                false)
+                .setAutoCancel(true);
+        if (action != null && action != StatusSummary.PrimaryAction.NONE) {
+            builder.addAction(new Notification.Action.Builder(
+                    null, action.label, activityPendingIntent(context, action, 902)).build());
+        }
+        nm.notify(AUTO_START_BLOCKED_NOTIFICATION_ID, builder.build());
+    }
+
+    private static Notification.Builder baseNotificationBuilder(
+            Context context,
+            String title,
+            String body,
+            String expanded,
+            PendingIntent contentIntent,
+            boolean ongoing) {
+        return new Notification.Builder(context, "handoff")
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(new Notification.BigTextStyle().bigText(expanded))
+                .setContentIntent(contentIntent)
+                .setOngoing(ongoing);
+    }
+
+    private static void ensureChannel(NotificationManager nm) {
+        if (nm != null) {
+            nm.createNotificationChannel(new NotificationChannel("handoff", "LinkPods 控制服务", NotificationManager.IMPORTANCE_LOW));
+        }
     }
 
     public static boolean manualHandoff(String targetAddress) {
@@ -229,7 +320,9 @@ public final class HandoffService extends Service {
         return service!=null && !service.stopped && service.controlSession.refreshState(targetAddress);
     }
     private final SamsungAudioMonitor.Listener audioMonitorListener = new SamsungAudioMonitor.Listener() {
-        @Override public void onAudioSnapshotChanged(SamsungAudioSnapshot snapshot) {}
+        @Override public void onAudioSnapshotChanged(SamsungAudioSnapshot snapshot) {
+            updateForegroundNotification();
+        }
         @Override public void onA2dpStateChanged(String address, int state) {
             if (stopped || target == null || !target.getAddress().equalsIgnoreCase(address)) return;
             log("A2DP_STATE " + state);
@@ -268,9 +361,9 @@ public final class HandoffService extends Service {
         audio = getSystemService(AudioManager.class);
         adapter = getSystemService(BluetoothManager.class).getAdapter();
         HiddenApiBypass.addHiddenApiExemptions("Landroid/bluetooth/");
-        getSystemService(NotificationManager.class).createNotificationChannel(
-            new NotificationChannel("handoff", "LinkPods 控制服务", NotificationManager.IMPORTANCE_LOW));
-        startForeground(42, new Notification.Builder(this, "handoff")
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        ensureChannel(nm);
+        startForeground(NOTIFICATION_ID, new Notification.Builder(this, "handoff")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setContentTitle("LinkPods 耳机控制")
             .setContentText("保持耳机控制通道；可在应用内停止")
@@ -288,23 +381,136 @@ public final class HandoffService extends Service {
         }
     }
 
+    public static void setListeningModeFromNotification(int mode) {
+        HandoffService service = current;
+        if (service != null && !service.stopped) {
+            service.applyListeningModeAction(mode);
+        }
+    }
+
+    private void applyListeningModeAction(int requestedListeningMode) {
+        if (deviceConfig == null || !controlSession.isReady() || requestedListeningMode < 0) return;
+        EarbudSnapshot earbud = controlSession.snapshot(deviceConfig.target);
+        if (!earbud.supportsListeningMode(requestedListeningMode)) return;
+        String label = StatusSummaryPolicy.modeDisplayName(requestedListeningMode);
+        String previousPending = pendingListeningModeLabel;
+        pendingListeningModeLabel = label;
+        if (!controlSession.setSetting(deviceConfig.target, EarbudCommands.LISTENING_MODE, requestedListeningMode)) {
+            EarbudSnapshot refreshed = controlSession.snapshot(deviceConfig.target);
+            pendingListeningModeLabel = refreshed.pending.contains(EarbudCommands.LISTENING_MODE) ? previousPending : "";
+        } else {
+            handler.postDelayed(() -> {
+                if (!stopped && current == this) {
+                    syncPendingListeningMode();
+                    updateForegroundNotification();
+                }
+            }, 5100L);
+        }
+        updateForegroundNotification();
+    }
+
+    private void syncPendingListeningMode() {
+        if (pendingListeningModeLabel.isEmpty() || deviceConfig == null) return;
+        EarbudSnapshot earbud = controlSession.snapshot(deviceConfig.target);
+        if (!earbud.pending.contains(EarbudCommands.LISTENING_MODE)) {
+            pendingListeningModeLabel = "";
+            return;
+        }
+        Integer currentMode = earbud.value(EarbudCommands.LISTENING_MODE);
+        if (currentMode != null && StatusSummaryPolicy.modeDisplayName(currentMode).equals(pendingListeningModeLabel)) {
+            pendingListeningModeLabel = "";
+        }
+    }
+
+    private static PendingIntent activityPendingIntent(Context context, StatusSummary.PrimaryAction action, int requestCode) {
+        boolean hasAction = action != StatusSummary.PrimaryAction.NONE;
+        Intent launch = new Intent(context, hasAction ? MainActivity.NotificationEntry.class : MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if (hasAction) launch.putExtra(EXTRA_PENDING_ACTION, action.name());
+        return PendingIntent.getActivity(context, requestCode, launch,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    private PendingIntent receiverPendingIntent(String actionName, int modeValue, int requestCode) {
+        Intent intent = new Intent(this, NotificationActionReceiver.class).setAction(actionName);
+        if (modeValue >= 0) {
+            intent.putExtra(EXTRA_LISTENING_MODE, modeValue);
+        }
+        if (ACTION_MANUAL_HANDOFF.equals(actionName) && deviceConfig != null) {
+            intent.putExtra("address", deviceConfig.target);
+        }
+        return PendingIntent.getBroadcast(this, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
     private void updateForegroundNotification() {
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm == null) return;
-        boolean handoff = mode == SessionMode.AUTO_HANDOFF;
-        Notification notification = new Notification.Builder(this, "handoff")
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle(handoff ? "LinkPods 自动交接" : "LinkPods 耳机控制")
-            .setContentText(handoff
-                ? (handoffNotice.isEmpty() ? "保持控制通道，随媒体播放交接；可在应用内停止" : handoffNotice)
-                : "保持耳机控制通道；可在应用内停止")
-            .setOngoing(true).build();
-        nm.notify(42, notification);
+        String targetAddress = deviceConfig == null ? "" : deviceConfig.target;
+        SessionStatus status = sessionStatus(targetAddress);
+        EarbudSnapshot earbud = targetAddress.isEmpty()
+                ? EarbudSnapshot.empty("", "尚未选择目标耳机")
+                : controlSession.snapshot(targetAddress);
+        if (!earbud.pending.contains(EarbudCommands.LISTENING_MODE)) {
+            pendingListeningModeLabel = "";
+        }
+        ConnectionPolicy.Snapshot conn = connection.snapshot(targetAddress);
+        boolean bridgeNeeded = !status.channelReady && conn.compatibilityRequired;
+        StatusSummary summary = evaluateSummary(this, targetAddress, bridgeNeeded);
+        String telemetry = StatusSummaryPolicy.formatNotificationTelemetry(status, earbud, pendingListeningModeLabel);
+        List<StatusSummary.NotificationAction> actions = StatusSummaryPolicy.selectNotificationActions(summary, status, earbud);
+
+        String title = summary.level == StatusSummary.Level.NORMAL
+                ? "LinkPods · " + summary.headline
+                : summary.levelLabel() + " · " + summary.headline;
+        String body = telemetry.isEmpty() ? summary.detail : telemetry;
+        String expanded = telemetry.isEmpty() ? summary.detail : telemetry + "\n" + summary.detail;
+
+        StringBuilder sig = new StringBuilder().append(title).append('|').append(body).append('|').append(expanded);
+        for (StatusSummary.NotificationAction action : actions) {
+            sig.append('|').append(action.kind).append(':').append(action.label).append(':').append(action.listeningMode);
+        }
+        String signature = sig.toString();
+        if (signature.equals(lastNotificationSignature)) {
+            return;
+        }
+        lastNotificationSignature = signature;
+
+        Notification.Builder builder = baseNotificationBuilder(
+                this,
+                title,
+                body,
+                expanded,
+                activityPendingIntent(this, StatusSummary.PrimaryAction.NONE, 100),
+                true);
+        for (int i = 0; i < actions.size(); i++) {
+            StatusSummary.NotificationAction action = actions.get(i);
+            PendingIntent pi;
+            if (action.kind == StatusSummary.NotificationAction.Kind.LISTENING_MODE) {
+                pi = receiverPendingIntent(ACTION_SET_LISTENING_MODE, action.listeningMode, 200 + action.listeningMode);
+            } else if (action.primaryAction == StatusSummary.PrimaryAction.MANUAL_HANDOFF) {
+                pi = receiverPendingIntent(ACTION_MANUAL_HANDOFF, -1, 300 + i);
+            } else {
+                pi = activityPendingIntent(this, action.primaryAction, 300 + i);
+            }
+            builder.addAction(new Notification.Action.Builder(null, action.label, pi).build());
+        }
+        nm.notify(NOTIFICATION_ID, builder.build());
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (stopped) { return START_NOT_STICKY; }
         if (intent == null) { stopSelf(); return START_NOT_STICKY; }
+        String intentAction = intent.getAction();
+        if (ACTION_SET_LISTENING_MODE.equals(intentAction)) {
+            applyListeningModeAction(intent.getIntExtra(EXTRA_LISTENING_MODE, -1));
+            return START_NOT_STICKY;
+        }
+        if (ACTION_MANUAL_HANDOFF.equals(intentAction)) {
+            if (deviceConfig != null) {
+                manualHandoff(deviceConfig.target);
+            }
+            return START_NOT_STICKY;
+        }
         if (adapter == null) { log("SERVICE bluetooth adapter unavailable"); stopSelf(); return START_NOT_STICKY; }
         final DeviceConfig requested;
         try { requested = DeviceConfig.create(intent.getStringExtra("address"), intent.getStringExtra("local_mac"), intent.getStringExtra("peer_address")); }
@@ -318,6 +524,7 @@ public final class HandoffService extends Service {
         }
         if (deviceConfig == null) controlSession.begin(requested.target);
         deviceConfig = merged;
+        autoStartedSession = intent.getBooleanExtra(EXTRA_AUTO_STARTED, false);
         selfMac = deviceConfig.local;
         if (audioMonitor != null) audioMonitor.setTargetAddress(deviceConfig.target);
         SessionMode requestedMode = SessionMode.CONTROL_ONLY;
@@ -333,6 +540,9 @@ public final class HandoffService extends Service {
             log("SESSION_MODE changed: " + previousMode + " -> " + requestedMode);
             updateForegroundNotification();
             if (requestedMode != SessionMode.AUTO_HANDOFF) {
+                if (!intent.getBooleanExtra(EXTRA_AUTO_STARTED, false)) {
+                    BluetoothAutoStartReceiver.onUserStoppedOrDowngraded();
+                }
                 if (playbackWatch != null) playbackWatch.stop();
                 policy.reset();
                 peerPolicy.reset();
@@ -376,11 +586,21 @@ public final class HandoffService extends Service {
     void restartSessionWatch() {
         if (stopped || mode != SessionMode.AUTO_HANDOFF) return;
         watch().restart();
+        updateForegroundNotification();
     }
 
     void onMediaAccessLost() {
         if (stopped) return;
         if (playbackWatch != null) playbackWatch.onAccessLost();
+        updateForegroundNotification();
+    }
+
+    static void stopAutoStartedSession(String targetAddress) {
+        HandoffService service = current;
+        if (service != null && !service.stopped && service.autoStartedSession
+                && service.deviceConfig != null && service.deviceConfig.target.equalsIgnoreCase(targetAddress)) {
+            service.stopSelf();
+        }
     }
 
     private static boolean isCallAudioMode(int audioMode) {

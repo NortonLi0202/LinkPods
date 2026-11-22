@@ -77,6 +77,9 @@ public class MainActivity extends Activity {
         boolean dark=(getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES;
         setTheme(dark?android.R.style.Theme_Material_NoActionBar:android.R.style.Theme_Material_Light_NoActionBar);
         super.onCreate(state);
+        if (state != null && this instanceof NotificationEntry && getIntent() != null) {
+            getIntent().removeExtra(HandoffService.EXTRA_PENDING_ACTION);
+        }
         restoredTarget = state == null ? null : state.getString("selected_device");
         if (state != null) {
             String savedMode = state.getString("requested_mode");
@@ -145,6 +148,7 @@ public class MainActivity extends Activity {
             }
             @Override public String deviceName() { return selectedName(); }
             @Override public String connectionStatus() { return audioConnectionLabel(); }
+            @Override public void runPrimaryAction(StatusSummary.PrimaryAction action) { executePrimaryAction(action); }
         }, state == null ? null : state.getString("ui_page"));
         status=ui.environmentStatus; output=ui.logOutput;
         localAudioMonitor = new SamsungAudioMonitor(this, handler, audioMonitorListener);
@@ -219,9 +223,71 @@ public class MainActivity extends Activity {
         String address=target==null?"":target.getAddress();
         EarbudSnapshot observed=target==null?EarbudSnapshot.empty(address,"请在应用设置中选择耳机"):HandoffService.earbudSnapshot(address);
         SessionStatus session=HandoffService.sessionStatus(address);
+        SamsungAudioSnapshot audioSnap = currentAudioSnapshot(address);
+        ConnectionPolicy.Snapshot caps = HandoffService.capabilities(address);
+        boolean mediaOk = mediaAccessGranted();
+        boolean bridgeRequired = !session.channelReady && caps != null && caps.compatibilityRequired;
+        StatusSummary summary = StatusSummaryPolicy.evaluate(
+                hasPermission(), mediaOk, target != null, session, observed, audioSnap, bridgeRequired);
         ui.bind(observed,address,session);
-        ui.bindAudio(currentAudioSnapshot(address));
-        ui.bindCapabilities(HandoffService.capabilities(address),mediaAccessGranted());
+        ui.bindAudio(audioSnap);
+        ui.bindCapabilities(caps, mediaOk);
+        ui.bindSummary(summary);
+    }
+
+    private void executePrimaryAction(StatusSummary.PrimaryAction action) {
+        if (action == null) return;
+        switch (action) {
+            case GRANT_BLUETOOTH_PERMISSION:
+                if (Build.VERSION.SDK_INT >= 31) requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, 1);
+                break;
+            case SELECT_DEVICE:
+                if (ui != null) ui.show(LinkPodsUi.SETTINGS);
+                break;
+            case START_CONTROL:
+                startControlOnly();
+                break;
+            case ENABLE_HANDOFF:
+                startAutomatic();
+                break;
+            case PREPARE_BRIDGE:
+                prepareEnvironment(true, false);
+                break;
+            case GRANT_NOTIFICATION_ACCESS:
+                startActivity(new Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+                break;
+            case MANUAL_HANDOFF:
+                BluetoothDevice target = hasPermission() ? selected() : null;
+                if (target != null) HandoffService.manualHandoff(target.getAddress());
+                refreshControls();
+                break;
+            case OPEN_APP:
+                if (ui != null) ui.show(LinkPodsUi.CONNECTION);
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void handleNotificationAction(Intent intent) {
+        if (!(this instanceof NotificationEntry) || intent == null) return;
+        String raw = intent.getStringExtra(HandoffService.EXTRA_PENDING_ACTION);
+        if (raw == null) return;
+        intent.removeExtra(HandoffService.EXTRA_PENDING_ACTION);
+        try {
+            StatusSummary.PrimaryAction action = StatusSummary.PrimaryAction.valueOf(raw);
+            executePrimaryAction(action == StatusSummary.PrimaryAction.PREPARE_BRIDGE
+                    ? StatusSummary.PrimaryAction.OPEN_APP : action);
+        } catch (IllegalArgumentException ignored) {}
+    }
+
+    /** Notification buttons enter through this non-exported Activity. */
+    public static final class NotificationEntry extends MainActivity {}
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleNotificationAction(intent);
     }
     @Override protected void onStart() {
         super.onStart();
@@ -229,6 +295,7 @@ public class MainActivity extends Activity {
         syncLocalAudioMonitor();
         refreshStatus();
         refreshControls();
+        handleNotificationAction(getIntent());
     }
     @Override protected void onResume() {
         super.onResume();visible=true;handler.removeCallbacks(controlPoll);handler.post(controlPoll);
@@ -325,6 +392,8 @@ public class MainActivity extends Activity {
     private void startAutomatic() {
         if(!hasPermission() || selected()==null){log("请先授权附近设备并选择耳机。");return;}
         cancelEnvironment();
+        BluetoothAutoStartReceiver.setAutoStartOptIn(this, true);
+        BluetoothAutoStartReceiver.onManualAutoHandoffEnabled();
         nativeBackendReady=false;preparedLocalAddress="";
         requestedMode = SessionMode.AUTO_HANDOFF;
         if(!mediaAccessGranted())log("媒体状态权限未授权：可以使用耳机控制，自动交接还缺少播放状态。");
@@ -332,19 +401,24 @@ public class MainActivity extends Activity {
         startServicePrepared(SessionMode.AUTO_HANDOFF);
     }
     private void disableHandoff() {
+        BluetoothAutoStartReceiver.setAutoStartOptIn(this, false);
+        BluetoothAutoStartReceiver.onUserStoppedOrDowngraded();
+        requestedMode = SessionMode.CONTROL_ONLY;
         if (!HandoffService.isRunning()) {
-            log("控制服务未运行。");
+            log("已关闭自动交接偏好；控制服务未运行。");
+            refreshControls();
             return;
         }
         cancelEnvironment();
         nativeBackendReady = false;
         preparedLocalAddress = "";
-        requestedMode = SessionMode.CONTROL_ONLY;
         log("正在切换为纯控制模式（CONTROL_ONLY）；保留耳机控制，停止自动路由。");
         startServicePrepared(SessionMode.CONTROL_ONLY);
     }
     private void stopSession() {
-        cancelEnvironment(); nativeBackendReady=false;
+        cancelEnvironment();
+        BluetoothAutoStartReceiver.onUserStoppedOrDowngraded();
+        nativeBackendReady=false;
         requestedMode = SessionMode.CONTROL_ONLY;
         stopService(new Intent(MainActivity.this,HandoffService.class));
         log("已请求停止会话；仅清理本次应用实际启动的桥接。");
