@@ -29,6 +29,12 @@ public final class AudioLinkTest {
         expect(resetLink.isWanted() == false, "isWanted is false after reset");
         expect(resetLink.update(0) == AudioLinkPolicy.Action.NONE, "reset cancels connect intent on disconnected broadcast");
         expect(resetLink.update(2) == AudioLinkPolicy.Action.NONE, "reset cancels disconnect intent on connected broadcast");
+
+        AudioLinkPolicy manualReconnect = new AudioLinkPolicy();
+        expect(manualReconnect.want(false, 2) == AudioLinkPolicy.Action.DISCONNECT, "yield disconnects active A2DP");
+        expect(manualReconnect.update(0) == AudioLinkPolicy.Action.NONE, "disconnect finishes");
+        expect(manualReconnect.update(1) == AudioLinkPolicy.Action.NONE, "new user-initiated connecting after disconnect is not torn down");
+        expect(manualReconnect.update(2) == AudioLinkPolicy.Action.NONE, "subsequent connected state remains undisturbed");
         System.out.println("PASS: A2DP ownership lifecycle and takeover/disconnect races");
     }
 }
