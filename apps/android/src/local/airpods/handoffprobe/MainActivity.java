@@ -401,16 +401,17 @@ public class MainActivity extends Activity {
         startServicePrepared(SessionMode.AUTO_HANDOFF);
     }
     private void disableHandoff() {
+        BluetoothAutoStartReceiver.setAutoStartOptIn(this, false);
+        BluetoothAutoStartReceiver.onUserStoppedOrDowngraded();
+        requestedMode = SessionMode.CONTROL_ONLY;
         if (!HandoffService.isRunning()) {
-            log("控制服务未运行。");
+            log("已关闭自动交接偏好；控制服务未运行。");
+            refreshControls();
             return;
         }
         cancelEnvironment();
-        BluetoothAutoStartReceiver.setAutoStartOptIn(this, false);
-        BluetoothAutoStartReceiver.onUserStoppedOrDowngraded();
         nativeBackendReady = false;
         preparedLocalAddress = "";
-        requestedMode = SessionMode.CONTROL_ONLY;
         log("正在切换为纯控制模式（CONTROL_ONLY）；保留耳机控制，停止自动路由。");
         startServicePrepared(SessionMode.CONTROL_ONLY);
     }

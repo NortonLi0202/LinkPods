@@ -393,16 +393,18 @@ public final class HandoffService extends Service {
         EarbudSnapshot earbud = controlSession.snapshot(deviceConfig.target);
         if (!earbud.supportsListeningMode(requestedListeningMode)) return;
         String label = StatusSummaryPolicy.modeDisplayName(requestedListeningMode);
+        String previousPending = pendingListeningModeLabel;
         pendingListeningModeLabel = label;
         if (!controlSession.setSetting(deviceConfig.target, EarbudCommands.LISTENING_MODE, requestedListeningMode)) {
-            pendingListeningModeLabel = "";
+            EarbudSnapshot refreshed = controlSession.snapshot(deviceConfig.target);
+            pendingListeningModeLabel = refreshed.pending.contains(EarbudCommands.LISTENING_MODE) ? previousPending : "";
         } else {
             handler.postDelayed(() -> {
                 if (!stopped && current == this) {
                     syncPendingListeningMode();
                     updateForegroundNotification();
                 }
-            }, 3200L);
+            }, 5100L);
         }
         updateForegroundNotification();
     }

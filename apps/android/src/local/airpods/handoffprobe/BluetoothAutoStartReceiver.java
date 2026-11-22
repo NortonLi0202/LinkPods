@@ -111,7 +111,7 @@ public final class BluetoothAutoStartReceiver extends BroadcastReceiver {
             classicDisconnected = false;
             cancelPendingStop();
             boolean optedIn = isAutoStartOptedIn(context);
-            boolean running = HandoffService.current != null;
+            boolean running = HandoffService.isRunning();
             AutoStartPolicy.ConnectDecision decision =
                     POLICY.onTargetConnected(address, saved.target, optedIn, true, running);
             if (decision == AutoStartPolicy.ConnectDecision.START_AUTO_HANDOFF) {
