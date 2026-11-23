@@ -43,6 +43,22 @@ public final class PeerRoutingTest {
         expect(!dualLive.receive(report("live.stream", true, 501), true), "continued high-category peer stream must not pull audio back");
         dualLive.receive(report("live.stream", false, 301), true);
         expect(dualLive.receive(report("live.stream", true, 501), true), "new high-category replay after peer pause is honored");
+        PeerRoutingPolicy chatter = new PeerRoutingPolicy();
+        chatter.receive(report("live.stream", true, 301), false);
+        expect(!chatter.receive(report("Unknown", false, 100), true), "route-only NO is ignored");
+        expect(!chatter.receive(report("live.stream", true, 301), true), "route-only NO must not clear peer playback and fake a rising edge");
+        chatter.receive(report("tv.danmaku.bilianime", false, 301), true);
+        expect(!chatter.receive(report("Unknown", true, 100), true), "route-only YES cannot consume an armed edge");
+        expect(chatter.receive(report("tv.danmaku.bilianime", true, 301), true), "Bilibili play after a real pause yields");
+        chatter.reset();
+        chatter.receive(report("Unknown", false, 100), true);
+        expect(!chatter.receive(report("tv.danmaku.bilianime", true, 301), true),
+            "route-only NO cannot arm playback before the first stream report");
+        Map<String,Object> malformed = report("tv.danmaku.bilianime", true, 301);
+        malformed.put("hostStreamingState", "UNKNOWN");
+        chatter.receive(malformed, true);
+        expect(!chatter.receive(report("tv.danmaku.bilianime", true, 301), true),
+            "an unrecognized streaming state cannot manufacture a stop");
         System.out.println("PASS: stale retry versus real phone replay/call/manual routing and sanitized OPACK decoding");
     }
     static byte[] hex(String s) { byte[] b=new byte[s.length()/2]; for(int i=0;i<b.length;i++)b[i]=(byte)Integer.parseInt(s.substring(2*i,2*i+2),16);return b; }

@@ -48,6 +48,13 @@ public final class RoutingTest {
         expect(!queued.consumeTake(true,true), "pending takeover completes only once");
         queued.onPlayback("music",2); queued.onPlayback("music",3); queued.remove("music");
         expect(!queued.consumeTake(true,true), "removed session cancels stale takeover");
+        queued.seed("yielded", 2);
+        queued.onPlayback("new", 3);
+        expect(queued.onPlayback("yielded", 3, false) == RoutingPolicy.Action.PAUSE,
+            "yield bounce updates playback and only requests a pause");
+        expect(queued.isPending(), "yield bounce preserves another player's pending take");
+        queued.onPlayback("new", 2);
+        expect(!queued.consumeTake(true,true), "continuing bounce cannot inherit a stopped player's take");
         RoutingPolicy gated = new RoutingPolicy();
         gated.onPlayback("music", 3);
         expect(gated.evaluateTake(false, true, false) == RoutingPolicy.TakeDecision.WAIT, "unready channel waits without dropping pending take");
@@ -67,11 +74,13 @@ public final class RoutingTest {
         RoutingPolicy reseed = new RoutingPolicy();
         reseed.seed("music", 3);
         expect(!reseed.isPending(), "passive seed alone does not create pending take");
-        reseed.restorePendingIfPlaying();
+        reseed.onPlayback("music", 2);
+        reseed.onPlayback("music", 3);
+        reseed.reseed(java.util.Map.of("music", 3));
         expect(reseed.isPending() && reseed.consumeTake(true, true), "pending take restored when active playback remains");
         RoutingPolicy stoppedReseed = new RoutingPolicy();
-        stoppedReseed.seed("music", 2);
-        stoppedReseed.restorePendingIfPlaying();
+        stoppedReseed.onPlayback("music", 3);
+        stoppedReseed.reseed(java.util.Map.of("music", 2, "unrelated", 3));
         expect(!stoppedReseed.isPending(), "stopped playback does not restore stale pending take");
         expect(!p.needsClaim(true,true), "already-owned local media must not ask the phone to yield again");
         expect(p.needsClaim(false,true), "local source alone does not establish ownership");

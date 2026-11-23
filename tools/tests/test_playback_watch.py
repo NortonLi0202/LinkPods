@@ -40,6 +40,7 @@ public class MediaController {
  public final Set<Callback> callbacks=new HashSet<>();
  public Callback lastCallback;
  public int registered,unregistered,paused;
+ public boolean rejectPause;
  public java.util.function.Consumer<Callback> onRegister;
  private final String pkg;
  private int playbackState;
@@ -62,7 +63,7 @@ public class MediaController {
  public static class TransportControls {
   private final MediaController owner;
   TransportControls(MediaController o){owner=o;}
-  public void pause(){owner.paused++;}
+  public void pause(){if(owner.rejectPause)throw new IllegalStateException("session ended");owner.paused++;}
  }
 }''',
     'android/media/session/MediaSessionManager.java': '''package android.media.session;
@@ -369,9 +370,17 @@ public class PlaybackWatchTest {
 
   expect(watch.start(),"watch starts with mixed players");
   expect(telecom.callbacks.isEmpty(),"telecom session is never tracked");
-  watch.pauseActive();
+  Set<String> yielded=new HashSet<>();
+  watch.pauseActive(yielded);
   expect(playing.paused==1&&buffering.paused==1,"pauseActive pauses playing and buffering players");
   expect(paused.paused==0&&telecom.paused==0,"pauseActive skips paused and telecom players");
+  expect(yielded.equals(Set.of(playing.getSessionToken().toString(),buffering.getSessionToken().toString())),
+   "cooldown captures only the affected media sessions");
+  watch.pausePlayer(playing.getSessionToken().toString());
+  expect(playing.paused==2&&buffering.paused==1,"pausePlayer only pauses the bouncing session");
+  playing.rejectPause=true;
+  watch.pauseActive(new HashSet<>());
+  expect(playing.paused==2&&buffering.paused==2,"one failed pause cannot block the other yielded player");
 
   // Recoverable restart failure while access remains granted does NOT emit onWatchStopped, and preserves restarted=true on recovery.
   manager.rejectRegistration=true;
@@ -465,13 +474,14 @@ public class PlaybackWatchTest {
   PlaybackWatch watch=new PlaybackWatch(ctx,new Handler(Looper.getMainLooper()),
    new ComponentName(ctx,PlaybackWatchTest.class),m->{},events);
   expect(watch.start(),"start succeeds without notification manager service");
-  watch.pauseActive();
+  Set<String> yielded=new HashSet<>();
+  watch.pauseActive(yielded);
   expect(connecting.paused==1,"connecting playback is paused on yield");
   manager.rejectGetActiveSessions=true;
   manager.lastListener.onActiveSessionsChanged(Collections.singletonList(connecting));
   expect(!watch.isWatching()&&events.stopped.equals(Arrays.asList(true)),"runtime SecurityException reports access lost once");
   expect(connecting.callbacks.isEmpty()&&manager.listeners.isEmpty(),"runtime denial releases listeners");
-  watch.pauseActive();
+  watch.pausePlayer(connecting.getSessionToken().toString());
   expect(connecting.paused==1,"removed players cannot be paused after access loss");
   manager.rejectGetActiveSessions=false;
   expect(watch.start(),"registration can recover after runtime access denial");

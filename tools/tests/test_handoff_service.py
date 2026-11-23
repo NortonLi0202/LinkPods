@@ -188,7 +188,8 @@ public class BluetoothManager {
 }''',
     'android/bluetooth/BluetoothProfile.java': '''package android.bluetooth;
 public interface BluetoothProfile {
- int A2DP=2,HEADSET=1,GATT=7,STATE_DISCONNECTED=0,STATE_CONNECTED=2; String EXTRA_STATE="state";
+ int A2DP=2,HEADSET=1,GATT=7,STATE_DISCONNECTED=0,STATE_CONNECTING=1,STATE_CONNECTED=2,STATE_DISCONNECTING=3;
+ String EXTRA_STATE="state";
  int getConnectionState(BluetoothDevice d);
  interface ServiceListener {void onServiceConnected(int k,BluetoothProfile p);void onServiceDisconnected(int k);}
 }''',
@@ -298,7 +299,11 @@ public class AudioPlaybackConfiguration {
     'android/os/IBinder.java': 'package android.os; public interface IBinder {}',
     'android/os/Build.java': 'package android.os; public class Build {public static class VERSION {public static final int SDK_INT=36;}}',
     'android/os/Looper.java': 'package android.os; public class Looper {public static Looper getMainLooper(){return new Looper();}}',
-    'android/os/SystemClock.java': 'package android.os; public class SystemClock {public static long elapsedRealtime(){return 0;}}',
+    'android/os/SystemClock.java': '''package android.os;
+public class SystemClock {
+ public static long now;
+ public static long elapsedRealtime(){return now;}
+}''',
     'android/os/Handler.java': '''package android.os;
 public class Handler {
  public final java.util.List<Runnable> delayed=new java.util.ArrayList<>();
@@ -350,6 +355,10 @@ import android.app.*;import android.bluetooth.*;import android.content.*;import 
 public class HandoffLifecycleTest {
  static final String TARGET="AA:BB:CC:DD:EE:01",SELF="AA:BB:CC:DD:EE:02",PEER="AA:BB:CC:DD:EE:03";
  static void expect(boolean b,String why){if(!b)throw new AssertionError(why);}
+ static void playback(MediaController player,int state){
+  player.setPlaybackState(state);
+  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(state));
+ }
  static Object get(Object o,String n)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);return f.get(o);}
  static void set(Object o,String n,Object v)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);f.set(o,v);}
  static HandoffService service(MediaSessionManager manager)throws Exception{
@@ -392,16 +401,19 @@ public class HandoffLifecycleTest {
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
   s.onStartCommand(request,0,2);
   expect(AapProbe.created.size()==1&&probe.stopped==0,"mode upgrade must reuse ready control session");
-  boolean announced=false,media=false,take=false;
+  boolean announced=false,media=false,take=false,autoHijack=false,manualRoute=false;
   byte[] expected=RoutingPackets.announce(SELF,PEER);
   for(byte[] packet:probe.packets){
    if(Arrays.equals(packet,expected))announced=true;
    if(Arrays.equals(packet,RoutingPackets.mediaInformation(SELF,PEER,true)))media=true;
    if(Arrays.equals(packet,RoutingPackets.ownership(true)))take=true;
+   if(Arrays.equals(packet,RoutingPackets.hijack(PEER,"Hijackv2")))autoHijack=true;
+   if(Arrays.equals(packet,RoutingPackets.hijack(PEER,"ManualRoute")))manualRoute=true;
   }
   expect(announced,"upgrade must announce known peer using current local address");
   expect(media,"upgrade must send current media state after announcing peer");
   expect(take,"upgrade must finish pending take without a fresh peer list");
+  expect(autoHijack&&!manualRoute,"automatic take must stay reclaimable by the peer (Hijackv2, not ManualRoute)");
  }
  static void modeRoundTripInvalidatesQueuedRouting()throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();
@@ -412,14 +424,15 @@ public class HandoffLifecycleTest {
   probe.listener.ready();
   AapProbe.failStart=true;
   probe.holdWrites=true;
-  Method send=HandoffService.class.getDeclaredMethod("send",byte[].class,String.class);send.setAccessible(true);
-  byte[] packet=RoutingPackets.ownership(true);send.invoke(s,packet,"test-routing");
+  byte[] packet=RoutingPackets.ownership(true);
+  expect(HandoffService.manualHandoff(TARGET),"ready handoff queues routing");
   Intent request=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER);
   s.onStartCommand(request.putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY"),0,2);
   s.onStartCommand(request.putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,3);
   probe.flush();
   expect(probe.packets.isEmpty(),"service mode round trip must invalidate routing already queued on the reused session");
-  send.invoke(s,packet,"fresh-routing");probe.flush();
+  expect(HandoffService.manualHandoff(TARGET),"round trip leaves handoff ready");
+  probe.flush();
   expect(probe.packets.size()==1&&Arrays.equals(probe.packets.get(0),packet),"fresh routing after mode round trip must work");
  }
  static void permissionRevokeAndRestoreResumesHandoff()throws Exception{
@@ -968,11 +981,13 @@ public class HandoffLifecycleTest {
   expect(HandoffService.sessionStatus(TARGET).handoffDescription.contains("保留当前播放"),
    "skipped handoff explains current playback is kept and manual switch is available");
   expect(HandoffService.manualHandoff(TARGET),"manualHandoff succeeds when AUTO_HANDOFF session is ready");
-  boolean manualTook=false;
+  boolean manualTook=false,manualRoute=false;
   for(byte[] p:probe.packets){
    if(Arrays.equals(p,ownershipTrue)) manualTook=true;
+   if(Arrays.equals(p,RoutingPackets.hijack(PEER,"ManualRoute"))) manualRoute=true;
   }
   expect(manualTook,"manualHandoff sends ownership(true)");
+  expect(manualRoute,"only an explicit manual handoff sends ManualRoute");
   audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods"));
   player.setPlaybackState(PlaybackState.STATE_PAUSED);
   player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
@@ -1109,6 +1124,8 @@ public class HandoffLifecycleTest {
   s.onCreate();
   final int[] state={BluetoothProfile.STATE_CONNECTED};
   final int[] connects={0},disconnects={0};
+  final int[] hfpDisconnects={0},hfpConnects={0};
+  final int[] hfpState={BluetoothProfile.STATE_CONNECTED};
   BluetoothProfile a2dp=new BluetoothProfile(){
    @Override public int getConnectionState(BluetoothDevice d){return state[0];}
    public boolean connect(BluetoothDevice d){connects[0]++;return true;}
@@ -1116,6 +1133,12 @@ public class HandoffLifecycleTest {
   };
   BluetoothManager btManager=s.getSystemService(BluetoothManager.class);
   btManager.adapter.lastA2dpListener.onServiceConnected(BluetoothProfile.A2DP,a2dp);
+  BluetoothProfile headset=new BluetoothProfile(){
+   @Override public int getConnectionState(BluetoothDevice d){return hfpState[0];}
+   public boolean connect(BluetoothDevice d){hfpConnects[0]++;return true;}
+   public boolean disconnect(BluetoothDevice d){hfpDisconnects[0]++;return true;}
+  };
+  btManager.adapter.lastHeadsetListener.onServiceConnected(BluetoothProfile.HEADSET,headset);
   MediaController player=new MediaController(PlaybackState.STATE_PLAYING);
   manager.active.add(player);
   s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
@@ -1124,16 +1147,26 @@ public class HandoffLifecycleTest {
   probe.listener.ready();
   HandoffService.manualHandoff(TARGET);
   byte[] audioSource=new byte[]{4,0,4,0,0x0e,0,0x02,(byte)0xEE,(byte)0xDD,(byte)0xCC,(byte)0xBB,(byte)0xAA,2};
+  byte[] unrelatedSource=audioSource.clone();
+  unrelatedSource[6]=0x04;
+  probe.listener.packet(unrelatedSource);
+  expect(((Set<String>)get(s,"peers")).isEmpty(),"a source other than the configured peer cannot receive handoff packets");
   probe.listener.packet(audioSource.clone());
   byte[] idleSource=audioSource.clone();
   idleSource[12]=0;
   probe.listener.packet(idleSource);
   expect(player.paused==0,"a transient idle source is not a remote takeover");
+  SystemClock.now+=10_000;
   audioSource[6]=0x03;
   probe.listener.packet(audioSource);
+  expect(player.paused==1 && disconnects[0]==1,"a source switch to the peer yields immediately");
+  expect(hfpDisconnects[0]==0 && probe.stopped==0,"media yield leaves HFP and the ControlSession alone");
+  playback(player,PlaybackState.STATE_PAUSED);
+  playback(player,PlaybackState.STATE_PLAYING);
+  expect(player.paused==2 && connects[0]==0,"a player bounce inside the yield cooldown is paused again and cannot reclaim");
   player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PLAYING));
   ((Handler)get(s,"handler")).flushDelayed();
-  expect(player.paused==1 && disconnects[0]==1,
+  expect(player.paused==2 && disconnects[0]==1,
    "a confirmed source switch to the peer pauses the still-playing tablet and releases A2DP");
 
   probe.packets.clear();
@@ -1144,6 +1177,105 @@ public class HandoffLifecycleTest {
   expect(connects[0]==0,"A2DP teardown after yielding must not reconnect automatically");
   for(byte[] packet:probe.packets) expect(!Arrays.equals(packet,RoutingPackets.ownership(true)),
    "a continuing livestream does not send another ownership claim");
+
+  state[0]=BluetoothProfile.STATE_CONNECTING;
+  listener.onA2dpStateChanged(TARGET,state[0]);
+  expect(disconnects[0]==2,"a late A2DP reconnect cannot interrupt the confirmed remote stream");
+  state[0]=BluetoothProfile.STATE_DISCONNECTED;
+  listener.onA2dpStateChanged(TARGET,state[0]);
+
+  probe.listener.packet(idleSource);
+  byte[] peerPlaying=RoutingPackets.mediaInformation(PEER,PEER,true);
+  peerPlaying[4]=0x11;
+  probe.listener.packet(peerPlaying);
+  byte[] routeChatter=RoutingPackets.mediaInformation(PEER,PEER,false);
+  routeChatter[4]=0x11;
+  routeChatter[routeChatter.length-2]=100;
+  routeChatter[routeChatter.length-1]=0;
+  probe.listener.packet(routeChatter);
+  state[0]=BluetoothProfile.STATE_CONNECTING;
+  listener.onA2dpStateChanged(TARGET,state[0]);
+  expect(disconnects[0]==3,"peer media remains protected while the earbuds report no source");
+  state[0]=BluetoothProfile.STATE_DISCONNECTED;
+  listener.onA2dpStateChanged(TARGET,state[0]);
+  SystemClock.now+=3_000;
+  probe.listener.packet(RoutingPackets.ownership(true));
+  probe.listener.packet(RoutingPackets.ownership(false));
+  expect(player.paused==2 && Boolean.FALSE.equals(get(s,"owns")),
+   "ownership reports while yielded neither restore ownership nor re-pause media");
+  SystemClock.now+=1_000;
+  playback(player,PlaybackState.STATE_PAUSED);
+  playback(player,PlaybackState.STATE_PLAYING);
+  expect(connects[0]==1 && probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.hijack(PEER))),
+   "fresh playback after the original cooldown takes via Hijackv2");
+  AudioManager audio=(AudioManager)get(s,"audio");
+  hfpState[0]=BluetoothProfile.STATE_DISCONNECTED;
+  audio.mode=AudioManager.MODE_IN_CALL;
+  listener.onAudioModeChanged(AudioManager.MODE_IN_CALL);
+  probe.listener.packet(RoutingPackets.ownership(false));
+  byte[] manual=RoutingPackets.hijack(PEER,"ManualRoute");
+  manual[4]=0x11;
+  probe.listener.packet(manual);
+  expect(hfpConnects[0]==1 && hfpDisconnects[0]==0 && disconnects[0]==3 && player.paused==2,
+   "call recovery still connects HFP and inbound ownership or manual requests cannot interrupt a call");
+
+  audio.mode=AudioManager.MODE_NORMAL;
+  state[0]=BluetoothProfile.STATE_CONNECTED;
+  probe.listener.packet(RoutingPackets.ownership(false));
+  expect(player.paused==3 && disconnects[0]==4,"ownership loss can yield after the call");
+  state[0]=BluetoothProfile.STATE_DISCONNECTING;
+  MediaController next=new MediaController("next.player",PlaybackState.STATE_PLAYING);
+  manager.active.add(next);
+  manager.lastListener.onActiveSessionsChanged(manager.active);
+  expect(next.paused==0 && connects[0]==2 && ((RoutingPolicy)get(s,"policy")).isPending(),
+   "a different player may queue a take during the cooldown and A2DP teardown");
+  playback(player,PlaybackState.STATE_PAUSED);
+  playback(player,PlaybackState.STATE_PLAYING);
+  expect(player.paused==4 && next.paused==0 && ((RoutingPolicy)get(s,"policy")).isPending(),
+   "a bounce re-pauses only the yielded player and leaves the other pending take intact");
+  state[0]=BluetoothProfile.STATE_DISCONNECTED;
+  listener.onA2dpStateChanged(TARGET,state[0]);
+  expect(connects[0]==3,"a different player takes immediately once A2DP teardown finishes");
+
+  state[0]=BluetoothProfile.STATE_CONNECTED;
+  probe.listener.packet(RoutingPackets.ownership(false));
+  state[0]=BluetoothProfile.STATE_DISCONNECTING;
+  MediaController third=new MediaController("third.player",PlaybackState.STATE_PLAYING);
+  manager.active.add(third);
+  manager.lastListener.onActiveSessionsChanged(manager.active);
+  expect(((RoutingPolicy)get(s,"policy")).isPending(),"new eligible playback waits while A2DP disconnects");
+  probe.packets.clear();
+  expect(HandoffService.manualHandoff(TARGET) && !((RoutingPolicy)get(s,"policy")).isPending()
+      && probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.hijack(PEER,"ManualRoute"))),
+   "manual handoff bypasses the cooldown, replaces the pending automatic take and uses ManualRoute");
+  state[0]=BluetoothProfile.STATE_DISCONNECTED;
+  listener.onA2dpStateChanged(TARGET,state[0]);
+  expect(connects[0]==4,"manual handoff reconnects when the old link finishes disconnecting");
+
+  audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods"));
+  state[0]=BluetoothProfile.STATE_CONNECTED;
+  probe.packets.clear();
+  probe.holdWrites=true;
+  playback(next,PlaybackState.STATE_PAUSED);
+  playback(next,PlaybackState.STATE_PLAYING);
+  byte[] peerPaused=RoutingPackets.mediaInformation(PEER,PEER,false);
+  peerPaused[4]=0x11;
+  probe.listener.packet(peerPaused);
+  probe.listener.packet(routeChatter);
+  probe.listener.packet(peerPlaying);
+  probe.flush();
+  expect(probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.ownership(false))),
+   "genuine peer pause and replay yields even with category 100 chatter");
+  expect(probe.packets.stream().noneMatch(p->Arrays.equals(p,RoutingPackets.ownership(true))
+      || Arrays.equals(p,RoutingPackets.hijack(PEER))),
+   "the peer yield invalidates a previously queued local claim and hijack");
+  int beforeDowngrade=disconnects[0];
+  s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY"),0,2);
+  state[0]=BluetoothProfile.STATE_CONNECTING;
+  listener.onA2dpStateChanged(TARGET,state[0]);
+  expect(disconnects[0]==beforeDowngrade && probe.stopped==0,
+   "mode change clears passive A2DP suppression and preserves the control connection");
   s.onDestroy();
  }
 }''',

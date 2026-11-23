@@ -9,10 +9,11 @@ final class PeerRoutingPolicy {
     boolean receive(Map<String,Object> fields, boolean localActive) {
         Object state=fields.get("hostStreamingState"), score=fields.get("otherDeviceAudioCategory");
         if (state instanceof String && score instanceof Number) {
-            boolean active="YES".equals(state);
             long category=((Number)score).longValue();
-            if (!active) { playing=false; callActive=false; return false; }
+            // Route-only reports (YES or NO) must neither arm nor clear the peer playback edge.
             if (category<=100) return false;
+            if ("NO".equals(state)) { playing=false; callActive=false; return false; }
+            if (!"YES".equals(state)) return false;
             boolean isCall = category >= 501;
             boolean rising = Boolean.FALSE.equals(playing);
             boolean callRising = Boolean.TRUE.equals(playing) && isCall && !callActive;
