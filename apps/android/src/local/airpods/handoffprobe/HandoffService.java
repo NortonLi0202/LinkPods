@@ -82,6 +82,8 @@ public final class HandoffService extends Service {
     private String sourceMac;
     private int sourceType;
     private String lastActiveSourceMac;
+    private Runnable pendingRemoteRelease;
+    private String dueRemoteReleaseMac;
     private Boolean lastMediaState;
     private Runnable pendingReconnect;
     private long handoffAttemptGeneration;
@@ -111,10 +113,7 @@ public final class HandoffService extends Service {
             if (stopped || current != HandoffService.this || deviceConfig == null || !address.equals(deviceConfig.target)) return;
             pendingListeningModeLabel = "";
             owns = null;
-            sourceMac = null;
-            sourceType = 0;
-            lastActiveSourceMac = null;
-            cancelPendingRemoteRelease();
+            clearAudioSource();
             log("SESSION_ENDED");
             log("BACKEND " + BackendPolicy.select(false, false, false, false));
             applyConnection(connection.ended(connectionGeneration, address, compatibilityRequired, !autoStartedSession));
@@ -162,6 +161,7 @@ public final class HandoffService extends Service {
             syncInactiveMediaState();
         }
         @Override public void onWatchStopped(boolean accessLost) {
+            cancelPendingRemoteRelease();
             policy.reset();
             if (accessLost && !stopped && mode.allowsRouting() && controlSession.isReady() && !inCallAudioMode()) {
                 mediaInformation(false);
@@ -351,14 +351,17 @@ public final class HandoffService extends Service {
             if (action == AudioLinkPolicy.Action.DISCONNECT && audioLink.isYielded())
                 log("BLOCK yielded-a2dp-reconnect state=" + state);
             applyAudioLink(action);
+            if (state == BluetoothProfile.STATE_CONNECTED) finishDueRemoteRelease(state);
             if (state == BluetoothProfile.STATE_DISCONNECTED && audioLink.isYielded())
                 finishPendingTake("yielded-a2dp-disconnected");
         }
         @Override public void onA2dpProxyReady(BluetoothProfile proxy) {
             log("PROFILE ready=" + BluetoothProfile.A2DP);
             if (!stopped && target != null && mode.allowsRouting()) {
-                applyAudioLink(audioLink.update(proxy.getConnectionState(target)));
+                int state = proxy.getConnectionState(target);
+                applyAudioLink(audioLink.update(state));
                 if (audioLink.isYielded()) finishPendingTake("yielded-a2dp-proxy-ready");
+                else if (state == BluetoothProfile.STATE_CONNECTED) finishDueRemoteRelease(state);
             }
         }
         @Override public void onAudioModeChanged(int audioMode) {
@@ -560,10 +563,7 @@ public final class HandoffService extends Service {
         if (previousMode != requestedMode) ++routingModeGeneration;
         this.mode = requestedMode;
         if (previousMode != requestedMode) {
-            sourceMac = null;
-            sourceType = 0;
-            lastActiveSourceMac = null;
-            cancelPendingRemoteRelease();
+            clearAudioSource();
             log("SESSION_MODE changed: " + previousMode + " -> " + requestedMode);
             updateForegroundNotification();
             if (requestedMode != SessionMode.AUTO_HANDOFF) {
@@ -604,6 +604,7 @@ public final class HandoffService extends Service {
             if (preparedBridge) {
                 if (bridgePreparation!=null) { bridgePreparation.cancel(true); bridgePreparation=null; }
             }
+            clearAudioSource();
             controlSession.reset();
             applyConnection(next);
         }
@@ -614,6 +615,7 @@ public final class HandoffService extends Service {
     void restartSessionWatch() {
         if (stopped || mode != SessionMode.AUTO_HANDOFF) return;
         watch().restart();
+        if (!watch().isActive() || policy.hasPlayback()) cancelPendingRemoteRelease();
         updateForegroundNotification();
     }
 
@@ -648,11 +650,12 @@ public final class HandoffService extends Service {
         return hasSyncedPlayback() || inCallAudioMode();
     }
 
+    private boolean isHostConfirmedIdle() {
+        return playbackWatch != null && playbackWatch.isActive() && !policy.hasPlayback() && !inCallAudioMode();
+    }
+
     private void syncInactiveMediaState() {
-        if (controlSession.isReady()
-                && playbackWatch != null
-                && playbackWatch.isActive()
-                && !hasActiveHostStream()) {
+        if (controlSession.isReady() && isHostConfirmedIdle()) {
             mediaInformation(false);
         }
     }
@@ -664,9 +667,7 @@ public final class HandoffService extends Service {
                 : audioMonitor.snapshot(deviceConfig.target);
         boolean yielded = audioLink.isYielded();
         if (yielded && audioState.permissionGranted
-                && (audioState.a2dpState == SamsungAudioSnapshot.ConnectionState.CONNECTING
-                    || audioState.a2dpState == SamsungAudioSnapshot.ConnectionState.DISCONNECTING
-                    || audioState.a2dpState == SamsungAudioSnapshot.ConnectionState.UNKNOWN)) return;
+                && audioState.a2dpState != SamsungAudioSnapshot.ConnectionState.DISCONNECTED) return;
         boolean targetConfirmed = SamsungAudioPolicy.isTargetOutputConfirmed(audioState)
                 || (yielded && audioState.permissionGranted
                     && audioState.a2dpState == SamsungAudioSnapshot.ConnectionState.DISCONNECTED);
@@ -884,8 +885,8 @@ public final class HandoffService extends Service {
             // Idle-source gaps of any length still belong to the last local stream; a switch
             // straight to the peer is a takeover, not a reason to keep the tablet attached.
             boolean wasLocal = selfMac.equalsIgnoreCase(lastActiveSourceMac);
-            lastActiveSourceMac = sourceMac;
             if (selfMac.equalsIgnoreCase(sourceMac)) {
+                lastActiveSourceMac = sourceMac;
                 cancelPendingRemoteRelease();
                 return;
             }
@@ -894,21 +895,26 @@ public final class HandoffService extends Service {
                 cancelPendingRemoteRelease();
                 return;
             }
+            lastActiveSourceMac = sourceMac;
             boolean discoveredPeer = peers.add(sourceMac);
             if (mode.allowsRouting() && wasLocal && !audioLink.isYielded() && !inCallAudioMode()) {
                 release("audio-source-remote-takeover", false);
                 return;
             }
             if (discoveredPeer) finishPendingTake("audio-source-peer");
-            if (mode.allowsRouting() && !audioLink.isYielded() && !hasActiveHostStream()) {
-                scheduleRemoteSourceRelease(sourceMac);
-            }
+            scheduleRemoteSourceRelease(sourceMac);
         }
     }
 
-    private Runnable pendingRemoteRelease;
+    private void clearAudioSource() {
+        sourceMac = null;
+        sourceType = 0;
+        lastActiveSourceMac = null;
+        cancelPendingRemoteRelease();
+    }
 
     private void cancelPendingRemoteRelease() {
+        dueRemoteReleaseMac = null;
         if (pendingRemoteRelease != null) {
             handler.removeCallbacks(pendingRemoteRelease);
             pendingRemoteRelease = null;
@@ -916,17 +922,29 @@ public final class HandoffService extends Service {
     }
 
     private void scheduleRemoteSourceRelease(final String expectedRemoteMac) {
+        if (!mode.allowsRouting() || audioLink.isYielded() || !isHostConfirmedIdle()) {
+            cancelPendingRemoteRelease();
+            return;
+        }
+        if (expectedRemoteMac.equalsIgnoreCase(dueRemoteReleaseMac)) return;
         cancelPendingRemoteRelease();
         pendingRemoteRelease = () -> {
             pendingRemoteRelease = null;
-            if (stopped || current != HandoffService.this || !mode.allowsRouting() || hasActiveHostStream()) return;
-            if (sourceType == 0 || !expectedRemoteMac.equalsIgnoreCase(sourceMac)) return;
+            dueRemoteReleaseMac = expectedRemoteMac;
             BluetoothProfile a2dp = a2dpProxy();
-            if (a2dp != null && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
-                release("audio-source-remote", false);
-            }
+            finishDueRemoteRelease(a2dp != null && target != null
+                    ? a2dp.getConnectionState(target) : BluetoothProfile.STATE_DISCONNECTED);
         };
         handler.postDelayed(pendingRemoteRelease, IDLE_REMOTE_RELEASE_DELAY_MS);
+    }
+
+    private void finishDueRemoteRelease(int a2dpState) {
+        if (dueRemoteReleaseMac == null) return;
+        boolean eligible = !stopped && current == this && mode.allowsRouting() && !audioLink.isYielded()
+                && sourceType != 0 && dueRemoteReleaseMac.equalsIgnoreCase(sourceMac) && isHostConfirmedIdle();
+        if (eligible && a2dpState == BluetoothProfile.STATE_CONNECTING) return;
+        dueRemoteReleaseMac = null;
+        if (eligible && a2dpState == BluetoothProfile.STATE_CONNECTED) release("audio-source-remote", false);
     }
 
     private void announcePeers() {
@@ -1057,7 +1075,7 @@ public final class HandoffService extends Service {
     @Override public void onDestroy() {
         stopped = true;
         cancelPendingReconnect();
-        cancelPendingRemoteRelease();
+        clearAudioSource();
         cancelPendingHandoffCheck();
         cancelYieldCooldown();
         handoffNotice = "";
@@ -1076,8 +1094,6 @@ public final class HandoffService extends Service {
         peers.clear();
         owns = null;
         lastMediaState = null;
-        sourceMac = null;
-        sourceType = 0;
         policy.reset();
         peerPolicy.reset();
         audioLink.reset();

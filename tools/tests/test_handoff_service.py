@@ -305,12 +305,35 @@ public class SystemClock {
  public static long elapsedRealtime(){return now;}
 }''',
     'android/os/Handler.java': '''package android.os;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 public class Handler {
- public final java.util.List<Runnable> delayed=new java.util.ArrayList<>();
+ private static class Scheduled {
+  final Runnable runnable;
+  final long dueAt;
+  Scheduled(Runnable runnable,long dueAt){this.runnable=runnable;this.dueAt=dueAt;}
+ }
+ private final List<Scheduled> delayed=new ArrayList<>();
+ private long now;
  public Handler(Looper l){}public boolean post(Runnable r){r.run();return true;}
- public boolean postDelayed(Runnable r,long d){delayed.add(r);return true;}
- public void removeCallbacks(Runnable r){delayed.remove(r);}
- public void flushDelayed(){for(Runnable r:new java.util.ArrayList<>(delayed))r.run();delayed.clear();}
+ public boolean postDelayed(Runnable r,long d){delayed.add(new Scheduled(r,now+d));return true;}
+ public void removeCallbacks(Runnable r){delayed.removeIf(task->task.runnable==r);}
+ public void advanceBy(long ms){
+  long until=now+ms;
+  while(!delayed.isEmpty()){
+   Scheduled next=delayed.stream().min(Comparator.comparingLong(task->task.dueAt)).get();
+   if(next.dueAt>until)break;
+   delayed.remove(next);
+   now=next.dueAt;
+   next.runnable.run();
+  }
+  now=until;
+ }
+ public void flushDelayed(){
+  long lastDue=delayed.stream().mapToLong(task->task.dueAt).max().orElse(now);
+  advanceBy(lastDue-now);
+ }
  public void removeCallbacksAndMessages(Object t){delayed.clear();}
 }''',
     'android/util/Log.java': 'package android.util; public class Log {public static int i(String t,String m){return 0;}public static int e(String t,String m,Throwable e){return 0;}}',
@@ -950,6 +973,11 @@ public class HandoffLifecycleTest {
    case "auto-start-and-notification":autoStartAndNotificationActions();break;
    case "remote-audio-source-release":remoteAudioSourceReleasesStaleA2dp();break;
    case "remote-audio-source-takeover":remoteAudioSourceYieldsActivePlayback();break;
+   case "yielded-connected-take":yieldedConnectedKeepsPendingTake();break;
+   case "bridge-cancels-remote-release":bridgeReplacementCancelsRemoteRelease();break;
+   case "unrelated-audio-source":unrelatedSourcePreservesLocalTakeover();break;
+   case "remote-release-while-connecting":remoteReleaseWaitsForConnected();break;
+   case "remote-release-access-lost":remoteReleaseRequiresKnownIdle();break;
    default:throw new AssertionError("unknown scenario");
   }
   System.out.println("PASS: service lifecycle "+args[0]);
@@ -1085,37 +1113,147 @@ public class HandoffLifecycleTest {
   failed.onDestroy();
  }
  static void remoteAudioSourceReleasesStaleA2dp()throws Exception{
-  AapProbe.failStart=false;AapProbe.created.clear();
-  MediaSessionManager manager=new MediaSessionManager();
-  HandoffService s=service(manager);
-  s.onCreate();
-  final int[] disconnects={0};
-  BluetoothProfile a2dp=new BluetoothProfile(){
-   @Override public int getConnectionState(BluetoothDevice d){return BluetoothProfile.STATE_CONNECTED;}
-   public boolean connect(BluetoothDevice d){return true;}
-   public boolean disconnect(BluetoothDevice d){disconnects[0]++;return true;}
-  };
-  BluetoothManager btManager=(BluetoothManager)s.getSystemService(BluetoothManager.class);
-  btManager.adapter.lastA2dpListener.onServiceConnected(BluetoothProfile.A2DP,a2dp);
-  s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
-   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
-  AapProbe probe=AapProbe.created.get(0);
-  probe.listener.ready();
-
-  // 0x0e AUDIO_SOURCE for PEER (AA:BB:CC:DD:EE:03 -> reversed 03,EE,DD,CC,BB,AA), type=2
-  byte[] remoteSource=new byte[]{4,0,4,0,0x0e,0,0x03,(byte)0xEE,(byte)0xDD,(byte)0xCC,(byte)0xBB,(byte)0xAA,2};
+  HandoffFixture f=new HandoffFixture();
   MediaController player=new MediaController(PlaybackState.STATE_PLAYING);
-  manager.active.add(player);
-  manager.lastListener.onActiveSessionsChanged(Collections.singletonList(player));
-  probe.listener.packet(remoteSource);
-  expect(disconnects[0]==0,"active local playback must not release A2DP on remote AUDIO_SOURCE");
+  f.manager.active.add(player);
+  f.manager.lastListener.onActiveSessionsChanged(f.manager.active);
+  f.audioSource(f.probe,3);
+  expect(f.disconnects==0,"active local playback must not release A2DP on remote AUDIO_SOURCE");
 
-  player.setPlaybackState(PlaybackState.STATE_PAUSED);
-  player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
-  probe.listener.packet(remoteSource);
-  ((Handler)get(s,"handler")).flushDelayed();
-  expect(disconnects[0]==1,"idle host with remote AUDIO_SOURCE releases stale A2DP link after debounce");
-  s.onDestroy();
+  playback(player,PlaybackState.STATE_PAUSED);
+  f.audioSource(f.probe,3);
+  expect(f.disconnects==0,"idle remote source does not release A2DP immediately");
+  f.handler.advanceBy(1499);
+  expect(f.disconnects==0,"A2DP remains connected after 1499 ms");
+  f.handler.advanceBy(1);
+  expect(f.disconnects==1,"idle remote source releases stale A2DP at 1500 ms");
+  f.service.onDestroy();
+ }
+ static class HandoffFixture implements BluetoothProfile {
+  final MediaSessionManager manager=new MediaSessionManager();
+  final HandoffService service;
+  final AapProbe probe;
+  final Handler handler;
+  final Intent start=new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF");
+  final BluetoothAdapter adapter;
+  final SamsungAudioMonitor.Listener listener;
+  int state=STATE_CONNECTED,connects,disconnects;
+  HandoffFixture()throws Exception{
+   service=service(manager);
+   service.onCreate();
+   adapter=((BluetoothManager)service.getSystemService(BluetoothManager.class)).adapter;
+   adapter.lastA2dpListener.onServiceConnected(A2DP,this);
+   service.onStartCommand(start,0,1);
+   probe=AapProbe.created.get(0);
+   probe.listener.ready();
+   handler=(Handler)get(service,"handler");
+   listener=(SamsungAudioMonitor.Listener)get(service,"audioMonitorListener");
+  }
+  @Override public int getConnectionState(BluetoothDevice d){return state;}
+  public boolean connect(BluetoothDevice d){connects++;return true;}
+  public boolean disconnect(BluetoothDevice d){disconnects++;return true;}
+  void a2dpStateChanged(int newState){
+   state=newState;
+   listener.onA2dpStateChanged(TARGET,state);
+  }
+  void audioSource(AapProbe session,int addressSuffix){
+   session.listener.packet(new byte[]{4,0,4,0,0x0e,0,(byte)addressSuffix,
+    (byte)0xEE,(byte)0xDD,(byte)0xCC,(byte)0xBB,(byte)0xAA,2});
+  }
+ }
+ static void yieldedConnectedKeepsPendingTake()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  enableTargetOutputRoute(f.service);
+  f.probe.listener.packet(RoutingPackets.ownership(false));
+  expect(f.disconnects==1,"ownership loss starts yielding while A2DP is still connected");
+  MediaController player=new MediaController(PlaybackState.STATE_PLAYING);
+  f.manager.active.add(player);
+  f.manager.lastListener.onActiveSessionsChanged(f.manager.active);
+  f.audioSource(f.probe,3);
+  RoutingPolicy policy=(RoutingPolicy)get(f.service,"policy");
+  expect(policy.isPending() && f.probe.packets.stream().noneMatch(p->Arrays.equals(p,RoutingPackets.hijack(PEER))),
+   "yielded CONNECTED retains pending TAKE even with the target route and peer confirmed");
+  f.a2dpStateChanged(BluetoothProfile.STATE_DISCONNECTED);
+  expect(!policy.isPending() && f.connects==1
+      && f.probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.hijack(PEER))),
+   "DISCONNECTED completes the pending TAKE");
+  f.service.onDestroy();
+ }
+ static void bridgeReplacementCancelsRemoteRelease()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  f.audioSource(f.probe,3);
+  RootEnvironment.Prepared prepared=new RootEnvironment.Prepared();
+  prepared.bridgeOwned=true;prepared.targetAddress=TARGET;prepared.local=SELF;prepared.adapterId="sm-x810";
+  RootEnvironment.nextBridgeUsable=true;RootEnvironment.nextAcceptBridge=true;
+  expect(HandoffService.adoptPreparedBridge(prepared),"bridge adoption succeeds");
+  f.service.onStartCommand(f.start.putExtra("native_backend_ready",true),0,2);
+  expect(f.probe.stopped==1 && AapProbe.created.size()==2,"bridge replaces the direct control session");
+  AapProbe bridge=AapProbe.created.get(1);
+  bridge.listener.ready();
+  f.handler.advanceBy(1500);
+  expect(f.disconnects==0,"a replaced session cannot release A2DP on an old source report");
+  expect(get(f.service,"sourceMac")==null && (int)get(f.service,"sourceType")==0
+      && get(f.service,"lastActiveSourceMac")==null,"bridge starts with no previous source state");
+  f.audioSource(bridge,3);
+  f.handler.advanceBy(1500);
+  expect(f.disconnects==1,"fresh source report on the bridge can release A2DP");
+  f.service.onDestroy();
+ }
+ static void unrelatedSourcePreservesLocalTakeover()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  MediaController player=new MediaController(PlaybackState.STATE_PLAYING);
+  f.manager.active.add(player);
+  f.manager.lastListener.onActiveSessionsChanged(f.manager.active);
+  f.audioSource(f.probe,2);
+  f.audioSource(f.probe,4);
+  expect(SELF.equals(get(f.service,"lastActiveSourceMac")) && f.disconnects==0,
+   "a third device does not replace the last accepted local source");
+  f.audioSource(f.probe,3);
+  expect(player.paused==1 && f.disconnects==1,"the accepted peer still takes over immediately");
+  f.service.onDestroy();
+ }
+ static void remoteReleaseWaitsForConnected()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  f.a2dpStateChanged(BluetoothProfile.STATE_CONNECTING);
+  f.audioSource(f.probe,3);
+  f.handler.advanceBy(1500);
+  expect(f.disconnects==0,"idle release waits while A2DP is connecting");
+  f.audioSource(f.probe,3);
+  f.a2dpStateChanged(BluetoothProfile.STATE_CONNECTED);
+  expect(f.disconnects==1,"CONNECTED immediately runs the already due idle release");
+  f.service.onDestroy();
+ }
+ static void remoteReleaseRequiresKnownIdle()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  NotificationManager nm=f.service.getSystemService(NotificationManager.class);
+  PlaybackListener listener=new PlaybackListener();
+  nm.notificationAccessGranted=false;
+  listener.onListenerDisconnected();
+  f.audioSource(f.probe,3);
+  nm.notificationAccessGranted=true;
+  listener.onListenerConnected();
+  f.handler.advanceBy(1500);
+  expect(f.disconnects==0,"a report while access is revoked cannot schedule an idle release");
+
+  f.audioSource(f.probe,3);
+  nm.notificationAccessGranted=false;
+  f.handler.advanceBy(1500);
+  expect(f.disconnects==0,"idle release rechecks access before execution even before the watch is notified");
+  listener.onListenerDisconnected();
+  nm.notificationAccessGranted=true;
+  listener.onListenerConnected();
+
+  f.a2dpStateChanged(BluetoothProfile.STATE_CONNECTING);
+  f.audioSource(f.probe,3);
+  f.handler.advanceBy(1500);
+  nm.notificationAccessGranted=false;
+  listener.onListenerDisconnected();
+  nm.notificationAccessGranted=true;
+  listener.onListenerConnected();
+  f.a2dpStateChanged(BluetoothProfile.STATE_CONNECTED);
+  expect(f.disconnects==0,"watch access loss cancels a due release even if access returns before CONNECTED");
+  f.service.onDestroy();
  }
  static void remoteAudioSourceYieldsActivePlayback()throws Exception{
   AapProbe.failStart=false;AapProbe.created.clear();
@@ -1324,6 +1462,21 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_confirmed_remote_takeover_yields_active_livestream(self):
         self.run_scenario('remote-audio-source-takeover')
+
+    def test_yielded_connected_preserves_pending_take(self):
+        self.run_scenario('yielded-connected-take')
+
+    def test_bridge_replacement_cancels_remote_release(self):
+        self.run_scenario('bridge-cancels-remote-release')
+
+    def test_third_device_preserves_last_active_source(self):
+        self.run_scenario('unrelated-audio-source')
+
+    def test_due_remote_release_waits_for_a2dp_connection(self):
+        self.run_scenario('remote-release-while-connecting')
+
+    def test_remote_release_requires_confirmed_idle_with_media_access(self):
+        self.run_scenario('remote-release-access-lost')
 
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None
