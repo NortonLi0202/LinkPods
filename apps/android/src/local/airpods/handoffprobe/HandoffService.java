@@ -34,6 +34,7 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass;
 public final class HandoffService extends Service {
     private static final long IDLE_REMOTE_RELEASE_DELAY_MS = 1500L;
     private static final long YIELD_COOLDOWN_MS = 4000L;
+    private static final long TAKEOVER_GRACE_MS = 5000L;
     static volatile HandoffService current;
     private static final java.util.concurrent.atomic.AtomicReference<RootEnvironment.Prepared> pendingBridge=
         new java.util.concurrent.atomic.AtomicReference<>();
@@ -88,6 +89,9 @@ public final class HandoffService extends Service {
     private Runnable pendingReconnect;
     private long handoffAttemptGeneration;
     private Runnable pendingHandoffCheck;
+    private Runnable takeoverGracePending;
+    private boolean ownershipLostDuringGrace;
+    private boolean takeoverRetryUsed;
     private final Set<String> yieldedPlayers = new HashSet<>();
     private long yieldCooldownUntil;
     private volatile String handoffNotice = "";
@@ -845,10 +849,13 @@ public final class HandoffService extends Service {
                     setHandoffNotice("");
                 }
             }
-            if (!ownership && (!Boolean.FALSE.equals(previous) || audioLink.isWanted()))
+            if (!ownership && !deferTakeoverLoss("ownership-loss")
+                    && (!Boolean.FALSE.equals(previous) || audioLink.isWanted())) {
                 release("ownership-loss", false);
+            }
         }
-        SmartRouting.Message message = SmartRouting.decode(data);
+        SmartRouting.Message message = RoutingPackets.header(data, data.length, 0x11)
+                ? SmartRouting.decode(data) : null;
         if (mode.allowsRouting() && message != null && !peerMac.isEmpty() && peerMac.equalsIgnoreCase(message.sender)) {
             boolean localActive = !audioLink.isYielded() && !inCallAudioMode()
                 && (Boolean.TRUE.equals(owns) || audioLink.isWanted()
@@ -898,7 +905,9 @@ public final class HandoffService extends Service {
             lastActiveSourceMac = sourceMac;
             boolean discoveredPeer = peers.add(sourceMac);
             if (mode.allowsRouting() && wasLocal && !audioLink.isYielded() && !inCallAudioMode()) {
-                release("audio-source-remote-takeover", false);
+                if (!deferTakeoverLoss("audio-source-remote-takeover")) {
+                    release("audio-source-remote-takeover", false);
+                }
                 return;
             }
             if (discoveredPeer) finishPendingTake("audio-source-peer");
@@ -907,6 +916,7 @@ public final class HandoffService extends Service {
     }
 
     private void clearAudioSource() {
+        cancelTakeoverGrace();
         sourceMac = null;
         sourceType = 0;
         lastActiveSourceMac = null;
@@ -922,7 +932,7 @@ public final class HandoffService extends Service {
     }
 
     private void scheduleRemoteSourceRelease(final String expectedRemoteMac) {
-        if (!mode.allowsRouting() || audioLink.isYielded() || !isHostConfirmedIdle()) {
+        if (!mode.allowsRouting() || audioLink.isYielded() || ownershipLostDuringGrace || !isHostConfirmedIdle()) {
             cancelPendingRemoteRelease();
             return;
         }
@@ -975,6 +985,10 @@ public final class HandoffService extends Service {
     }
 
     private void take(String reason) {
+        take(reason, false);
+    }
+
+    private void take(String reason, boolean reclaim) {
         if (!mode.allowsRouting()) {
             log("TAKE skipped; mode=" + mode + " reason=" + reason);
             return;
@@ -982,16 +996,28 @@ public final class HandoffService extends Service {
         log("TAKE reason=" + reason + " owns=" + owns + " source=" + sourceMac + " type=" + sourceType);
         boolean manual = "manual".equals(reason);
         if (manual) policy.clearPendingTake();
+        if (manual || audioLink.isYielded()) cancelTakeoverGrace();
         cancelPendingRemoteRelease();
         cancelYieldCooldown();
-        boolean claim = policy.needsClaim(Boolean.TRUE.equals(owns),selfMac.equalsIgnoreCase(sourceMac) && sourceType != 0);
+        // A fresh play edge can claim, but a deferred loss is resolved only by the grace timer.
+        boolean canClaim = manual || (!ownershipLostDuringGrace && !takeoverRetryUsed);
+        boolean claim = reclaim || (canClaim && policy.needsClaim(
+                Boolean.TRUE.equals(owns), selfMac.equalsIgnoreCase(sourceMac) && sourceType != 0));
         BluetoothProfile a2dp = a2dpProxy();
         AudioLinkPolicy.Action linkAction = audioLink.want(true,a2dp == null ? 0 : a2dp.getConnectionState(target));
-        if (claim) send(RoutingPackets.ownership(true), "ownership-true", true);
-        else log("KEEP existing-local-ownership");
+        if (claim) {
+            if (!manual && !reclaim && takeoverGracePending == null) {
+                takeoverGracePending = this::finishTakeoverGrace;
+                handler.postDelayed(takeoverGracePending, TAKEOVER_GRACE_MS);
+            }
+            send(RoutingPackets.ownership(true), "ownership-true", true);
+            lastMediaState = null;
+        } else if (canClaim) {
+            log("KEEP existing-local-ownership");
+        }
         mediaInformation(true);
-        // Only an explicit user switch is ManualRoute; automatic takes must stay reclaimable by the peer.
         if (claim) for (String peer : peers) {
+            send(RoutingPackets.showNearbyUi(peer, manual ? "ManualRoute" : "hijackv2"), "show-nearby-ui", true);
             if (manual) send(RoutingPackets.hijack(peer,"ManualRoute"), "manual-route-request", true);
             else send(RoutingPackets.hijack(peer), "hijack-request", true);
         }
@@ -1002,6 +1028,37 @@ public final class HandoffService extends Service {
         if (!"call".equals(reason) && !"manual".equals(reason)) {
             scheduleHandoffCheck();
         }
+    }
+
+    private boolean deferTakeoverLoss(String reason) {
+        if (takeoverGracePending == null || takeoverRetryUsed) return false;
+        ownershipLostDuringGrace = true;
+        cancelPendingRemoteRelease();
+        log("DEFER " + reason + " during-takeover-grace");
+        return true;
+    }
+
+    private void finishTakeoverGrace() {
+        takeoverGracePending = null;
+        if (!ownershipLostDuringGrace) return;
+        ownershipLostDuringGrace = false;
+        if (stopped || current != this || !mode.allowsRouting() || audioLink.isYielded()) return;
+        if (hasActiveHostStream() && !takeoverRetryUsed) {
+            takeoverRetryUsed = true;
+            log("RECLAIM after-takeover-grace");
+            take("takeover-grace", true);
+        } else {
+            release("ownership-loss-after-grace", false);
+        }
+    }
+
+    private void cancelTakeoverGrace() {
+        if (takeoverGracePending != null) {
+            handler.removeCallbacks(takeoverGracePending);
+            takeoverGracePending = null;
+        }
+        ownershipLostDuringGrace = false;
+        takeoverRetryUsed = false;
     }
 
     private void mediaInformation(boolean active) {
@@ -1021,6 +1078,7 @@ public final class HandoffService extends Service {
         }
         if (audioLink.isYielded() || inCallAudioMode()) return;
         ++yieldGeneration;
+        cancelTakeoverGrace();
         cancelPendingHandoffCheck();
         cancelPendingRemoteRelease();
         setHandoffNotice("");

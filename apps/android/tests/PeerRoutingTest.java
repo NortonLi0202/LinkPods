@@ -29,11 +29,13 @@ public final class PeerRoutingTest {
         expect(Long.valueOf(301).equals(decoded.fields.get("audioRoutingScore")),"OPACK back-reference resolves to actual score");
         expect(Boolean.TRUE.equals(decoded.fields.get("audioRoutingSetOwnershipToFalse")),"actual release Boolean decoded");
         expect(SmartRouting.decode(Arrays.copyOf(fixture,fixture.length-1)) == null,"truncated relay is rejected");
-        byte[] manual = RoutingPackets.hijack("AA:BB:CC:DD:EE:03","ManualRoute");
-        manual[4]=0x11; // Same OPACK envelope delivered to the other host as a relay.
-        SmartRouting.Message manualMessage=SmartRouting.decode(manual);
-        expect(manualMessage != null && "ManualRoute".equals(manualMessage.fields.get("reason")),"manual route request is complete OPACK with correct frame length");
-        expect(Long.valueOf(301).equals(manualMessage.fields.get("remotescore")),"changing reason preserves object-reference indices");
+        String target = "AA:BB:CC:DD:EE:03";
+        for (boolean manual : new boolean[]{false, true}) {
+            String hijackReason = manual ? "ManualRoute" : "Hijackv2";
+            String nearbyReason = manual ? "ManualRoute" : "hijackv2";
+            expectRequest(RoutingPackets.hijack(target, hijackReason), target, hijackReason, false);
+            expectRequest(RoutingPackets.showNearbyUi(target, nearbyReason), target, nearbyReason, true);
+        }
         PeerRoutingPolicy resetPeer = new PeerRoutingPolicy();
         resetPeer.receive(report("example.media.player", false, 301), true);
         resetPeer.reset();
@@ -60,6 +62,17 @@ public final class PeerRoutingTest {
         expect(!chatter.receive(report("tv.danmaku.bilianime", true, 301), true),
             "an unrecognized streaming state cannot manufacture a stop");
         System.out.println("PASS: stale retry versus real phone replay/call/manual routing and sanitized OPACK decoding");
+    }
+    static void expectRequest(byte[] wire, String target, String reason, boolean nearby) {
+        expect(RoutingPackets.header(wire, wire.length, 0x10)
+            && wire[14] == 1 && (wire[15] & 255) == (nearby ? 0xe6 : 0xe5), "routing request envelope");
+        Map<String,Object> expected = new HashMap<>(Map.of(
+            "localscore", 301L, "reason", reason, "audioRoutingScore", 301L,
+            "audioRoutingSetOwnershipToFalse", true, "remotescore", 301L));
+        if (nearby) expected.put("SmartRoutingKeyShowNearbyUI", true);
+        SmartRouting.Message message = SmartRouting.decode(wire);
+        expect(message != null && target.equals(message.sender) && expected.equals(message.fields),
+            "complete routing request for " + reason + " nearby=" + nearby);
     }
     static byte[] hex(String s) { byte[] b=new byte[s.length()/2]; for(int i=0;i<b.length;i++)b[i]=(byte)Integer.parseInt(s.substring(2*i,2*i+2),16);return b; }
 }

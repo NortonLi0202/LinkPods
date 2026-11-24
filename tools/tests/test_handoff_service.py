@@ -973,6 +973,10 @@ public class HandoffLifecycleTest {
    case "auto-start-and-notification":autoStartAndNotificationActions();break;
    case "remote-audio-source-release":remoteAudioSourceReleasesStaleA2dp();break;
    case "remote-audio-source-takeover":remoteAudioSourceYieldsActivePlayback();break;
+   case "takeover-grace-reclaim":takeoverGraceReclaimsOnce();break;
+   case "takeover-grace-remote-source":takeoverGraceDefersRemoteSource();break;
+   case "takeover-grace-manual-reverse":takeoverGraceHonorsManualReverse();break;
+   case "takeover-grace-stopped":takeoverGraceReleasesStoppedPlayback();break;
    case "yielded-connected-take":yieldedConnectedKeepsPendingTake();break;
    case "bridge-cancels-remote-release":bridgeReplacementCancelsRemoteRelease();break;
    case "unrelated-audio-source":unrelatedSourcePreservesLocalTakeover();break;
@@ -1016,6 +1020,8 @@ public class HandoffLifecycleTest {
   }
   expect(manualTook,"manualHandoff sends ownership(true)");
   expect(manualRoute,"only an explicit manual handoff sends ManualRoute");
+  expect(probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.showNearbyUi(PEER,"ManualRoute")))
+      && get(s,"takeoverGracePending")==null,"manual handoff sends the nearby UI with no takeover grace");
   audio.attributesDevices=Collections.singletonList(new AudioDeviceInfo(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,TARGET,"AirPods"));
   player.setPlaybackState(PlaybackState.STATE_PAUSED);
   player.callbacks.iterator().next().onPlaybackStateChanged(new PlaybackState(PlaybackState.STATE_PAUSED));
@@ -1161,6 +1167,91 @@ public class HandoffLifecycleTest {
    session.listener.packet(new byte[]{4,0,4,0,0x0e,0,(byte)addressSuffix,
     (byte)0xEE,(byte)0xDD,(byte)0xCC,(byte)0xBB,(byte)0xAA,2});
   }
+  MediaController autoTake()throws Exception{
+   enableTargetOutputRoute(service);
+   audioSource(probe,3);
+   audioSource(probe,2);
+   probe.packets.clear();
+   MediaController player=new MediaController(PlaybackState.STATE_PLAYING);
+   manager.active.add(player);
+   manager.lastListener.onActiveSessionsChanged(manager.active);
+   expectClaimAt(0);
+   return player;
+  }
+  long claims(){
+   return probe.packets.stream().filter(p->Arrays.equals(p,RoutingPackets.ownership(true))).count();
+  }
+  void expectClaimAt(int index){
+   byte[][] expected={
+    RoutingPackets.ownership(true), RoutingPackets.mediaInformation(SELF,PEER,true),
+    RoutingPackets.showNearbyUi(PEER,"hijackv2"), RoutingPackets.hijack(PEER)
+   };
+   expect(probe.packets.size()>=index+expected.length,"automatic claim sends four packets");
+   for(int i=0;i<expected.length;i++){
+    expect(Arrays.equals(probe.packets.get(index+i),expected[i]),"automatic claim packet order at "+i);
+   }
+  }
+ }
+ static void takeoverGraceReclaimsOnce()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  MediaController player=f.autoTake();
+  f.handler.advanceBy(3500);
+  f.probe.listener.packet(RoutingPackets.ownership(false));
+  expect(Boolean.FALSE.equals(get(f.service,"owns")) && player.paused==0 && f.disconnects==0,
+   "ownership loss at 3500 ms is recorded without pausing or disconnecting A2DP");
+  f.handler.advanceBy(1499);
+  expect(f.claims()==1,"the first claim keeps its original 5000 ms deadline");
+  f.handler.advanceBy(1);
+  expect(f.claims()==2 && player.paused==0 && f.disconnects==0,"active playback reclaims once at 5000 ms");
+  f.expectClaimAt(4);
+  f.probe.listener.packet(RoutingPackets.ownership(false));
+  expect(player.paused==1 && f.disconnects==1,"a loss after the reclaim immediately yields");
+  f.handler.advanceBy(5000);
+  expect(f.claims()==2,"yield never creates a third claim");
+  f.service.onDestroy();
+ }
+ static void takeoverGraceDefersRemoteSource()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  MediaController player=f.autoTake();
+  f.handler.advanceBy(3500);
+  f.audioSource(f.probe,3);
+  expect(player.paused==0 && f.disconnects==0 && f.claims()==1,
+   "switch to the peer source during grace defers release");
+  f.state=BluetoothProfile.STATE_DISCONNECTED;
+  f.handler.advanceBy(1500);
+  expect(f.claims()==2 && f.connects==1 && player.paused==0,
+   "source loss triggers a single reclaim and reconnects A2DP when needed");
+  f.expectClaimAt(4);
+  f.service.onDestroy();
+ }
+ static void takeoverGraceHonorsManualReverse()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  MediaController player=f.autoTake();
+  f.handler.advanceBy(3500);
+  f.probe.listener.packet(RoutingPackets.ownership(false));
+  byte[] reverse=RoutingPackets.showNearbyUi(PEER,"ReverseBannerTapped");
+  reverse[4]=0x11;
+  f.probe.listener.packet(reverse);
+  expect(player.paused==1 && f.disconnects==1,"explicit peer reverse yields immediately during grace");
+  expect(f.probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.ownership(false))),
+   "explicit peer reverse receives an ownership acknowledgement");
+  f.handler.advanceBy(1500);
+  expect(f.claims()==1,"explicit reverse cancels the grace timer");
+  f.service.onDestroy();
+ }
+ static void takeoverGraceReleasesStoppedPlayback()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  MediaController player=f.autoTake();
+  f.handler.advanceBy(3500);
+  f.probe.listener.packet(RoutingPackets.ownership(false));
+  playback(player,PlaybackState.STATE_PAUSED);
+  f.audioSource(f.probe,3);
+  f.audioSource(f.probe,3);
+  f.handler.advanceBy(1499);
+  expect(player.paused==0 && f.disconnects==0 && f.claims()==1,"stopped playback still waits until grace expires");
+  f.handler.advanceBy(1);
+  expect(player.paused==0 && f.disconnects==1 && f.claims()==1,"grace expiry releases idle A2DP without reclaiming");
+  f.service.onDestroy();
  }
  static void yieldedConnectedKeepsPendingTake()throws Exception{
   HandoffFixture f=new HandoffFixture();
@@ -1328,8 +1419,6 @@ public class HandoffLifecycleTest {
   probe.listener.packet(peerPlaying);
   byte[] routeChatter=RoutingPackets.mediaInformation(PEER,PEER,false);
   routeChatter[4]=0x11;
-  routeChatter[routeChatter.length-2]=100;
-  routeChatter[routeChatter.length-1]=0;
   probe.listener.packet(routeChatter);
   state[0]=BluetoothProfile.STATE_CONNECTING;
   listener.onA2dpStateChanged(TARGET,state[0]);
@@ -1346,10 +1435,12 @@ public class HandoffLifecycleTest {
   playback(player,PlaybackState.STATE_PLAYING);
   expect(connects[0]==1 && probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.hijack(PEER))),
    "fresh playback after the original cooldown takes via Hijackv2");
+  ((Handler)get(s,"handler")).advanceBy(5000);
   AudioManager audio=(AudioManager)get(s,"audio");
   hfpState[0]=BluetoothProfile.STATE_DISCONNECTED;
   audio.mode=AudioManager.MODE_IN_CALL;
   listener.onAudioModeChanged(AudioManager.MODE_IN_CALL);
+  ((Handler)get(s,"handler")).advanceBy(5000);
   probe.listener.packet(RoutingPackets.ownership(false));
   byte[] manual=RoutingPackets.hijack(PEER,"ManualRoute");
   manual[4]=0x11;
@@ -1376,6 +1467,7 @@ public class HandoffLifecycleTest {
   expect(connects[0]==3,"a different player takes immediately once A2DP teardown finishes");
 
   state[0]=BluetoothProfile.STATE_CONNECTED;
+  ((Handler)get(s,"handler")).advanceBy(5000);
   probe.listener.packet(RoutingPackets.ownership(false));
   state[0]=BluetoothProfile.STATE_DISCONNECTING;
   MediaController third=new MediaController("third.player",PlaybackState.STATE_PLAYING);
@@ -1396,8 +1488,12 @@ public class HandoffLifecycleTest {
   probe.holdWrites=true;
   playback(next,PlaybackState.STATE_PAUSED);
   playback(next,PlaybackState.STATE_PLAYING);
-  byte[] peerPaused=RoutingPackets.mediaInformation(PEER,PEER,false);
-  peerPaused[4]=0x11;
+  // A peer media pause carries category 301, unlike its idle route report.
+  byte[] peerPaused=Arrays.copyOf(routeChatter,routeChatter.length+1);
+  peerPaused[12]++;
+  peerPaused[peerPaused.length-3]=0x31;
+  peerPaused[peerPaused.length-2]=0x2d;
+  peerPaused[peerPaused.length-1]=1;
   probe.listener.packet(peerPaused);
   probe.listener.packet(routeChatter);
   probe.listener.packet(peerPlaying);
@@ -1405,8 +1501,10 @@ public class HandoffLifecycleTest {
   expect(probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.ownership(false))),
    "genuine peer pause and replay yields even with category 100 chatter");
   expect(probe.packets.stream().noneMatch(p->Arrays.equals(p,RoutingPackets.ownership(true))
+      || Arrays.equals(p,RoutingPackets.mediaInformation(SELF,PEER,true))
+      || Arrays.equals(p,RoutingPackets.showNearbyUi(PEER,"hijackv2"))
       || Arrays.equals(p,RoutingPackets.hijack(PEER))),
-   "the peer yield invalidates a previously queued local claim and hijack");
+   "the peer yield invalidates all four queued local claim packets");
   int beforeDowngrade=disconnects[0];
   s.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
    .putExtra(HandoffService.EXTRA_SESSION_MODE,"CONTROL_ONLY"),0,2);
@@ -1462,6 +1560,18 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_confirmed_remote_takeover_yields_active_livestream(self):
         self.run_scenario('remote-audio-source-takeover')
+
+    def test_takeover_grace_reclaims_once(self):
+        self.run_scenario('takeover-grace-reclaim')
+
+    def test_takeover_grace_defers_remote_audio_source(self):
+        self.run_scenario('takeover-grace-remote-source')
+
+    def test_takeover_grace_honors_explicit_manual_reverse(self):
+        self.run_scenario('takeover-grace-manual-reverse')
+
+    def test_takeover_grace_releases_stopped_playback(self):
+        self.run_scenario('takeover-grace-stopped')
 
     def test_yielded_connected_preserves_pending_take(self):
         self.run_scenario('yielded-connected-take')

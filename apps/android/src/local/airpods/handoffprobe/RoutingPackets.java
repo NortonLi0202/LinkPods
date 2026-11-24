@@ -49,13 +49,25 @@ final class RoutingPackets {
     }
     static byte[] hijack(String target, String reason) {
         if (!reason.equals("Hijackv2") && !reason.equals("ManualRoute")) throw new IllegalArgumentException("Unknown routing reason");
-        ByteBuffer b = ByteBuffer.allocate(100+reason.length());
-        b.put(new byte[]{0x10,0}); address(b,target);
-        b.put(new byte[]{(byte)(90+reason.length()),0,1,(byte)0xe5,0x4a}); text(b,"localscore");
-        b.put(new byte[]{0x30,0x64,0x46}); text(b,"reason"); b.put((byte)(0x40+reason.length())); text(b,reason);
-        b.put((byte)0x51); text(b,"audioRoutingScore"); b.put(new byte[]{0x31,0x2d,1,0x5f});
-        text(b,"audioRoutingSetOwnershipToFalse"); b.put(new byte[]{1,0x4b}); text(b,"remotescore"); b.put((byte)0xa5);
-        return data(b);
+        return routingRequest(target, reason, false);
+    }
+    static byte[] showNearbyUi(String target, String reason) {
+        return routingRequest(target, reason, true);
+    }
+    private static byte[] routingRequest(String target, String reason, boolean showNearbyUi) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(1);
+        out.write(showNearbyUi ? 0xe6 : 0xe5);
+        if (showNearbyUi) {
+            opackString(out, "SmartRoutingKeyShowNearbyUI");
+            out.write(1);
+        }
+        opackString(out, "localscore"); opackAudioScore(out, true);
+        opackString(out, "reason"); opackString(out, reason);
+        opackString(out, "audioRoutingScore"); opackAudioScore(out, true);
+        opackString(out, "audioRoutingSetOwnershipToFalse"); out.write(1);
+        opackString(out, "remotescore"); opackAudioScore(out, true);
+        return smartRoutingPacket(target, out);
     }
     static byte[] announce(String self, String target) {
         ByteBuffer b = ByteBuffer.allocate(92);
@@ -75,14 +87,24 @@ final class RoutingPackets {
         if (bytes.length > 32) throw new IllegalArgumentException("Short OPACK string exceeds 32 bytes");
         out.write(0x40 + bytes.length); out.write(bytes,0,bytes.length);
     }
+    private static void opackAudioScore(ByteArrayOutputStream out, boolean active) {
+        if (active) {
+            out.write(0x31); out.write(0x2d); out.write(1);
+        } else {
+            out.write(0x30); out.write(0x64);
+        }
+    }
     static byte[] mediaInformation(String self, String target, boolean streaming) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(1); out.write(0xe5);
-        opackString(out,"playingApp"); opackString(out,"com.google.ios.youtube");
+        opackString(out,"playingApp"); opackString(out,streaming ? "com.google.ios.youtube" : "NA");
         opackString(out,"hostStreamingState"); opackString(out,streaming ? "YES" : "NO");
         opackString(out,"btAddress"); opackString(out,self);
         opackString(out,"btName"); opackString(out,"Android");
-        opackString(out,"otherDeviceAudioCategory"); out.write(0x31); out.write(0x2d); out.write(1);
+        opackString(out,"otherDeviceAudioCategory"); opackAudioScore(out, streaming);
+        return smartRoutingPacket(target, out);
+    }
+    private static byte[] smartRoutingPacket(String target, ByteArrayOutputStream out) {
         byte[] body = out.toByteArray();
         ByteBuffer b = ByteBuffer.allocate(14 + body.length).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         b.put(new byte[]{4,0,4,0,0x10,0}); address(b,target); b.putShort((short)body.length); b.put(body);
