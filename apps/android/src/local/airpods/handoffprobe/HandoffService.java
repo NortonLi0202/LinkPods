@@ -235,6 +235,7 @@ public final class HandoffService extends Service {
         SessionMode mode = service.mode;
         boolean ready = service.controlSession.isReady();
         boolean watchActive = service.playbackWatch != null && service.playbackWatch.isActive();
+        boolean audioYielded = mode == SessionMode.AUTO_HANDOFF && service.audioLink.isYielded();
         ConnectionPolicy.Snapshot conn = service.connection.snapshot(targetAddress);
         String ctrl = ready ? (service.nativeBackendReady ? "桥接控制通道已连接" : "直连控制通道已连接") : conn.description;
         String handoff;
@@ -243,13 +244,15 @@ public final class HandoffService extends Service {
                 handoff = "已开启（等待媒体权限）";
             } else if (!service.handoffNotice.isEmpty()) {
                 handoff = service.handoffNotice;
+            } else if (audioYielded) {
+                handoff = "已让出（其他设备使用中）";
             } else {
                 handoff = "运行中（随播放交接）";
             }
         } else {
             handoff = "关闭（纯控制模式）";
         }
-        return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff, service.handoffNotice);
+        return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff, service.handoffNotice, audioYielded);
     }
 
     /** Evaluates the shared domain StatusSummary for both home UI and persistent notification. */
@@ -998,8 +1001,9 @@ public final class HandoffService extends Service {
         }
         log("TAKE reason=" + reason + " owns=" + owns + " source=" + sourceMac + " type=" + sourceType);
         boolean manual = "manual".equals(reason);
+        boolean wasYielded = audioLink.isYielded();
         if (manual) policy.clearPendingTake();
-        if (manual || audioLink.isYielded()) cancelTakeoverGrace();
+        if (manual || wasYielded) cancelTakeoverGrace();
         cancelPendingRemoteRelease();
         cancelYieldCooldown();
         // A fresh play edge can claim, but a deferred loss is resolved only by the grace timer.
@@ -1008,6 +1012,7 @@ public final class HandoffService extends Service {
                 Boolean.TRUE.equals(owns), selfMac.equalsIgnoreCase(sourceMac) && sourceType != 0));
         BluetoothProfile a2dp = a2dpProxy();
         AudioLinkPolicy.Action linkAction = audioLink.want(true,a2dp == null ? 0 : a2dp.getConnectionState(target));
+        if (wasYielded) updateForegroundNotification();
         if (claim) {
             if (!manual && !reclaim && takeoverGracePending == null) {
                 takeoverGracePending = this::finishTakeoverGrace;
@@ -1099,6 +1104,7 @@ public final class HandoffService extends Service {
         mediaInformation(false);
         if (playbackWatch != null) playbackWatch.pauseActive(yieldedPlayers);
         applyAudioLink(linkAction);
+        updateForegroundNotification();
     }
 
     private void cancelYieldCooldown() {

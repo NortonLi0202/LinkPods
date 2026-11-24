@@ -297,7 +297,7 @@ public class AudioDeviceInfo {
     PACKAGE + 'LinkPodsUi.java': '''package local.airpods.handoffprobe;
 import android.app.Activity;import android.widget.*;
 final class LinkPodsUi {
- static final String HOME="设备",AUDIO="音频与聆听",PRESS="按压控制",CONNECTION="连接",SETTINGS="LinkPods 设置";
+ static final String HOME="设备",CONNECTION="连接与诊断",SETTINGS="设置与日志";
  interface Actions {
   void openBluetooth();void requestNearby();void openMediaAccess();void requestNotifications();
   void refreshDevices();void connectEarbuds();void enableHandoff();void disableHandoff();void manualHandoff();
@@ -313,10 +313,12 @@ final class LinkPodsUi {
  String page(){return "设备";}
  void show(String page){}
  boolean back(){return false;}
+ ArrayAdapter<String> deviceAdapter(java.util.List<String> labels){return new ArrayAdapter<>(null,0,labels);}
  void bind(EarbudSnapshot s,String a,SessionStatus st){}
  void bindAudio(SamsungAudioSnapshot s){}
  void bindCapabilities(ConnectionPolicy.Snapshot c,boolean m){}
  void bindSummary(StatusSummary s){}
+ void bindRuntimeFlags(boolean bt,boolean media,boolean notif,boolean autoStart){}
 }''',
     PACKAGE + 'RootEnvironment.java': '''package local.airpods.handoffprobe;
 class RootEnvironment {
@@ -465,11 +467,24 @@ public class MainActivityTest {
   MainActivity launcher=createActivity(null);
   launcher.onNewIntent(new Intent().putExtra(HandoffService.EXTRA_PENDING_ACTION,"ENABLE_HANDOFF"));
   expect(launcher.startedServices.isEmpty(),"exported launcher ignores notification commands");
+  ((LinkPodsUi)get(launcher,"ui")).actions.runPrimaryAction(StatusSummary.PrimaryAction.MANUAL_HANDOFF);
+  expect(((LinkPodsUi)get(launcher,"ui")).logOutput.getText().contains("控制服务未运行"),
+   "MANUAL_HANDOFF primary action uses unified validation and feedback");
   ((LinkPodsUi)get(launcher,"ui")).actions.runPrimaryAction(StatusSummary.PrimaryAction.START_CONTROL);
   expect(launcher.startedServices.size()==1&&"CONTROL_ONLY".equals(
    launcher.startedServices.get(0).getStringExtra(HandoffService.EXTRA_SESSION_MODE)),
    "connect-earbuds summary action starts CONTROL_ONLY");
   launcher.onDestroy();
+
+  HandoffService yieldedSvc=runningService(TARGET,SessionMode.AUTO_HANDOFF);
+  Method watchMethod=HandoffService.class.getDeclaredMethod("watch");
+  watchMethod.setAccessible(true);
+  ((PlaybackWatch)watchMethod.invoke(yieldedSvc)).start();
+  ((AudioLinkPolicy)get(yieldedSvc,"audioLink")).want(false,BluetoothProfile.STATE_DISCONNECTED);
+  SessionStatus yieldedStatus=HandoffService.sessionStatus(TARGET);
+  expect(yieldedStatus.audioYielded,"sessionStatus exposes audioYielded in AUTO_HANDOFF");
+  expect(yieldedStatus.handoffDescription.contains("已让出"),"yielded handoffDescription mentions yielded state");
+  HandoffService.current=null;
 
   MainActivity notification=createActivity(new MainActivity.NotificationEntry(),null);
   notification.onNewIntent(new Intent().putExtra(HandoffService.EXTRA_PENDING_ACTION,"ENABLE_HANDOFF"));
