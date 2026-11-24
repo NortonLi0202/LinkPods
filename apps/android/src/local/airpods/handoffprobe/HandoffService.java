@@ -843,6 +843,7 @@ public final class HandoffService extends Service {
             owns = ownership;
             log("OWNERSHIP " + ownership);
             if (ownership) {
+                if (!hasActivePeerSource()) ownershipLostDuringGrace = false;
                 BluetoothProfile a2dp = a2dpProxy();
                 if (a2dp != null && target != null && a2dp.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
                     cancelPendingHandoffCheck();
@@ -894,6 +895,8 @@ public final class HandoffService extends Service {
             boolean wasLocal = selfMac.equalsIgnoreCase(lastActiveSourceMac);
             if (selfMac.equalsIgnoreCase(sourceMac)) {
                 lastActiveSourceMac = sourceMac;
+                takeoverRetryUsed = false;
+                if (!Boolean.FALSE.equals(owns)) ownershipLostDuringGrace = false;
                 cancelPendingRemoteRelease();
                 return;
             }
@@ -904,7 +907,7 @@ public final class HandoffService extends Service {
             }
             lastActiveSourceMac = sourceMac;
             boolean discoveredPeer = peers.add(sourceMac);
-            if (mode.allowsRouting() && wasLocal && !audioLink.isYielded() && !inCallAudioMode()) {
+            if (mode.allowsRouting() && (wasLocal || takeoverRetryUsed) && !audioLink.isYielded() && !inCallAudioMode()) {
                 if (!deferTakeoverLoss("audio-source-remote-takeover")) {
                     release("audio-source-remote-takeover", false);
                 }
@@ -1038,11 +1041,16 @@ public final class HandoffService extends Service {
         return true;
     }
 
+    private boolean hasActivePeerSource() {
+        return sourceType != 0 && !peerMac.isEmpty() && peerMac.equalsIgnoreCase(sourceMac);
+    }
+
     private void finishTakeoverGrace() {
         takeoverGracePending = null;
         if (!ownershipLostDuringGrace) return;
         ownershipLostDuringGrace = false;
         if (stopped || current != this || !mode.allowsRouting() || audioLink.isYielded()) return;
+        if (Boolean.TRUE.equals(owns) && !hasActivePeerSource()) return;
         if (hasActiveHostStream() && !takeoverRetryUsed) {
             takeoverRetryUsed = true;
             log("RECLAIM after-takeover-grace");

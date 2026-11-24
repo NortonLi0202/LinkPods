@@ -977,6 +977,9 @@ public class HandoffLifecycleTest {
    case "takeover-grace-remote-source":takeoverGraceDefersRemoteSource();break;
    case "takeover-grace-manual-reverse":takeoverGraceHonorsManualReverse();break;
    case "takeover-grace-stopped":takeoverGraceReleasesStoppedPlayback();break;
+   case "takeover-grace-recovered":takeoverGraceKeepsRecoveredAudio();break;
+   case "takeover-retry-peer-source":takeoverRetryYieldsToRepeatedPeerSource();break;
+   case "takeover-retry-local-source":takeoverRetryClearsOnLocalSource();break;
    case "yielded-connected-take":yieldedConnectedKeepsPendingTake();break;
    case "bridge-cancels-remote-release":bridgeReplacementCancelsRemoteRelease();break;
    case "unrelated-audio-source":unrelatedSourcePreservesLocalTakeover();break;
@@ -1251,6 +1254,56 @@ public class HandoffLifecycleTest {
   expect(player.paused==0 && f.disconnects==0 && f.claims()==1,"stopped playback still waits until grace expires");
   f.handler.advanceBy(1);
   expect(player.paused==0 && f.disconnects==1 && f.claims()==1,"grace expiry releases idle A2DP without reclaiming");
+  f.service.onDestroy();
+ }
+ static void takeoverGraceKeepsRecoveredAudio()throws Exception{
+  for(int state:new int[]{PlaybackState.STATE_PAUSED,PlaybackState.STATE_PLAYING}){
+   AapProbe.created.clear();
+   HandoffFixture f=new HandoffFixture();
+   MediaController player=f.autoTake();
+   f.handler.advanceBy(3500);
+   f.probe.listener.packet(RoutingPackets.ownership(false));
+   f.probe.listener.packet(RoutingPackets.ownership(true));
+   expect(Boolean.FALSE.equals(get(f.service,"ownershipLostDuringGrace")),
+    "ownership recovery clears the deferred loss while the source is local");
+   f.audioSource(f.probe,3);
+   f.probe.listener.packet(RoutingPackets.ownership(true));
+   expect(Boolean.TRUE.equals(get(f.service,"ownershipLostDuringGrace")),
+    "ownership alone does not clear the deferred loss while the peer is active");
+   f.audioSource(f.probe,2);
+   expect(Boolean.FALSE.equals(get(f.service,"ownershipLostDuringGrace")),
+    "return to the local source clears the deferred loss");
+   if(state==PlaybackState.STATE_PAUSED) playback(player,state);
+   f.handler.advanceBy(1500);
+   expect(f.claims()==1 && player.paused==0 && f.disconnects==0,
+    "grace expiry leaves recovered A2DP alone whether playback pauses or continues");
+   f.service.onDestroy();
+  }
+ }
+ static void takeoverRetryYieldsToRepeatedPeerSource()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  MediaController player=f.autoTake();
+  f.handler.advanceBy(3500);
+  f.audioSource(f.probe,3);
+  f.handler.advanceBy(1500);
+  expect(f.claims()==2 && player.paused==0 && f.disconnects==0,"grace expiry reclaims once");
+  f.audioSource(f.probe,3);
+  expect(player.paused==1 && f.disconnects==1,"repeated peer source after reclaim immediately yields");
+  expect(Boolean.FALSE.equals(get(f.service,"takeoverRetryUsed")),"yield clears the retry state");
+  f.service.onDestroy();
+ }
+ static void takeoverRetryClearsOnLocalSource()throws Exception{
+  HandoffFixture f=new HandoffFixture();
+  MediaController player=f.autoTake();
+  f.handler.advanceBy(3500);
+  f.audioSource(f.probe,3);
+  f.handler.advanceBy(1500);
+  expect(f.claims()==2 && Boolean.TRUE.equals(get(f.service,"takeoverRetryUsed")),"reclaim awaits a source report");
+  f.audioSource(f.probe,2);
+  expect(Boolean.FALSE.equals(get(f.service,"takeoverRetryUsed")) && player.paused==0 && f.disconnects==0,
+   "local source confirms recovery and clears the retry state");
+  f.audioSource(f.probe,3);
+  expect(f.claims()==2 && player.paused==1 && f.disconnects==1,"a later local-to-peer takeover still yields");
   f.service.onDestroy();
  }
  static void yieldedConnectedKeepsPendingTake()throws Exception{
@@ -1572,6 +1625,15 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_takeover_grace_releases_stopped_playback(self):
         self.run_scenario('takeover-grace-stopped')
+
+    def test_takeover_grace_keeps_recovered_audio(self):
+        self.run_scenario('takeover-grace-recovered')
+
+    def test_takeover_retry_yields_to_repeated_peer_source(self):
+        self.run_scenario('takeover-retry-peer-source')
+
+    def test_takeover_retry_clears_on_local_source(self):
+        self.run_scenario('takeover-retry-local-source')
 
     def test_yielded_connected_preserves_pending_take(self):
         self.run_scenario('yielded-connected-take')

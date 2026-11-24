@@ -17,7 +17,8 @@
 | `hugo2006alm/airpods-switch` | Windows / C# | `7f402055` | [`AacpProtocol.cs`](https://github.com/hugo2006alm/airpods-switch/blob/7f40205518df76c27b8cba8f377800bb9034b42c/src/AirPodsSwitch.Core/Protocol/AacpProtocol.cs)、[`docs/AACP_SWITCHING.md`](https://github.com/hugo2006alm/airpods-switch/blob/7f40205518df76c27b8cba8f377800bb9034b42c/docs/AACP_SWITCHING.md) |
 | `sidnvy/OpenPodsMax` | Linux / C | `806c98ce` | [`linux/backend/src/smart_routing.c`](https://github.com/sidnvy/OpenPodsMax/blob/806c98ce19b18032a247fdd5356b8dce1c5223f4/linux/backend/src/smart_routing.c) |
 | Apple `audioaccessoryd` 反编译参考 | iOS / ObjC++ | `90aa0cfe` / `e26ed456` | [`audioaccessoryd_14.mm`](https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore/blob/90aa0cfe59d9682b4265e1354c8b19ec3c7823ab/usr/libexec/audioaccessoryd/audioaccessoryd_14.mm)、[`BTSmartRoutingWxDevice.m`](https://github.com/EthanArbuckle/iPhone17-1_18.2_22C152_Restore/blob/e26ed4563f78871c59d2d96856756a65d62517e5/usr/libexec/audioaccessoryd/BTSmartRoutingWxDevice.m) |
-| LinkPods（本仓库基线） | Android / Java | 本地工作区 | [RoutingPackets.java](file:///d:/WorkSpace/Tool/LinkPods/apps/android/src/local/airpods/handoffprobe/RoutingPackets.java)、[HandoffService.java](file:///d:/WorkSpace/Tool/LinkPods/apps/android/src/local/airpods/handoffprobe/HandoffService.java) |
+| LinkPods（调研基线） | Android / Java | `fdec576` | `RoutingPackets.java`、`HandoffService.java` |
+| LinkPods（PR #27 当前实现） | Android / Java | `617a371` 及本次审查修正 | [RoutingPackets.java](../../apps/android/src/local/airpods/handoffprobe/RoutingPackets.java#L47-L70)、[HandoffService.java](../../apps/android/src/local/airpods/handoffprobe/HandoffService.java#L994-L1025) |
 
 ---
 
@@ -71,19 +72,18 @@
 1. **键名大小写与 LibrePods 的 3 字节编码错误**：
    - `librepods` Issue `#446` 记录了 Kotlin 与 Rust 之间的键名大小写不一致：`send_media_information_new_device` 使用小写开头的 `playingApp` / `hostStreamingState`（与 `otherDeviceAudioCategory=100`），而 `send_media_information` 使用 PascalCase 的 `PlayingApp` / `HostStreamingState`（与 `otherDeviceAudioCategory=301`）。
    - 更致命的是，`madeitdisfar/podsd`（`src/bluetooth/relay.rs:9-13, 287-302`）实测发现 `librepods` 原版 Kotlin/Rust 的 `createMediaInformationPacket` 存在三处字节错误：`"YES"` 长度 tag 错写为 `0x42`（2 字节而非 `0x43`）、`btName` 前缺少字符串长度 tag、`createAddTiPiDevicePacket` 中 `idleTime` 前多出 `0x69`（Rust `aacp.rs:1179`）。`podsd` 注释明确指出：**“iPhone 无法解析这两条消息，因此从未获知本机正在播放”**（*The iPhone couldn't read either message, so it never learnt whether this computer was playing*）。
-   - **LinkPods 现状核查**：LinkPods [RoutingPackets.java](file:///d:/WorkSpace/Tool/LinkPods/apps/android/src/local/airpods/handoffprobe/RoutingPackets.java#L78-L90) 已使用 `opackString()` 正确编码 `"YES"`/`"NO"` 与 `"btName"`，但存在一个关键隐患：**无论 `streaming` 为 `true` 还是 `false`，`mediaInformation()` 均固定发送 `playingApp="com.google.ios.youtube"` 且 `otherDeviceAudioCategory=301`**。相比之下，`OPAirPods`（`Routing.java:47-49`）在非播放态发送 `playingApp="NA"`、`otherDeviceAudioCategory=100`，仅在播放态发送 `301`；`tether`（`airpods.cpp:622-626`）在空闲态发送 `"NA"` 与 `AUDIO_CATEGORY_NONE`。
+   - 调研基线 `fdec576` 的 LinkPods `mediaInformation()` 已使用 `opackString()` 编码字符串，但空闲时仍上报 `playingApp="com.google.ios.youtube"` 和 `otherDeviceAudioCategory=301`。PR #27 已改为空闲时发送 `playingApp="NA"`、`hostStreamingState="NO"` 和 `otherDeviceAudioCategory=100`，播放时发送 `"YES"` 和 `301`。空闲类别与 `OPAirPods`（`Routing.java:47-49`）一致，`tether`（`airpods.cpp:622-626`）的空闲类别为 `AUDIO_CATEGORY_NONE`。[LinkPods `mediaInformation()`](../../apps/android/src/local/airpods/handoffprobe/RoutingPackets.java#L85-L106)
 
 2. **`ownership` (`0x09` id=6) 与 `0x14` Connect Priority List**：
    - 除 `airpods-switch`（极简原型）外，`LibrePods`、`podsd`、`MyPods`、`tether`、`OPAirPods` 均在接管时先写 `0x09` id=6 value=`0x01`，让出时回复 `0x09` id=6 value=`0x00`。
-   - `madeitdisfar/podsd`（`src/switching.rs:148-208`、`src/bluetooth/aacp.rs` `send_priority_list`）还实现了 `0x14`（Connect Priority List），按 Mac 行为把当前播放宿主排在首位发送给 AirPods，防止主耳切换或 iPhone 重连时将非苹果设备踢出多点列表。
+   - `madeitdisfar/podsd`（`src/switching.rs:148-208`、`src/bluetooth/aacp.rs` `send_priority_list`）还实现了 `0x14`（Connect Priority List），按 Mac 行为把当前播放宿主排在首位发送给 AirPods，防止主耳切换或 iPhone 重连时将非苹果设备踢出多点列表。PR #27 尚未实现 `0x14`。
 
 ### 3.2 为何 iPhone 直播（`tv.danmaku.bilianime` live）在自动 `TAKE` 后 1.5–2 秒反抢，及开源对策
 
-结合 `MyPods`、`podsd`、`tether` 与 `audioaccessoryd` 一手源码，iPhone 直播在平板自动 `TAKE` 后 1.5–2 秒反抢的直接原因如下：
+`SM-X810` 与 iPhone 的既有实测记录显示，iPhone 保持直播播放时会在平板自动 `TAKE` 后约 1.5–2 秒抢回耳机。公开的 `audioaccessoryd` 反编译记录为活跃音频会话的评分提供了参考。[已知问题与真机验收矩阵](../issues/README.md)
 
-1. **iOS 直播会话保持活跃音频上下文与高 `localscore`（`301`）**：直播 App 在 iOS 上维持连续音频流/活跃 `AVAudioSession`，`BTSmartRoutingDaemon` 评估本机得分 `localscore=301`。LinkPods 发送的 `Hijackv2` 仅携带 `localscore=100`（低于 iPhone 的 `301`），且**未发送 `SmartRoutingKeyShowNearbyUI`（`localscore=301`）**。
-2. **LinkPods 缺少 `TAKE` 后的宽限期（Grace Window）与二次认领**：
-   - 在 [HandoffService.java](file:///d:/WorkSpace/Tool/LinkPods/apps/android/src/local/airpods/handoffprobe/HandoffService.java#L837-L850) 中，只要收到 `0x09` id=6 value=`0x00`（`!ownership`），服务**立即**执行 `release("ownership-loss", false)`，暂停本地播放并断开 A2DP。
+1. **iOS 直播会话保持活跃音频上下文与 `localscore=301`**。调研基线 `fdec576` 的 `Hijackv2` 使用 `localscore=100`，未发送 `ShowNearbyUI`。PR #27 在自动接管时先发送 `ShowNearbyUI`，再发送 `Hijackv2`，两者的 `localscore` 均为 `301`。[路由请求编码](../../apps/android/src/local/airpods/handoffprobe/RoutingPackets.java#L47-L70)
+2. **接管后的失权处理**。调研基线 `fdec576` 收到 `ownership=false` 时立即让出。PR #27 的自动认领开启 5 秒宽限期，将期间的失权或对端切源留到期满处理。若届时仍未恢复且本机仍在播放，重试一次；若播放已停止或重试后再次确认失权，则让出 A2DP。用户显式发起的对端反向切换可立即让出。[接管与宽限期](../../apps/android/src/local/airpods/handoffprobe/HandoffService.java#L994-L1069)
    - **对比 `HanreichC/MyPods`（`AapAudioSwitchCapability.cpp:349-363, 442-455` 与 `docs/airpods-switching.md` 规则 R3）**：MyPods 作者在真实 AirPods Pro 3 + iPhone 实测中**复现了完全相同的 ~1 秒反抢现象**，并专门设计了 **3 秒宽限期（`grace = busy || NowMs() - takeoverAt < 3000`）**：
      > *"Seen ~1 s after a takeover with the iPhone playing; ignored, it left this computer sure it had them while the AirPods had moved on... An `owns connection 0` in the 3 s grace after a takeover is real: kept, and looked at once the grace is over (claim once more while playing here, let go on the next one)."*
      > 即：在 `takeoverAt` 后 3 秒内收到 `owns connection 0` 不立即让出，而是暂存 `ownsReport = 0`；3 秒宽限期结束后若本机仍在播放，则**再执行一次 `Claim()`（单次二次认领）**；若之后仍失权，才真正 `Release(false)`。
@@ -108,30 +108,20 @@
 
 ### 5.1 LinkPods 与开源实现直接对比
 
-核对 LinkPods [RoutingPackets.java](file:///d:/WorkSpace/Tool/LinkPods/apps/android/src/local/airpods/handoffprobe/RoutingPackets.java) 与 [HandoffService.java](file:///d:/WorkSpace/Tool/LinkPods/apps/android/src/local/airpods/handoffprobe/HandoffService.java)：
+下表以 `fdec576` 为调研基线。PR #27 中的实现来自 [RoutingPackets.java](../../apps/android/src/local/airpods/handoffprobe/RoutingPackets.java#L47-L106) 与 [HandoffService.java](../../apps/android/src/local/airpods/handoffprobe/HandoffService.java#L994-L1069)。
 
-| 特性 / 字段 | LinkPods 当前实现 | 开源主流实现（`podsd` / `MyPods` / `OPAirPods` / `LibrePods`） | 差异影响 |
+| 特性 / 字段 | LinkPods 调研基线 `fdec576` | LinkPods PR #27 当前实现 | 开源实现参考 |
 | --- | --- | --- | --- |
-| **自动抢占 `reason`** | `"Hijackv2"`（`HandoffService.java:996`）；仅 `manual` 发 `"ManualRoute"` | 全部使用 `"Hijackv2"`（均未用 `"ManualRoute"`） | `Hijackv2` 会触发 iPhone `BTSmartRoutingDaemon` 自动重评估 |
-| **`Hijackv2` 分数** | `localscore=100`, `audioRoutingScore=301`, `remotescore=301` | `Hijackv2` 本身同为 `100/301/301`，但**同时发送 `ShowNearbyUI`（`localscore=301`）** | LinkPods 缺少 `ShowNearbyUI`，且 `localscore=100 < 301` |
-| **`ShowNearbyUI`** | **未发送** | `LibrePods` / `podsd` / `MyPods` / `OPAirPods` 在 `Hijackv2` 前均发送 `SmartRoutingKeyShowNearbyUI`（其中 `podsd`/`MyPods`/`OPAirPods` 修复了 tag，`localscore=301`） | 缺少通知对端展示“已移至”横幅与 `localscore=301` 的锚定 |
-| **`mediaInformation`** | 固定 `playingApp="com.google.ios.youtube"`，且 `streaming=false` 时仍发 `otherDeviceAudioCategory=301` | `OPAirPods` 空闲发 `playingApp="NA"` + `100`，播放发 `301`；`tether` 空闲发 `AUDIO_CATEGORY_NONE`；`podsd` 修复了 `"YES"` 长度 tag | 空闲发 `301` 会污染对端对本机状态的判断 |
-| **失权反抢处理 (`0x09` id=6=`0`)** | 收到即刻 `release("ownership-loss")`（`HandoffService.java:848-849`），无宽限期 | `MyPods` 设 3s 宽限期，期满若本机仍在播则**二次 `Claim()` 一次**；`tether` 设 5s `CLAIM_SETTLE_MS` | 面对 iPhone 直播 ~1.5–2s 的 `owns=0` 回弹，LinkPods 直接投降 |
-| **A2DP 让出与 `ACP:1` 压制** | 让出时调用 `A2DP.disconnect()`，并在 `AudioLinkPolicy` 中持续拦截并断开被动重连 | `LibrePods` Android 用 `setConnectionPolicy(0)`；`OPAirPods` 断开并锁定；Linux 系将 PipeWire 设为 `"off"` | LinkPods 的 `AudioLinkPolicy` 压制机制优于早期 `LibrePods` |
+| **自动抢占 `reason`** | `Hijackv2`，显式手动切换用 `ManualRoute` | 自动 `Hijackv2`，显式手动切换用 `ManualRoute` | `podsd`、`MyPods`、`OPAirPods` 和 `LibrePods` 的自动请求均使用 `Hijackv2` |
+| **`Hijackv2` 分数** | `localscore=100`、`audioRoutingScore=301`、`remotescore=301` | 三个分数均为 `301` | `Hijackv2` 使用 `100/301/301`，随序列发送的 `ShowNearbyUI` 使用 `localscore=301` |
+| **`ShowNearbyUI`** | 未发送 | 在 `Hijackv2` 前发送 `SmartRoutingKeyShowNearbyUI`，自动请求的 `reason` 为 `hijackv2` | `LibrePods`、`podsd`、`MyPods` 和 `OPAirPods` 均在 `Hijackv2` 前发送 `ShowNearbyUI` |
+| **`mediaInformation`** | 播放与空闲均发送 `playingApp="com.google.ios.youtube"` 和类别 `301` | 空闲发送 `playingApp="NA"` 和 `otherDeviceAudioCategory=100`，播放时发送类别 `301` | `OPAirPods` 同样区分空闲 `100` 和播放 `301`，`tether` 空闲发送 `AUDIO_CATEGORY_NONE` |
+| **失权反抢处理** | 收到 `ownership=false` 立即让出 | 自动接管有 5 秒宽限期，期满仍失权且正在播放时重试一次，重试后再次收到失权或对端切源报告则让出 | `MyPods` 的宽限期为 3 秒，期满可认领一次。`tether` 设 `CLAIM_SETTLE_MS=5000` |
+| **A2DP 让出与 `ACP:1` 压制** | 断开 A2DP 并通过 `AudioLinkPolicy` 抑制被动重连 | 断开 A2DP 并通过 `AudioLinkPolicy` 抑制被动重连 | `LibrePods` Android 用 `setConnectionPolicy(0)`，Linux 项目可将 PipeWire 设为 `"off"` |
+| **`0x14` Connect Priority List** | 未实现 | 未实现 | `podsd` 将当前播放宿主排在优先级列表首位 |
 
-### 5.2 方案选型建议：Option A vs Option B vs 混合策略
+### 5.2 已采用的策略与实测边界
 
-针对“配对 iPhone 正在播放直播（`tv.danmaku.bilianime` live），平板自动触发 `TAKE` 后约 1.5–2 秒被 iPhone 以 `Hijackv2`（`localscore=301`）反抢”的问题：
+调研提出的组合策略已在 PR #27 实现。空闲媒体上报使用 `NA` 和类别 `100`，自动接管发送 `ShowNearbyUI` 和评分为 `301` 的 `Hijackv2`，并在 5 秒宽限期内推迟处理失权。期满仍失权且本机在播时重试一次。`ManualRoute` 对应用户显式发起的手动切换。
 
-1. **不建议直接将自动 `TAKE` 全面改为 Option A（`ManualRoute`）**：
-   - 依据 `audioaccessoryd_14.mm` 与 `HandoffService.java:993` 注释，`ManualRoute` 语义对应用户显式手动选定（`manuallyRouted`），会绕过对端的常规 Smart Routing 自动抢回；若在自动播放时一律发 `ManualRoute`，会导致后续用户拿起 iPhone 播放普通音频时，iPhone 无法正常自动切回，破坏多设备双向自动交接体验。
-2. **不建议仅做 Option B（单纯把 `Hijackv2` 的 `localscore` 改为 `301`）**：
-   - 即使 `localscore` 提至 `301`，与 iPhone 直播的 `301` 仍属平分（`audioaccessoryd` 日志 `"Evaluator: device %@ with higher or equal ASR"`），iPhone 活跃直播流仍可能在 1–2 秒内触发一轮 `owns=0` 回弹；若无宽限期，LinkPods 依然会在第 1.5 秒立刻 `release`。
-3. **推荐方案（有源码依据的混合策略）**：
-   - **① 修复 `mediaInformation` 空闲类别与补齐 `ShowNearbyUI`**：
-     - 参照 `OPAirPods` `Routing.java:47-49` 与 `tether` `airpods.cpp:622-626`，在 `streaming=false` 时将 `playingApp` 设为 `"NA"`、`otherDeviceAudioCategory` 设为 `100`，仅在 `streaming=true` 时发 `301`。
-     - 参照 `podsd` `relay.rs:91-106` 与 `MyPods` `AapAudioSwitchCapability.cpp:141-157`，在自动 `TAKE` 时补发修正 OPACK tag 后的 `SmartRoutingKeyShowNearbyUI`（`localscore=301`, `reason="hijackv2"`, `audioRoutingScore=301`, `remotescore=301`），并将 `Hijackv2` 的 `localscore` 提升至 `301`（或先以 `301` 对等竞争，避免 `100 < 301` 天然劣势）。
-   - **② 引入 `MyPods` 规则 R3 的“3 秒宽限期 + 单次二次认领”**：
-     - 参照 `HanreichC/MyPods` `AapAudioSwitchCapability.cpp:349-363, 442-455`：在 `take()` 发起后设立 3 秒宽限期，期间若收到 `0x09` id=6=`0`（且非用户显式 `ReverseBannerTapped`），**不立即 `release`**，而是记录待复核；3 秒后若平板仍在有效播放，则执行**最多一次**二次 `Claim()`（可附带 `Hijackv2` `localscore=301`）。
-   - **③ 保留 `ManualRoute` 作为显式兜底升级**：
-     - 若二次认领后 iPhone 直播仍再次抢回（说明 iOS 侧对直播流持续强制抢占），此时不再无限乒乓重抢（防止触发类似 `tether`/`LibrePods` 的链路断连或死循环），而是如实维持 `已让出（Yielded）` 并保留通知栏提示，由用户按需点击`手动切换`（发送 `ManualRoute`）完成强制锁定。
+`SM-X810` 与 iPhone 的既有实测中，普通点播可双向切换。iPhone 直播维持活跃的 `301` 音频会话时，在自动重试或显式 `ManualRoute` 后仍可抢回 AirPods。该场景可先暂停或退出 iPhone 直播，再从平板接管。[已知问题与真机验收矩阵](../issues/README.md)
