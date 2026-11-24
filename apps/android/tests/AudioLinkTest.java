@@ -29,6 +29,18 @@ public final class AudioLinkTest {
         expect(resetLink.isWanted() == false, "isWanted is false after reset");
         expect(resetLink.update(0) == AudioLinkPolicy.Action.NONE, "reset cancels connect intent on disconnected broadcast");
         expect(resetLink.update(2) == AudioLinkPolicy.Action.NONE, "reset cancels disconnect intent on connected broadcast");
-        System.out.println("PASS: A2DP ownership lifecycle and takeover/disconnect races");
+
+        AudioLinkPolicy yielded = new AudioLinkPolicy();
+        expect(yielded.want(false, 2) == AudioLinkPolicy.Action.DISCONNECT, "yield disconnects active A2DP");
+        expect(yielded.isYielded(), "yield is an explicit link state");
+        expect(yielded.update(0) == AudioLinkPolicy.Action.NONE, "disconnect finishes");
+        expect(yielded.update(1) == AudioLinkPolicy.Action.DISCONNECT, "passive earbud reconnect while yielded is torn down");
+        expect(yielded.update(0) == AudioLinkPolicy.Action.NONE, "second disconnect finishes");
+        expect(yielded.update(2) == AudioLinkPolicy.Action.DISCONNECT, "a later passive connection is still torn down");
+        expect(yielded.update(3) == AudioLinkPolicy.Action.NONE && yielded.isYielded(),
+            "teardown in flight needs no second disconnect and preserves yield");
+        expect(yielded.want(true, 0) == AudioLinkPolicy.Action.CONNECT && !yielded.isYielded(),
+            "only an explicit switch back leaves the yielded state");
+        System.out.println("PASS: A2DP ownership lifecycle, yielded reconnect suppression and takeover races");
     }
 }

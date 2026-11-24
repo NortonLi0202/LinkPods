@@ -1,5 +1,7 @@
 # 由 Galaxy 发起 AirPods 自动交接
 
+> **补充与修订**：双向交接、已让出状态下的音频链路管理及 A2DP 断开时的目标输出边界已由 [ADR-0002](0002-bidirectional-handoff-and-yielded-link.md) 补充与修订。
+
 LinkPods 优先支持 Galaxy Tab 和 iPhone 共用一副 AirPods 的场景。用户只在 Galaxy Tab 安装和配置 LinkPods，iPhone 通过正常蓝牙配对使用 AirPods，以减少两端配置。自动交接以经确认的新播放和 AirPods [目标输出](../../GLOSSARY.md) 为依据，优先保护正在进行的播放。
 
 ## 交接规则

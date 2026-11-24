@@ -2,7 +2,7 @@ package local.airpods.handoffprobe;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-/** Decoder for the OPACK subset actually observed on the peer relay. */
+/** Decoder for the OPACK subset used by routing requests and peer relays. */
 final class SmartRouting {
     static final class Message {
         final String sender;
@@ -10,7 +10,8 @@ final class SmartRouting {
         Message(String sender, Map<String,Object> fields) { this.sender=sender; this.fields=fields; }
     }
     static Message decode(byte[] wire) {
-        if (!RoutingPackets.header(wire,wire.length,0x11) || wire.length<16 || wire[14]!=1) return null;
+        if (wire.length<16 || wire[14]!=1 || !(RoutingPackets.header(wire,wire.length,0x10)
+                || RoutingPackets.header(wire,wire.length,0x11))) return null;
         if (((wire[12]&255)|((wire[13]&255)<<8)) != wire.length-14) return null;
         try {
             Reader reader=new Reader(wire);

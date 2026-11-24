@@ -137,16 +137,34 @@ final class PlaybackWatch {
         logger.write("MEDIA_SESSION_WATCH access-lost");
     }
 
-    void pauseActive() {
-        for (TrackedPlayer tracked : new ArrayList<>(players.values())) {
-            MediaController player = tracked.controller;
+    void pauseActive(Set<String> pausedPlayers) {
+        for (Map.Entry<MediaSession.Token, TrackedPlayer> entry : new ArrayList<>(players.entrySet())) {
+            MediaController player = entry.getValue().controller;
             PlaybackState state = player.getPlaybackState();
             if (state != null && (state.getState() == PlaybackState.STATE_PLAYING
                     || state.getState() == PlaybackState.STATE_BUFFERING
                     || state.getState() == PlaybackState.STATE_CONNECTING)) {
-                player.getTransportControls().pause();
-                logger.write("PAUSE yielded-media package=" + player.getPackageName());
+                pausedPlayers.add(entry.getKey().toString());
+                pause(player);
             }
+        }
+    }
+
+    void pausePlayer(String playerId) {
+        for (Map.Entry<MediaSession.Token, TrackedPlayer> entry : players.entrySet()) {
+            if (entry.getKey().toString().equals(playerId)) {
+                pause(entry.getValue().controller);
+                return;
+            }
+        }
+    }
+
+    private void pause(MediaController player) {
+        try {
+            player.getTransportControls().pause();
+            logger.write("PAUSE yielded-media package=" + player.getPackageName());
+        } catch (RuntimeException error) {
+            logger.write("PAUSE failed package=" + player.getPackageName() + " error=" + error);
         }
     }
 
