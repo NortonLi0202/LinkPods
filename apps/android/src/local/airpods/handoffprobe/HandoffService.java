@@ -1050,7 +1050,6 @@ public final class HandoffService extends Service {
         if (!ownershipLostDuringGrace) return;
         ownershipLostDuringGrace = false;
         if (stopped || current != this || !mode.allowsRouting() || audioLink.isYielded()) return;
-        if (Boolean.TRUE.equals(owns) && !hasActivePeerSource()) return;
         if (hasActiveHostStream() && !takeoverRetryUsed) {
             takeoverRetryUsed = true;
             log("RECLAIM after-takeover-grace");

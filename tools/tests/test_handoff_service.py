@@ -975,6 +975,7 @@ public class HandoffLifecycleTest {
    case "remote-audio-source-takeover":remoteAudioSourceYieldsActivePlayback();break;
    case "takeover-grace-reclaim":takeoverGraceReclaimsOnce();break;
    case "takeover-grace-remote-source":takeoverGraceDefersRemoteSource();break;
+   case "takeover-grace-idle-source":takeoverGraceExpiresAfterIdleSource();break;
    case "takeover-grace-manual-reverse":takeoverGraceHonorsManualReverse();break;
    case "takeover-grace-stopped":takeoverGraceReleasesStoppedPlayback();break;
    case "takeover-grace-recovered":takeoverGraceKeepsRecoveredAudio();break;
@@ -1167,8 +1168,11 @@ public class HandoffLifecycleTest {
    listener.onA2dpStateChanged(TARGET,state);
   }
   void audioSource(AapProbe session,int addressSuffix){
+   audioSource(session,addressSuffix,2);
+  }
+  void audioSource(AapProbe session,int addressSuffix,int type){
    session.listener.packet(new byte[]{4,0,4,0,0x0e,0,(byte)addressSuffix,
-    (byte)0xEE,(byte)0xDD,(byte)0xCC,(byte)0xBB,(byte)0xAA,2});
+    (byte)0xEE,(byte)0xDD,(byte)0xCC,(byte)0xBB,(byte)0xAA,(byte)type});
   }
   MediaController autoTake()throws Exception{
    enableTargetOutputRoute(service);
@@ -1242,6 +1246,32 @@ public class HandoffLifecycleTest {
   expect(f.claims()==1,"explicit reverse cancels the grace timer");
   f.service.onDestroy();
  }
+ static void takeoverGraceExpiresAfterIdleSource()throws Exception{
+  for(boolean playing:new boolean[]{true,false}){
+   AapProbe.created.clear();
+   HandoffFixture f=new HandoffFixture();
+   MediaController player=f.autoTake();
+   f.probe.listener.packet(RoutingPackets.ownership(true));
+   f.handler.advanceBy(3500);
+   f.audioSource(f.probe,3);
+   f.audioSource(f.probe,3,0);
+   expect(Boolean.TRUE.equals(get(f.service,"owns")) && Boolean.TRUE.equals(get(f.service,"ownershipLostDuringGrace")),
+    "idle source leaves the pre-loss ownership report and deferred loss intact");
+   if(!playing) playback(player,PlaybackState.STATE_PAUSED);
+   f.handler.advanceBy(1499);
+   expect(f.claims()==1 && player.paused==0 && f.disconnects==0,"no reclaim or release before 5000 ms");
+   f.handler.advanceBy(1);
+   if(playing){
+    expect(f.claims()==2 && player.paused==0 && f.disconnects==0,"active playback reclaims at 5000 ms");
+    f.expectClaimAt(4);
+    f.handler.advanceBy(5000);
+    expect(f.claims()==2 && f.disconnects==0,"reclaim does not start another retry");
+   }else{
+    expect(f.claims()==1 && player.paused==0 && f.disconnects==1,"stopped playback releases A2DP at 5000 ms");
+   }
+   f.service.onDestroy();
+  }
+ }
  static void takeoverGraceReleasesStoppedPlayback()throws Exception{
   HandoffFixture f=new HandoffFixture();
   MediaController player=f.autoTake();
@@ -1258,27 +1288,37 @@ public class HandoffLifecycleTest {
  }
  static void takeoverGraceKeepsRecoveredAudio()throws Exception{
   for(int state:new int[]{PlaybackState.STATE_PAUSED,PlaybackState.STATE_PLAYING}){
-   AapProbe.created.clear();
-   HandoffFixture f=new HandoffFixture();
-   MediaController player=f.autoTake();
-   f.handler.advanceBy(3500);
-   f.probe.listener.packet(RoutingPackets.ownership(false));
-   f.probe.listener.packet(RoutingPackets.ownership(true));
-   expect(Boolean.FALSE.equals(get(f.service,"ownershipLostDuringGrace")),
-    "ownership recovery clears the deferred loss while the source is local");
-   f.audioSource(f.probe,3);
-   f.probe.listener.packet(RoutingPackets.ownership(true));
-   expect(Boolean.TRUE.equals(get(f.service,"ownershipLostDuringGrace")),
-    "ownership alone does not clear the deferred loss while the peer is active");
-   f.audioSource(f.probe,2);
-   expect(Boolean.FALSE.equals(get(f.service,"ownershipLostDuringGrace")),
-    "return to the local source clears the deferred loss");
-   if(state==PlaybackState.STATE_PAUSED) playback(player,state);
-   f.handler.advanceBy(1500);
-   expect(f.claims()==1 && player.paused==0 && f.disconnects==0,
-    "grace expiry leaves recovered A2DP alone whether playback pauses or continues");
-   f.service.onDestroy();
+   expectGraceKeepsRecoveredAudio(state,false);
+   expectGraceKeepsRecoveredAudio(state,true);
   }
+ }
+ static void expectGraceKeepsRecoveredAudio(int state,boolean ownershipRecovery)throws Exception{
+  AapProbe.created.clear();
+  HandoffFixture f=new HandoffFixture();
+  MediaController player=f.autoTake();
+  f.handler.advanceBy(3500);
+  f.probe.listener.packet(RoutingPackets.ownership(false));
+  f.probe.listener.packet(RoutingPackets.ownership(true));
+  expect(Boolean.FALSE.equals(get(f.service,"ownershipLostDuringGrace")),
+   "ownership recovery clears the deferred loss while the source is local");
+  f.audioSource(f.probe,3);
+  f.probe.listener.packet(RoutingPackets.ownership(true));
+  expect(Boolean.TRUE.equals(get(f.service,"ownershipLostDuringGrace")),
+   "ownership alone does not clear the deferred loss while the peer is active");
+  if(ownershipRecovery){
+   f.audioSource(f.probe,3,0);
+   expect(Boolean.TRUE.equals(get(f.service,"ownershipLostDuringGrace")),"idle source alone leaves the deferred loss intact");
+   f.probe.listener.packet(RoutingPackets.ownership(true));
+  }else{
+   f.audioSource(f.probe,2);
+  }
+  expect(Boolean.FALSE.equals(get(f.service,"ownershipLostDuringGrace")),
+   "a fresh ownership report after idle or a local source report clears the deferred loss");
+  if(state==PlaybackState.STATE_PAUSED) playback(player,state);
+  f.handler.advanceBy(1500);
+  expect(f.claims()==1 && player.paused==0 && f.disconnects==0,
+   "grace expiry leaves recovered A2DP alone whether playback pauses or continues");
+  f.service.onDestroy();
  }
  static void takeoverRetryYieldsToRepeatedPeerSource()throws Exception{
   HandoffFixture f=new HandoffFixture();
@@ -1619,6 +1659,9 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_takeover_grace_defers_remote_audio_source(self):
         self.run_scenario('takeover-grace-remote-source')
+
+    def test_takeover_grace_expires_after_idle_source(self):
+        self.run_scenario('takeover-grace-idle-source')
 
     def test_takeover_grace_honors_explicit_manual_reverse(self):
         self.run_scenario('takeover-grace-manual-reverse')
