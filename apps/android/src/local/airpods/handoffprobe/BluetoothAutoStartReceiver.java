@@ -39,6 +39,10 @@ public final class BluetoothAutoStartReceiver extends BroadcastReceiver {
         POLICY.onManualAutoHandoffEnabled();
     }
 
+    public static boolean isAutoStartSuppressed() {
+        return POLICY.isUserSuppressed();
+    }
+
     private static SharedPreferences devicePrefs(Context context) {
         return context.getSharedPreferences(PREFS_DEVICES, Context.MODE_PRIVATE);
     }

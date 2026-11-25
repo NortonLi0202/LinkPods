@@ -318,7 +318,7 @@ final class LinkPodsUi {
  void bindAudio(SamsungAudioSnapshot s){}
  void bindCapabilities(ConnectionPolicy.Snapshot c,boolean m){}
  void bindSummary(StatusSummary s){}
- void bindRuntimeFlags(boolean bt,boolean media,boolean notif,boolean autoStart){}
+ void bindRuntimeFlags(boolean bt,boolean media,boolean notif,boolean autoStart,boolean autoStartSuppressed){}
 }''',
     PACKAGE + 'RootEnvironment.java': '''package local.airpods.handoffprobe;
 class RootEnvironment {

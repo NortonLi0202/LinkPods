@@ -210,7 +210,8 @@ public class MainActivity extends Activity {
         ui.bindCapabilities(caps, mediaOk);
         ui.bindSummary(summary);
         ui.bindRuntimeFlags(hasPermission(), mediaOk, notificationPermissionGranted(),
-                BluetoothAutoStartReceiver.isAutoStartOptedIn(this));
+                BluetoothAutoStartReceiver.isAutoStartOptedIn(this),
+                BluetoothAutoStartReceiver.isAutoStartSuppressed());
     }
 
     private void requestManualHandoff() {

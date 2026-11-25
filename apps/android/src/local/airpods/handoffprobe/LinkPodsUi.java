@@ -82,7 +82,7 @@ final class LinkPodsUi {
     private SamsungAudioSnapshot audioSnapshot;
     private ConnectionPolicy.Snapshot capabilities;
     private boolean mediaGranted;
-    private Boolean btFlag,mediaFlag,notifFlag,autoStartFlag;
+    private Boolean btFlag,mediaFlag,notifFlag,autoStartFlag,autoStartSuppressedFlag;
     private StatusSummary currentSummary;
     private Integer lastLeft,lastRight,lastCase;
     private String target="",page=HOME;
@@ -441,7 +441,7 @@ final class LinkPodsUi {
         actionRow(ops,"手动切换到此耳机","立即请求把耳机音频切到本机",t.accent,actions::manualHandoff);
         actionRow(ops,"关闭自动交接（保留控制）",null,t.accent,actions::disableHandoff);
         actionRow(ops,"停止连接",null,t.danger,actions::stopConnection);
-        LinearLayout auto=listRow(ops);titled(auto,"蓝牙连接时自动启停","随「启用自动交接」开启，停止连接后关闭",t.ink);
+        LinearLayout auto=listRow(ops);titled(auto,"蓝牙连接时自动启停","随「启用自动交接」开启；关闭自动交接后关闭，停止连接仅本次暂停",t.ink);
         autoStartValue=badge("未检查");auto.addView(autoStartValue);
         help("先直接连接耳机，直连可用就不请求 Root。请先在设置中选择耳机，并允许读取媒体播放状态；实际声音与双向切换仍需在设备上确认。");
 
@@ -533,8 +533,8 @@ final class LinkPodsUi {
     }
 
     /** Optional runtime flags supplied by the activity; unknown values are shown as "未检查". */
-    void bindRuntimeFlags(boolean btGranted,boolean mediaAccessGranted,boolean notifGranted,boolean autoStartOptIn){
-        btFlag=btGranted;mediaFlag=mediaAccessGranted;notifFlag=notifGranted;autoStartFlag=autoStartOptIn;
+    void bindRuntimeFlags(boolean btGranted,boolean mediaAccessGranted,boolean notifGranted,boolean autoStartOptIn,boolean autoStartSuppressed){
+        btFlag=btGranted;mediaFlag=mediaAccessGranted;notifFlag=notifGranted;autoStartFlag=autoStartOptIn;autoStartSuppressedFlag=autoStartSuppressed;
         bindFlagsToViews();
     }
 
@@ -544,7 +544,9 @@ final class LinkPodsUi {
         permission(permBluetooth,bt);permission(permMedia,media);permission(permNotifications,notifFlag);
         if(autoStartValue!=null){
             if(autoStartFlag==null)tone(autoStartValue,4,"未检查");
-            else tone(autoStartValue,autoStartFlag?3:4,autoStartFlag?"已开启":"未开启");
+            else if(!autoStartFlag)tone(autoStartValue,4,"未开启");
+            else if(Boolean.TRUE.equals(autoStartSuppressedFlag))tone(autoStartValue,1,"已暂停");
+            else tone(autoStartValue,3,"已开启");
         }
         if(diagMedia!=null)diagMedia.setText(media==null?"未检查":media?"已允许":"未授权：耳机控制仍可用，自动交接不可用");
     }
@@ -615,6 +617,7 @@ final class LinkPodsUi {
             batteryHint.setText(any?"电量未更新 · 显示最近一次读数":"连接耳机后显示电量");
         }
 
+        boolean unconfirmed=state.status!=null&&state.status.contains("未确认");
         if(noise!=null){
             boolean supported=state.supportsSetting(EarbudCommands.LISTENING_MODE);
             Integer mode=state.value(EarbudCommands.LISTENING_MODE);
@@ -628,17 +631,22 @@ final class LinkPodsUi {
             else tone(modeChip,state.ready?3:4,modeLabel(mode));
             String hint=!supported?"此型号不支持噪声控制。"
                 :pending?"已发送，等待耳机确认；当前仍显示已读取的模式。"
+                :unconfirmed?state.status+"；当前仍显示最近回报值。"
                 :mode==null?"连接耳机并读取当前模式后可切换。"
-                :state.status!=null&&state.status.contains("未确认")?state.status
                 :!state.ready?"控制通道未就绪，显示最近一次读取的模式。"
                 :"自适应与关闭仅在耳机曾回报该模式后显示。";
-            modeHint.setText(hint);modeHint.setVisibility(View.VISIBLE);
+            modeHint.setText(hint);modeHint.setTextColor(unconfirmed?t.warn:t.muted);modeHint.setVisibility(View.VISIBLE);
         }
         for(SettingRow r:settings){
             Boolean value=state.enabled(r.id);boolean pending=state.pending.contains(r.id);boolean supported=state.supportsSetting(r.id);
             r.toggle.bind(value,supported&&value!=null&&EarbudUiPolicy.canWrite(state.ready,state.value(r.id),pending));
             r.detail.setText(!supported?"此型号不支持":pending?"等待耳机确认":value==null?"尚未读取":!state.ready?"控制通道未就绪":value?"已开启":"已关闭");
             r.detail.setTextColor(pending?t.warn:t.muted);
+        }
+        if(feedback!=null){
+            if(unconfirmed){feedback.setText(state.status+"；当前仍显示最近回报值");feedback.setTextColor(t.warn);}
+            else if(!state.pending.isEmpty()){feedback.setText("已提交，等待耳机确认");feedback.setTextColor(t.muted);}
+            else if(feedback.getText()!=null&&feedback.getText().toString().contains("未确认")){feedback.setText("");feedback.setTextColor(t.muted);}
         }
         updateLocalVolume();
     }
@@ -662,7 +670,7 @@ final class LinkPodsUi {
         message(accepted?"已提交，等待耳机确认":"当前无法更改，请检查耳机控制通道");
     }
     private void message(String value){
-        if(feedback!=null)feedback.setText(value);
+        if(feedback!=null){feedback.setText(value);feedback.setTextColor(t.muted);}
         Toast.makeText(activity,value,Toast.LENGTH_SHORT).show();
     }
 
