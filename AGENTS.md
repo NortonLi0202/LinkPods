@@ -1,6 +1,6 @@
 # 维护约定
 
-- 当前版本为 LinkPods1.1/build102 预发布。先读 README、project.json、docs/release/v1.1.md 与 docs/issues/README.md。
+- 当前版本为 LinkPods1.1/build102 预发布。先读 README、project.json、SPEC.md、ARCHITECTURE.md、docs/release/v1.1.md 与 docs/issues/README.md；专题文档索引见 docs/README.md（设计方案不等于已实现），PR 审核模板见 docs/reviews/PR-REVIEW-TEMPLATE.md。
 - 新工作建 `<类型>/<英文 kebab-case>` 分支，不直接在 main 开发。只推送本次任务明确授权的分支，不推送本地研究分支或旧历史。
 - 已有 Root 优先；无 Root 时仅使用精确匹配的运行时适配。禁止刷机、刷 bootloader、解锁和永久 Root。
 - 普通连接先直连；不要预先检测 Root。桥接使用 compatibility/adapters.json 精确匹配，不能默认第一项；普通超时/权限失败不能当成缺少 Root 的证据。
