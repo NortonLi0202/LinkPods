@@ -100,6 +100,9 @@ public class MainActivity extends Activity {
             @Override public void requestNotifications() {
                 if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                     requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
+                else if (!notificationsEnabled())
+                    startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
                 else android.widget.Toast.makeText(MainActivity.this, "服务通知权限已允许", android.widget.Toast.LENGTH_SHORT).show();
             }
             @Override public void refreshDevices() {
@@ -322,8 +325,14 @@ public class MainActivity extends Activity {
         return Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private boolean notificationsEnabled() {
+        android.app.NotificationManager manager = getSystemService(android.app.NotificationManager.class);
+        return manager != null && manager.areNotificationsEnabled();
+    }
+
     private boolean notificationPermissionGranted() {
-        return Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        boolean runtimeGranted = Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        return runtimeGranted && notificationsEnabled();
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
