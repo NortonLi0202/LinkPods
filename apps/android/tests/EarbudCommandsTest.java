@@ -86,7 +86,8 @@ public final class EarbudCommandsTest {
         state.receive(control(0x28,2));
         expect(state.snapshot(A,13).pending.contains(0x28),"old or conflicting reply cannot confirm new request");
         state.receive(control(0x28,1));
-        expect(!state.snapshot(A,14).pending.contains(0x28) && Boolean.TRUE.equals(state.snapshot(A,14).enabled(0x28)),"matching real reply confirms");
+        EarbudSnapshot confirmed=state.snapshot(A,14);
+        expect(confirmed.pending.isEmpty() && "耳机已回报设置".equals(confirmed.status) && Boolean.TRUE.equals(confirmed.enabled(0x28)),"matching real reply confirms");
         state.queue(A,0x28,2,20);
         EarbudSnapshot expiredUnsent=state.snapshot(A,10000);
         expect(expiredUnsent.pending.isEmpty() && Boolean.TRUE.equals(expiredUnsent.enabled(0x28))

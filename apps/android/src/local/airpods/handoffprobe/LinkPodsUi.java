@@ -646,7 +646,10 @@ final class LinkPodsUi {
         if(feedback!=null){
             if(unconfirmed){feedback.setText(state.status+"；当前仍显示最近回报值");feedback.setTextColor(t.warn);}
             else if(!state.pending.isEmpty()){feedback.setText("已提交，等待耳机确认");feedback.setTextColor(t.muted);}
-            else if(feedback.getText()!=null&&feedback.getText().toString().contains("未确认")){feedback.setText("");feedback.setTextColor(t.muted);}
+            else if(feedback.getText()!=null){
+                String text=feedback.getText().toString();
+                if(text.contains("未确认")||"已提交，等待耳机确认".equals(text)){feedback.setText("");feedback.setTextColor(t.muted);}
+            }
         }
         updateLocalVolume();
     }
