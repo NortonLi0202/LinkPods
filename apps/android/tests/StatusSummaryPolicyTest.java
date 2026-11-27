@@ -91,6 +91,19 @@ public final class StatusSummaryPolicyTest {
         expect(yieldedActions.size() == 3 && yieldedActions.get(2).listeningMode == EarbudCommands.MODE_ADAPTIVE,
                 "Yielded NORMAL summary preserves all 3 listening mode slots in notification");
 
+        SessionStatus yieldPending = new SessionStatus(TARGET, SessionMode.AUTO_HANDOFF, true, true, "直连已连接", "正在让出音频（等待系统断开）", "", false, true);
+        StatusSummary yieldPendingSummary = StatusSummaryPolicy.evaluate(
+                true, true, true, yieldPending, yieldedBuds, audio(true, true), false);
+        expect(yieldPendingSummary.level == StatusSummary.Level.ATTENTION,
+                "In-flight yield while A2DP still connected must not report NORMAL");
+        expect(yieldPendingSummary.primaryAction == StatusSummary.PrimaryAction.MANUAL_HANDOFF,
+                "In-flight yield offers MANUAL_HANDOFF");
+
+        StatusSummary mismatchedYielded = StatusSummaryPolicy.evaluate(
+                true, true, true, yieldedAuto, yieldedBuds, audio(true, true), false);
+        expect(mismatchedYielded.level == StatusSummary.Level.ATTENTION,
+                "audioYielded with connected A2DP must not report NORMAL");
+
         SessionStatus controlOnly = new SessionStatus(TARGET, SessionMode.CONTROL_ONLY, true, true, "直连已连接", "关闭");
         StatusSummary controlNoA2dp = StatusSummaryPolicy.evaluate(
                 true, false, true, controlOnly, earbud(true, 80, 85, 60, EarbudCommands.MODE_ANC, EarbudCommands.MODE_TRANSPARENCY, EarbudCommands.MODE_ANC),

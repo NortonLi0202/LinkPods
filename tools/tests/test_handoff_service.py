@@ -986,6 +986,7 @@ public class HandoffLifecycleTest {
    case "unrelated-audio-source":unrelatedSourcePreservesLocalTakeover();break;
    case "remote-release-while-connecting":remoteReleaseWaitsForConnected();break;
    case "remote-release-access-lost":remoteReleaseRequiresKnownIdle();break;
+   case "yielded-truth-and-disconnect-failure":yieldedTruthAndDisconnectFailure();break;
    default:throw new AssertionError("unknown scenario");
   }
   System.out.println("PASS: service lifecycle "+args[0]);
@@ -1149,6 +1150,8 @@ public class HandoffLifecycleTest {
   final BluetoothAdapter adapter;
   final SamsungAudioMonitor.Listener listener;
   int state=STATE_CONNECTED,connects,disconnects;
+  boolean disconnectResult=true;
+  RuntimeException disconnectError=null;
   HandoffFixture()throws Exception{
    service=service(manager);
    service.onCreate();
@@ -1162,7 +1165,11 @@ public class HandoffLifecycleTest {
   }
   @Override public int getConnectionState(BluetoothDevice d){return state;}
   public boolean connect(BluetoothDevice d){connects++;return true;}
-  public boolean disconnect(BluetoothDevice d){disconnects++;return true;}
+  public boolean disconnect(BluetoothDevice d){
+   disconnects++;
+   if(disconnectError!=null) throw disconnectError;
+   return disconnectResult;
+  }
   void a2dpStateChanged(int newState){
    state=newState;
    listener.onA2dpStateChanged(TARGET,state);
@@ -1607,6 +1614,100 @@ public class HandoffLifecycleTest {
    "mode change clears passive A2DP suppression and preserves the control connection");
   s.onDestroy();
  }
+ static void yieldedTruthAndDisconnectFailure()throws Exception{
+  // 1) In-flight yield while A2DP is still connected must suppress passive reconnect without claiming audioYielded or NORMAL.
+  AapProbe.failStart=false;AapProbe.created.clear();
+  HandoffFixture f=new HandoffFixture();
+  enableTargetOutputRoute(f.service);
+  f.probe.listener.packet(RoutingPackets.ownership(false));
+  expect(f.disconnects==1,"initial yield calls A2DP disconnect");
+  expect(((AudioLinkPolicy)get(f.service,"audioLink")).isYielded(),"in-flight yield keeps AudioLinkPolicy.YIELDED for passive-reconnect suppression");
+  SessionStatus inFlight=HandoffService.sessionStatus(TARGET);
+  expect(!inFlight.audioYielded && inFlight.audioYieldPending && inFlight.handoffNotice.isEmpty(),
+   "in-flight yield with connected A2DP exposes audioYieldPending and not audioYielded");
+  StatusSummary inFlightSummary=HandoffService.evaluateSummary(f.service,TARGET,false);
+  expect(inFlightSummary.level==StatusSummary.Level.ATTENTION && inFlightSummary.primaryAction==StatusSummary.PrimaryAction.MANUAL_HANDOFF,
+   "in-flight yield with connected A2DP must not report NORMAL");
+  f.a2dpStateChanged(BluetoothProfile.STATE_CONNECTING);
+  expect(f.disconnects==2,"in-flight YIELDED continues suppressing passive A2DP reconnects");
+  f.a2dpStateChanged(BluetoothProfile.STATE_DISCONNECTED);
+  SessionStatus confirmed=HandoffService.sessionStatus(TARGET);
+  expect(confirmed.audioYielded && !confirmed.audioYieldPending,"confirmed DISCONNECTED promotes sessionStatus to audioYielded");
+  StatusSummary confirmedSummary=HandoffService.evaluateSummary(f.service,TARGET,false);
+  expect(confirmedSummary.level==StatusSummary.Level.NORMAL && confirmedSummary.headline.contains("已让出"),
+   "confirmed DISCONNECTED promotes StatusSummary to NORMAL");
+
+  // 2) Passive reconnect disconnect() returning false surfaces failure and unblocks finishPendingTake.
+  f.disconnectResult=false;
+  f.a2dpStateChanged(BluetoothProfile.STATE_CONNECTED);
+  expect(f.disconnects==3,"passive reconnect attempts disconnect");
+  SessionStatus failedReconnect=HandoffService.sessionStatus(TARGET);
+  expect(!failedReconnect.audioYielded && !failedReconnect.audioYieldPending && !failedReconnect.handoffNotice.isEmpty(),
+   "failed passive-reconnect disconnect clears yielded flags and sets handoffNotice");
+  expect(HandoffService.evaluateSummary(f.service,TARGET,false).level==StatusSummary.Level.ATTENTION,
+   "failed passive-reconnect disconnect reports ATTENTION");
+  ((Set<String>)get(f.service,"peers")).add(PEER);
+  f.probe.packets.clear();
+  MediaController recoverPlayer=new MediaController("recover.player",PlaybackState.STATE_PLAYING);
+  f.manager.active.add(recoverPlayer);
+  f.manager.lastListener.onActiveSessionsChanged(Collections.singletonList(recoverPlayer));
+  expect(f.probe.packets.stream().anyMatch(p->Arrays.equals(p,RoutingPackets.ownership(true))),
+   "finishPendingTake does not stay stuck waiting for DISCONNECTED after failed passive-reconnect disconnect");
+  expect(HandoffService.sessionStatus(TARGET).handoffNotice.isEmpty(),"successful take clears release failure notice");
+  f.service.onDestroy();
+
+  // 3) Initial release disconnect() returning false or throwing surfaces failure and unblocks finishPendingTake.
+  for(boolean throwError:new boolean[]{false,true}){
+   AapProbe.created.clear();
+   HandoffFixture f2=new HandoffFixture();
+   enableTargetOutputRoute(f2.service);
+   ((Set<String>)get(f2.service,"peers")).add(PEER);
+   f2.disconnectResult=false;
+   if(throwError) f2.disconnectError=new RuntimeException("binder failure");
+   f2.probe.listener.packet(RoutingPackets.ownership(false));
+   SessionStatus failed=HandoffService.sessionStatus(TARGET);
+   expect(!failed.audioYielded && !failed.audioYieldPending && !failed.handoffNotice.isEmpty(),
+    "failed disconnect("+(throwError?"exception":"false")+") surfaces handoffNotice and avoids audioYielded");
+   StatusSummary failedSummary=HandoffService.evaluateSummary(f2.service,TARGET,false);
+   expect(failedSummary.level==StatusSummary.Level.ATTENTION && failedSummary.primaryAction==StatusSummary.PrimaryAction.MANUAL_HANDOFF,
+    "failed disconnect surfaces ATTENTION with MANUAL_HANDOFF");
+   f2.probe.packets.clear();
+   MediaController p=new MediaController("next.player",PlaybackState.STATE_PLAYING);
+   f2.manager.active.add(p);
+   f2.manager.lastListener.onActiveSessionsChanged(Collections.singletonList(p));
+   expect(f2.probe.packets.stream().anyMatch(pkt->Arrays.equals(pkt,RoutingPackets.ownership(true))),
+    "finishPendingTake executes without waiting for DISCONNECTED after failed disconnect");
+   expect(HandoffService.sessionStatus(TARGET).handoffNotice.isEmpty(),"take after failed disconnect clears handoffNotice");
+   f2.service.onDestroy();
+  }
+
+  // 4) Null a2dpProxy during release() surfaces failure and does not leave finishPendingTake stuck waiting for DISCONNECTED.
+  AapProbe.created.clear();
+  MediaSessionManager nullProxyMgr=new MediaSessionManager();
+  HandoffService nullProxySvc=service(nullProxyMgr);
+  nullProxySvc.onCreate();
+  nullProxySvc.onStartCommand(new Intent().putExtra("address",TARGET).putExtra("local_mac",SELF).putExtra("peer_address",PEER)
+   .putExtra(HandoffService.EXTRA_SESSION_MODE,"AUTO_HANDOFF"),0,1);
+  AapProbe nullProxyProbe=AapProbe.created.get(0);
+  nullProxyProbe.listener.ready();
+  ((Set<String>)get(nullProxySvc,"peers")).add(PEER);
+  enableTargetOutputRoute(nullProxySvc);
+  nullProxyProbe.listener.packet(RoutingPackets.ownership(false));
+  SessionStatus noProxyStatus=HandoffService.sessionStatus(TARGET);
+  expect(!noProxyStatus.audioYielded && !noProxyStatus.audioYieldPending && !noProxyStatus.handoffNotice.isEmpty(),
+   "null a2dpProxy release surfaces handoffNotice without audioYielded");
+  StatusSummary noProxySummary=HandoffService.evaluateSummary(nullProxySvc,TARGET,false);
+  expect(noProxySummary.level==StatusSummary.Level.ATTENTION && noProxySummary.primaryAction==StatusSummary.PrimaryAction.MANUAL_HANDOFF,
+   "null a2dpProxy release reports ATTENTION with MANUAL_HANDOFF");
+  nullProxyProbe.packets.clear();
+  MediaController afterNoProxy=new MediaController("after.no.proxy",PlaybackState.STATE_PLAYING);
+  nullProxyMgr.active.add(afterNoProxy);
+  nullProxyMgr.lastListener.onActiveSessionsChanged(Collections.singletonList(afterNoProxy));
+  expect(nullProxyProbe.packets.stream().anyMatch(pkt->Arrays.equals(pkt,RoutingPackets.ownership(true))),
+   "finishPendingTake completes cleanly when release saw null a2dpProxy");
+  expect(HandoffService.sessionStatus(TARGET).handoffNotice.isEmpty(),"take clears null-proxy release failure notice");
+  nullProxySvc.onDestroy();
+ }
 }''',
 }
 
@@ -1692,6 +1793,9 @@ class HandoffLifecycleTests(unittest.TestCase):
 
     def test_remote_release_requires_confirmed_idle_with_media_access(self):
         self.run_scenario('remote-release-access-lost')
+
+    def test_yielded_truth_and_disconnect_failure(self):
+        self.run_scenario('yielded-truth-and-disconnect-failure')
 
     def run_scenario(self, scenario):
         jdk = Path(os.environ['JAVA_HOME']) / 'bin' if os.environ.get('JAVA_HOME') else None
