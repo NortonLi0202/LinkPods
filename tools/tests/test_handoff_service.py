@@ -1681,6 +1681,40 @@ public class HandoffLifecycleTest {
    f2.service.onDestroy();
   }
 
+  // 3b) Failed disconnect keeps cooldown bounce protection for yielded player and re-evaluates queued pending TAKE.
+  AapProbe.created.clear();
+  HandoffFixture fBounce=new HandoffFixture();
+  enableTargetOutputRoute(fBounce.service);
+  ((Set<String>)get(fBounce.service,"peers")).add(PEER);
+  MediaController yieldedPlayer=new MediaController("yielded.player",PlaybackState.STATE_PLAYING);
+  fBounce.manager.active.add(yieldedPlayer);
+  fBounce.manager.lastListener.onActiveSessionsChanged(Collections.singletonList(yieldedPlayer));
+  fBounce.disconnectResult=false;
+  fBounce.probe.listener.packet(RoutingPackets.ownership(false));
+  fBounce.probe.packets.clear();
+  playback(yieldedPlayer,PlaybackState.STATE_PAUSED);
+  playback(yieldedPlayer,PlaybackState.STATE_PLAYING);
+  expect(fBounce.probe.packets.stream().noneMatch(pkt->Arrays.equals(pkt,RoutingPackets.ownership(true))),
+   "yielded player bounce during cooldown must not reclaim after failed disconnect");
+  fBounce.service.onDestroy();
+
+  AapProbe.created.clear();
+  HandoffFixture fPending=new HandoffFixture();
+  enableTargetOutputRoute(fPending.service);
+  ((Set<String>)get(fPending.service,"peers")).add(PEER);
+  fPending.probe.listener.packet(RoutingPackets.ownership(false));
+  fPending.probe.packets.clear();
+  MediaController pendingPlayer=new MediaController("queued.player",PlaybackState.STATE_PLAYING);
+  fPending.manager.active.add(pendingPlayer);
+  fPending.manager.lastListener.onActiveSessionsChanged(Collections.singletonList(pendingPlayer));
+  expect(((RoutingPolicy)get(fPending.service,"policy")).isPending(),
+   "new playback while yield pending queues TAKE");
+  fPending.disconnectResult=false;
+  fPending.a2dpStateChanged(BluetoothProfile.STATE_CONNECTED);
+  expect(fPending.probe.packets.stream().anyMatch(pkt->Arrays.equals(pkt,RoutingPackets.ownership(true))),
+   "failed disconnect on CONNECTED callback re-evaluates queued pending TAKE");
+  fPending.service.onDestroy();
+
   // 4) Null a2dpProxy during release() surfaces failure and does not leave finishPendingTake stuck waiting for DISCONNECTED.
   AapProbe.created.clear();
   MediaSessionManager nullProxyMgr=new MediaSessionManager();

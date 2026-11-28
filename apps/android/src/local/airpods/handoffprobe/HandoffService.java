@@ -144,7 +144,7 @@ public final class HandoffService extends Service {
             log("PLAYER package=" + packageName + " token=" + playerId
                 + " state=" + state + " ready=" + ready);
             if (state == 3) cancelPendingRemoteRelease();
-            boolean bounce = audioLink.isYielded() && SystemClock.elapsedRealtime() < yieldCooldownUntil
+            boolean bounce = SystemClock.elapsedRealtime() < yieldCooldownUntil
                     && yieldedPlayers.contains(playerId);
             RoutingPolicy.Action action = policy.onPlayback(playerId, state, !bounce);
             if (action == RoutingPolicy.Action.PAUSE) {
@@ -1149,6 +1149,7 @@ public final class HandoffService extends Service {
             if (profileAction(a2dp,"disconnect")) return true;
             audioLink.reset();
             setHandoffNotice("未能断开系统音频，当前可能仍由本机输出（可手动切换）");
+            if (policy.isPending()) finishPendingTake("a2dp-disconnect-failed");
             return false;
         }
         return true;
