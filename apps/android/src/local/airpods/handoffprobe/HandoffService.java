@@ -144,7 +144,7 @@ public final class HandoffService extends Service {
             log("PLAYER package=" + packageName + " token=" + playerId
                 + " state=" + state + " ready=" + ready);
             if (state == 3) cancelPendingRemoteRelease();
-            boolean bounce = audioLink.isYielded() && SystemClock.elapsedRealtime() < yieldCooldownUntil
+            boolean bounce = SystemClock.elapsedRealtime() < yieldCooldownUntil
                     && yieldedPlayers.contains(playerId);
             RoutingPolicy.Action action = policy.onPlayback(playerId, state, !bounce);
             if (action == RoutingPolicy.Action.PAUSE) {
@@ -235,6 +235,10 @@ public final class HandoffService extends Service {
         SessionMode mode = service.mode;
         boolean ready = service.controlSession.isReady();
         boolean watchActive = service.playbackWatch != null && service.playbackWatch.isActive();
+        boolean a2dpDisconnected = service.audioMonitor == null
+                || service.audioMonitor.snapshot(targetAddress).a2dpState == SamsungAudioSnapshot.ConnectionState.DISCONNECTED;
+        boolean audioYielded = mode == SessionMode.AUTO_HANDOFF && service.audioLink.isYielded() && a2dpDisconnected;
+        boolean audioYieldPending = mode == SessionMode.AUTO_HANDOFF && service.audioLink.isYielded() && !a2dpDisconnected;
         ConnectionPolicy.Snapshot conn = service.connection.snapshot(targetAddress);
         String ctrl = ready ? (service.nativeBackendReady ? "桥接控制通道已连接" : "直连控制通道已连接") : conn.description;
         String handoff;
@@ -243,13 +247,17 @@ public final class HandoffService extends Service {
                 handoff = "已开启（等待媒体权限）";
             } else if (!service.handoffNotice.isEmpty()) {
                 handoff = service.handoffNotice;
+            } else if (audioYielded) {
+                handoff = "已让出（其他设备使用中）";
+            } else if (audioYieldPending) {
+                handoff = "正在让出音频（等待系统断开）";
             } else {
                 handoff = "运行中（随播放交接）";
             }
         } else {
             handoff = "关闭（纯控制模式）";
         }
-        return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff, service.handoffNotice);
+        return new SessionStatus(targetAddress, mode, true, ready, ctrl, handoff, service.handoffNotice, audioYielded, audioYieldPending);
     }
 
     /** Evaluates the shared domain StatusSummary for both home UI and persistent notification. */
@@ -358,15 +366,19 @@ public final class HandoffService extends Service {
             if (state == BluetoothProfile.STATE_CONNECTED) finishDueRemoteRelease(state);
             if (state == BluetoothProfile.STATE_DISCONNECTED && audioLink.isYielded())
                 finishPendingTake("yielded-a2dp-disconnected");
+            updateForegroundNotification();
         }
         @Override public void onA2dpProxyReady(BluetoothProfile proxy) {
             log("PROFILE ready=" + BluetoothProfile.A2DP);
             if (!stopped && target != null && mode.allowsRouting()) {
-                int state = proxy.getConnectionState(target);
-                applyAudioLink(audioLink.update(state));
-                if (audioLink.isYielded()) finishPendingTake("yielded-a2dp-proxy-ready");
-                else if (state == BluetoothProfile.STATE_CONNECTED) finishDueRemoteRelease(state);
+                int state = safeConnectionState(proxy);
+                if (state >= 0) {
+                    applyAudioLink(audioLink.update(state));
+                    if (audioLink.isYielded()) finishPendingTake("yielded-a2dp-proxy-ready");
+                    else if (state == BluetoothProfile.STATE_CONNECTED) finishDueRemoteRelease(state);
+                }
             }
+            updateForegroundNotification();
         }
         @Override public void onAudioModeChanged(int audioMode) {
             log("AUDIO_MODE " + audioMode);
@@ -998,8 +1010,9 @@ public final class HandoffService extends Service {
         }
         log("TAKE reason=" + reason + " owns=" + owns + " source=" + sourceMac + " type=" + sourceType);
         boolean manual = "manual".equals(reason);
+        boolean wasYielded = audioLink.isYielded();
         if (manual) policy.clearPendingTake();
-        if (manual || audioLink.isYielded()) cancelTakeoverGrace();
+        if (manual || wasYielded) cancelTakeoverGrace();
         cancelPendingRemoteRelease();
         cancelYieldCooldown();
         // A fresh play edge can claim, but a deferred loss is resolved only by the grace timer.
@@ -1007,7 +1020,9 @@ public final class HandoffService extends Service {
         boolean claim = reclaim || (canClaim && policy.needsClaim(
                 Boolean.TRUE.equals(owns), selfMac.equalsIgnoreCase(sourceMac) && sourceType != 0));
         BluetoothProfile a2dp = a2dpProxy();
-        AudioLinkPolicy.Action linkAction = audioLink.want(true,a2dp == null ? 0 : a2dp.getConnectionState(target));
+        int a2dpState = safeConnectionState(a2dp);
+        AudioLinkPolicy.Action linkAction = audioLink.want(true, a2dpState < 0 ? 0 : a2dpState);
+        if (wasYielded) updateForegroundNotification();
         if (claim) {
             if (!manual && !reclaim && takeoverGracePending == null) {
                 takeoverGracePending = this::finishTakeoverGrace;
@@ -1026,7 +1041,7 @@ public final class HandoffService extends Service {
         }
         BluetoothProfile headset = headsetProxy();
         applyAudioLink(linkAction);
-        if (reason.equals("call") && headset != null && headset.getConnectionState(target) == BluetoothProfile.STATE_DISCONNECTED)
+        if (reason.equals("call") && headset != null && safeConnectionState(headset) == BluetoothProfile.STATE_DISCONNECTED)
             profileAction(headset, "connect");
         if (!"call".equals(reason) && !"manual".equals(reason)) {
             scheduleHandoffCheck();
@@ -1092,13 +1107,23 @@ public final class HandoffService extends Service {
         policy.onRemoteRequest();
         owns = false;
         BluetoothProfile a2dp = a2dpProxy();
-        AudioLinkPolicy.Action linkAction = audioLink.want(false,a2dp == null ? 0 : a2dp.getConnectionState(target));
+        int a2dpState = safeConnectionState(a2dp);
+        AudioLinkPolicy.Action linkAction = a2dpState < 0
+                ? AudioLinkPolicy.Action.NONE
+                : audioLink.want(false, a2dpState);
         yieldCooldownUntil = SystemClock.elapsedRealtime() + YIELD_COOLDOWN_MS;
         log("RELEASE reason=" + reason);
         if (acknowledge) send(RoutingPackets.ownership(false), "ownership-false", false);
         mediaInformation(false);
         if (playbackWatch != null) playbackWatch.pauseActive(yieldedPlayers);
-        applyAudioLink(linkAction);
+        if (a2dpState < 0) {
+            audioLink.reset();
+            log("RELEASE a2dp-proxy-unavailable");
+            setHandoffNotice("未能断开系统音频，当前可能仍由本机输出（可手动切换）");
+        } else {
+            applyAudioLink(linkAction);
+        }
+        updateForegroundNotification();
     }
 
     private void cancelYieldCooldown() {
@@ -1106,26 +1131,45 @@ public final class HandoffService extends Service {
         yieldedPlayers.clear();
     }
 
-    private void applyAudioLink(AudioLinkPolicy.Action action) {
-        if (!mode.allowsRouting()) return;
-        BluetoothProfile a2dp = a2dpProxy();
-        if (action == AudioLinkPolicy.Action.CONNECT) profileAction(a2dp,"connect");
-        if (action == AudioLinkPolicy.Action.DISCONNECT) profileAction(a2dp,"disconnect");
+    private int safeConnectionState(BluetoothProfile profile) {
+        if (profile == null || target == null) return -1;
+        try {
+            return profile.getConnectionState(target);
+        } catch (RuntimeException error) {
+            log("PROFILE state failed=" + error);
+            return -1;
+        }
     }
 
-    private void profileAction(BluetoothProfile profile, String method) {
+    private boolean applyAudioLink(AudioLinkPolicy.Action action) {
+        if (!mode.allowsRouting()) return false;
+        BluetoothProfile a2dp = a2dpProxy();
+        if (action == AudioLinkPolicy.Action.CONNECT) return profileAction(a2dp,"connect");
+        if (action == AudioLinkPolicy.Action.DISCONNECT) {
+            if (profileAction(a2dp,"disconnect")) return true;
+            audioLink.reset();
+            setHandoffNotice("未能断开系统音频，当前可能仍由本机输出（可手动切换）");
+            if (policy.isPending()) finishPendingTake("a2dp-disconnect-failed");
+            return false;
+        }
+        return true;
+    }
+
+    private boolean profileAction(BluetoothProfile profile, String method) {
         if (!mode.allowsRouting()) {
             log("PROFILE " + method + " skipped; mode=" + mode);
-            return;
+            return false;
         }
-        if (profile == null) { log("PROFILE " + method + " unavailable"); return; }
+        if (profile == null) { log("PROFILE " + method + " unavailable"); return false; }
         try {
             Object result = profile.getClass().getMethod(method, BluetoothDevice.class).invoke(profile, target);
             log("PROFILE " + profile.getClass().getSimpleName() + " " + method + " returned=" + result);
+            return !(result instanceof Boolean) || (Boolean) result;
         } catch (Exception error) {
             Throwable cause = error instanceof java.lang.reflect.InvocationTargetException
                 ? ((java.lang.reflect.InvocationTargetException)error).getTargetException() : error;
             log("PROFILE " + method + " failed=" + cause);
+            return false;
         }
     }
 

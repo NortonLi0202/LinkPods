@@ -100,6 +100,9 @@ public class MainActivity extends Activity {
             @Override public void requestNotifications() {
                 if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                     requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
+                else if (!notificationsEnabled())
+                    startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
                 else android.widget.Toast.makeText(MainActivity.this, "服务通知权限已允许", android.widget.Toast.LENGTH_SHORT).show();
             }
             @Override public void refreshDevices() {
@@ -112,31 +115,7 @@ public class MainActivity extends Activity {
             @Override public void connectEarbuds() { startControlOnly(); }
             @Override public void enableHandoff() { startAutomatic(); }
             @Override public void disableHandoff() { MainActivity.this.disableHandoff(); }
-            @Override public void manualHandoff() {
-                String notice;
-                if (!hasPermission()) {
-                    notice = "缺少附近设备权限，请先授予附近设备权限。";
-                } else {
-                    BluetoothDevice target = selected();
-                    if (target == null) {
-                        notice = "未选择耳机，请先在设置中选择目标耳机。";
-                    } else if (!HandoffService.isRunning()) {
-                        notice = "控制服务未运行，请先连接当前耳机并启用自动交接。";
-                    } else if (!target.getAddress().equalsIgnoreCase(HandoffService.activeTarget())) {
-                        notice = "当前服务连接的是其他耳机，请重新连接当前选中的耳机。";
-                    } else if (HandoffService.currentMode() != SessionMode.AUTO_HANDOFF) {
-                        notice = "当前处于纯控制模式，请先启用自动交接。";
-                    } else if (HandoffService.manualHandoff(target.getAddress())) {
-                        notice = "已发起手动切换到此耳机，请按实际出声确认。";
-                    } else {
-                        notice = "控制通道尚未就绪，请稍候或重新连接。";
-                    }
-                }
-                log(notice);
-                android.widget.Toast.makeText(MainActivity.this, notice, android.widget.Toast.LENGTH_SHORT).show();
-                refreshStatus();
-                refreshControls();
-            }
+            @Override public void manualHandoff() { requestManualHandoff(); }
             @Override public void stopConnection() { stopSession(); }
             @Override public void stopHandoff() { stopSession(); }
             @Override public void checkEnvironment() { prepareEnvironment(false); }
@@ -233,6 +212,35 @@ public class MainActivity extends Activity {
         ui.bindAudio(audioSnap);
         ui.bindCapabilities(caps, mediaOk);
         ui.bindSummary(summary);
+        ui.bindRuntimeFlags(hasPermission(), mediaOk, notificationPermissionGranted(),
+                BluetoothAutoStartReceiver.isAutoStartOptedIn(this),
+                BluetoothAutoStartReceiver.isAutoStartSuppressed());
+    }
+
+    private void requestManualHandoff() {
+        String notice;
+        if (!hasPermission()) {
+            notice = "缺少附近设备权限，请先授予附近设备权限。";
+        } else {
+            BluetoothDevice target = selected();
+            if (target == null) {
+                notice = "未选择耳机，请先在设置中选择目标耳机。";
+            } else if (!HandoffService.isRunning()) {
+                notice = "控制服务未运行，请先连接当前耳机并启用自动交接。";
+            } else if (!target.getAddress().equalsIgnoreCase(HandoffService.activeTarget())) {
+                notice = "当前服务连接的是其他耳机，请重新连接当前选中的耳机。";
+            } else if (HandoffService.currentMode() != SessionMode.AUTO_HANDOFF) {
+                notice = "当前处于纯控制模式，请先启用自动交接。";
+            } else if (HandoffService.manualHandoff(target.getAddress())) {
+                notice = "已发起手动切换到此耳机，请按实际出声确认。";
+            } else {
+                notice = "控制通道尚未就绪，请稍候或重新连接。";
+            }
+        }
+        log(notice);
+        android.widget.Toast.makeText(MainActivity.this, notice, android.widget.Toast.LENGTH_SHORT).show();
+        refreshStatus();
+        refreshControls();
     }
 
     private void executePrimaryAction(StatusSummary.PrimaryAction action) {
@@ -257,9 +265,7 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
                 break;
             case MANUAL_HANDOFF:
-                BluetoothDevice target = hasPermission() ? selected() : null;
-                if (target != null) HandoffService.manualHandoff(target.getAddress());
-                refreshControls();
+                requestManualHandoff();
                 break;
             case OPEN_APP:
                 if (ui != null) ui.show(LinkPodsUi.CONNECTION);
@@ -319,6 +325,16 @@ public class MainActivity extends Activity {
         return Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private boolean notificationsEnabled() {
+        android.app.NotificationManager manager = getSystemService(android.app.NotificationManager.class);
+        return manager != null && manager.areNotificationsEnabled();
+    }
+
+    private boolean notificationPermissionGranted() {
+        boolean runtimeGranted = Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        return runtimeGranted && notificationsEnabled();
+    }
+
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
         if (requestCode == 1) {
@@ -348,8 +364,10 @@ public class MainActivity extends Activity {
                 devices.add(device);
                 labels.add(name);
             }
-            ArrayAdapter<String> list = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels);
-            list.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            ArrayAdapter<String> list = ui != null
+                    ? ui.deviceAdapter(labels)
+                    : new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels);
+            if (ui == null) list.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
             picker.setAdapter(list);
             if (!devices.isEmpty()) picker.setSelection(chosen);
             syncLocalAudioMonitor();

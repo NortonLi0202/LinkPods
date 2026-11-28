@@ -1,17 +1,21 @@
 package local.airpods.handoffprobe;
 
 import android.app.Activity;
-import android.content.res.Configuration;
+import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
-import android.content.res.ColorStateList;
 import android.media.AudioManager;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.widget.ArrayAdapter;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -20,8 +24,15 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
-/** Adaptive native settings page; the activity remains the owner of service/Root actions. */
+/**
+ * Adaptive native UI: One UI rounded cards with a quiet, minimal hierarchy.
+ * The root tree is built once; navigation only swaps the content column and the sidebar selection.
+ * The activity remains the owner of service, permission and Root actions.
+ */
 final class LinkPodsUi {
     interface Actions {
         void openBluetooth(); void requestNearby(); void openMediaAccess(); void requestNotifications();
@@ -30,250 +41,709 @@ final class LinkPodsUi {
         String deviceName(); String connectionStatus();
         void runPrimaryAction(StatusSummary.PrimaryAction action);
     }
-    static final String HOME="设备", AUDIO="音频与聆听", PRESS="按压控制", CONNECTION="连接", SETTINGS="LinkPods 设置";
+
+    static final String HOME="设备", CONNECTION="连接与诊断", SETTINGS="设置与日志";
+    private static final String VERSION_LABEL="LinkPods v1.1 (build 102)";
+
     private final Activity activity;
     private final Actions actions;
     private final Spinner picker;
     final TextView environmentStatus,logOutput;
     private final AudioManager audio;
-    private final boolean dark;
-    private final int bg,side,group,ink,muted,line,blue;
-    private LinearLayout root,body,sidebar;
-    private TextView title,connection,audioCallStatus,audioRouteStatus,session,handoff,batteries,modeStatus,volumeValue,feedback,sidebarDevice,deviceNameValue;
+    private final UiTheme t;
+    private final boolean tablet;
+    private final int screenWidthDp;
+
+    // Persistent shell.
+    private LinearLayout root,body;
+    private ScrollView scroll;
+    private TextView title,backButton,trailingButton,sidebarDevice;
+    private final Map<String,TextView> navRows=new LinkedHashMap<>();
+
+    // Page-bound views; reset on every page render.
     private LinearLayout artwork;
-    private TextView genericArtwork,modelStatus;
+    private LinearLayout modelPlate;
+    private TextView plateTitle,plateCaption,heroName,heroModel,batteryHint,feedback;
+    private BatteryPill leftPill,rightPill,casePill;
+    private View summaryDot;
+    private TextView summaryBadge,summaryHeadline,summaryDetail,summaryAction;
+    private TextView modeChip,modeHint;
     private PodControls.NoiseSelector noise;
     private PodControls.VolumeSlider volume;
+    private TextView volumeValue;
     private final ArrayList<SettingRow> settings=new ArrayList<>();
+    private TextView handoffShortcut,autoStartValue;
+    private TextView diagAacp,diagHandoff,diagA2dp,diagHeadset,diagRoute,diagCapability,diagBridge,diagMedia;
+    private TextView permBluetooth,permMedia,permNotifications;
+
+    // Observed state, re-applied after each render.
     private EarbudSnapshot snapshot;
     private SessionStatus sessionStatus;
     private SamsungAudioSnapshot audioSnapshot;
     private ConnectionPolicy.Snapshot capabilities;
     private boolean mediaGranted;
+    private Boolean btFlag,mediaFlag,notifFlag,autoStartFlag,autoStartSuppressedFlag;
     private StatusSummary currentSummary;
-    private TextView summaryBadge,summaryHeadline,summaryDetail,summaryAction;
-    private TextView capabilitiesStatus,audioDetails;
     private Integer lastLeft,lastRight,lastCase;
     private String target="",page=HOME;
-    private boolean tablet;
     private final ArrayList<String> history=new ArrayList<>();
 
     LinkPodsUi(Activity a,Spinner spinner,Actions actions,String restoredPage) {
         activity=a;picker=spinner;this.actions=actions;audio=a.getSystemService(AudioManager.class);
-        dark=(a.getResources().getConfiguration().uiMode&Configuration.UI_MODE_NIGHT_MASK)==Configuration.UI_MODE_NIGHT_YES;
-        bg=dark?Color.BLACK:0xfff2f2f7;side=dark?0xff171719:0xfff8f8fb;
-        group=dark?0xff1c1c1e:Color.WHITE;ink=dark?0xfff5f5f7:0xff171719;muted=dark?0xffa1a1aa:0xff777780;
-        line=dark?0xff343438:0xffe5e5ea;blue=dark?0xff0a84ff:0xff007aff;
-        environmentStatus=text("Root 尚未检测；直连无需此项",14,muted);
-        logOutput=text("",12,muted);logOutput.setTextIsSelectable(true);
-        if(restoredPage!=null&&!restoredPage.isEmpty())page=restoredPage;
-        build();
+        t=UiTheme.of(a);
+        screenWidthDp=a.getResources().getConfiguration().screenWidthDp;
+        // The 720dp split accommodates the target tablet's 738dp portrait window.
+        tablet=screenWidthDp>=720;
+        environmentStatus=text("Root 尚未检测；直连无需此项",13,t.muted);
+        environmentStatus.setLineSpacing(dp(2),1);
+        logOutput=text("",12,t.muted);
+        logOutput.setTextIsSelectable(true);
+        logOutput.setTypeface(Typeface.MONOSPACE);
+        logOutput.setLineSpacing(dp(2),1);
+        logOutput.setGravity(Gravity.TOP|Gravity.START);
+        page=normalize(restoredPage);
+        buildShell();
+        render();
     }
-    int dp(float value){return Math.round(value*activity.getResources().getDisplayMetrics().density);}
+
+    int dp(float value){return t.dp(value);}
     String page(){return page;}
-    private TextView text(String value,int sp,int color){TextView t=new TextView(activity);t.setText(value);t.setTextSize(sp);t.setTextColor(color);t.setGravity(Gravity.CENTER_VERTICAL);t.setFontFeatureSettings("kern");return t;}
+
+    private static String normalize(String name){
+        return CONNECTION.equals(name)||SETTINGS.equals(name)?name:HOME;
+    }
+
+    void show(String destination){
+        String next=normalize(destination);
+        if(page.equals(next))return;
+        history.add(page);page=next;render();
+    }
+
+    boolean back(){
+        if(HOME.equals(page))return false;
+        page=history.isEmpty()?HOME:history.remove(history.size()-1);
+        render();
+        return true;
+    }
+
+    // ---------------------------------------------------------------- primitives
+
+    private TextView text(String value,float sp,int color){
+        TextView v=new TextView(activity);v.setText(value);v.setTextSize(sp);v.setTextColor(color);
+        v.setGravity(Gravity.CENTER_VERTICAL);v.setFontFeatureSettings("kern");v.setIncludeFontPadding(true);
+        return v;
+    }
+    private TextView strong(String value,float sp,int color){TextView v=text(value,sp,color);v.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));return v;}
+    private TextView heavy(String value,float sp,int color){TextView v=text(value,sp,color);v.setTypeface(null,Typeface.BOLD);return v;}
     private LinearLayout column(){LinearLayout l=new LinearLayout(activity);l.setOrientation(LinearLayout.VERTICAL);return l;}
-    private GradientDrawable shape(int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
-    private void clickable(View v,Runnable action){v.setClickable(true);v.setFocusable(true);v.setOnClickListener(w->action.run());v.setBackground(new RippleDrawable(ColorStateList.valueOf(dark?0x30ffffff:0x16000000),shape(Color.TRANSPARENT,16),shape(Color.WHITE,16)));}
+    private LinearLayout horizontal(){LinearLayout l=new LinearLayout(activity);l.setOrientation(LinearLayout.HORIZONTAL);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
     private void detach(View v){if(v.getParent() instanceof ViewGroup)((ViewGroup)v.getParent()).removeView(v);}
-    private void build() {
-        // The 720dp compact split accommodates the target tablet's 738dp portrait window.
-        int width=activity.getResources().getConfiguration().screenWidthDp;
-        tablet=width>=720;
-        root=new LinearLayout(activity);root.setOrientation(LinearLayout.HORIZONTAL);root.setBackgroundColor(bg);
-        root.setOnApplyWindowInsetsListener((v,insets)->{android.graphics.Insets safe=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());v.setPadding(safe.left,safe.top,safe.right,safe.bottom);return insets;});
-        activity.getWindow().setStatusBarColor(bg);activity.getWindow().setNavigationBarColor(bg);
-        android.view.WindowInsetsController bars=activity.getWindow().getDecorView().getWindowInsetsController();
-        if(bars!=null)bars.setSystemBarsAppearance(dark?0:android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
-        if(tablet)buildSidebar(width>=840?240:200);
+    private LinearLayout.LayoutParams weight(){return new LinearLayout.LayoutParams(0,-2,1);}
+    private GradientDrawable oval(int color){GradientDrawable d=new GradientDrawable();d.setShape(GradientDrawable.OVAL);d.setColor(color);return d;}
+
+    private LinearLayout card(){
+        LinearLayout c=column();
+        c.setBackground(t.rounded(t.surface,UiTheme.CARD_RADIUS_DP));
+        c.setClipToOutline(true);
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(14);
+        body.addView(c,p);
+        return c;
+    }
+    private void section(String value){
+        TextView v=strong(value,13,t.muted);v.setPadding(dp(14),dp(12),dp(14),dp(8));v.setAccessibilityHeading(true);body.addView(v);
+    }
+    private void help(String value){
+        TextView v=text(value,12,t.muted);v.setPadding(dp(14),0,dp(14),dp(18));v.setLineSpacing(dp(3),1);body.addView(v);
+    }
+    private void divider(LinearLayout c){
+        if(c.getChildCount()==0)return;
+        View v=new View(activity);v.setBackgroundColor(t.divider);
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,Math.max(1,dp(.6f)));p.leftMargin=dp(20);p.rightMargin=dp(20);
+        c.addView(v,p);
+    }
+    private LinearLayout listRow(LinearLayout c){
+        divider(c);
+        LinearLayout r=horizontal();r.setPadding(dp(20),dp(12),dp(16),dp(12));r.setMinimumHeight(dp(60));
+        c.addView(r,new LinearLayout.LayoutParams(-1,-2));
+        return r;
+    }
+    private void tap(View v,Runnable action){t.makeClickable(v,Color.TRANSPARENT,0,action);}
+    private TextView badge(String value){
+        TextView b=strong(value,12,t.muted);b.setGravity(Gravity.CENTER);b.setPadding(dp(10),dp(3),dp(10),dp(3));b.setMaxLines(1);
+        b.setBackground(t.rounded(t.surfaceSubtle,UiTheme.PILL_RADIUS_DP));
+        return b;
+    }
+    /** tone: 0 ok, 1 attention, 2 danger, 3 accent, otherwise neutral. */
+    private void tone(TextView b,int tone,String value){
+        if(b==null)return;
+        int fg=tone==0?t.ok:tone==1?t.warn:tone==2?t.danger:tone==3?t.accent:t.muted;
+        int bg=tone==0?t.okTint:tone==1?t.warnTint:tone==2?t.dangerTint:tone==3?t.accentTint:t.surfaceSubtle;
+        b.setText(value);b.setTextColor(fg);b.setBackground(t.rounded(bg,UiTheme.PILL_RADIUS_DP));
+    }
+    private TextView[] titled(LinearLayout r,String name,String subtitle,int color){
+        LinearLayout labels=column();
+        TextView main=text(name,16,color);labels.addView(main);
+        TextView sub=text(subtitle==null?"":subtitle,12,t.muted);sub.setPadding(0,dp(2),0,0);sub.setLineSpacing(dp(1),1);
+        sub.setVisibility(subtitle==null||subtitle.isEmpty()?View.GONE:View.VISIBLE);labels.addView(sub);
+        r.addView(labels,weight());
+        return new TextView[]{main,sub};
+    }
+    private void actionRow(LinearLayout c,String name,String subtitle,int color,Runnable task){
+        LinearLayout r=listRow(c);titled(r,name,subtitle,color);tap(r,task);
+    }
+    private TextView navRow(LinearLayout c,String name,String value,Runnable task){
+        LinearLayout r=listRow(c);titled(r,name,null,t.ink);
+        TextView v=text(value,14,t.muted);v.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);v.setMaxWidth(dp(190));v.setMaxLines(1);v.setEllipsize(TextUtils.TruncateAt.END);
+        r.addView(v);
+        TextView chevron=text("›",22,t.muted);chevron.setPadding(dp(10),0,0,dp(2));r.addView(chevron);
+        tap(r,task);
+        return v;
+    }
+    private TextView keyValue(LinearLayout c,String key){
+        divider(c);
+        LinearLayout r=horizontal();r.setGravity(Gravity.TOP);r.setPadding(dp(20),dp(12),dp(20),dp(12));
+        TextView k=text(key,13,t.muted);k.setGravity(Gravity.START|Gravity.TOP);
+        r.addView(k,new LinearLayout.LayoutParams(dp(screenWidthDp<400?112:132),-2));
+        TextView v=text("--",14,t.ink);v.setGravity(Gravity.END|Gravity.TOP);v.setLineSpacing(dp(2),1);v.setTextIsSelectable(true);
+        r.addView(v,weight());
+        c.addView(r,new LinearLayout.LayoutParams(-1,-2));
+        return v;
+    }
+
+    // ---------------------------------------------------------------- shell
+
+    private void buildShell(){
+        root=horizontal();root.setGravity(Gravity.NO_GRAVITY);root.setBackgroundColor(t.bg);
+        root.setOnApplyWindowInsetsListener((v,insets)->{
+            android.graphics.Insets safe=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());
+            v.setPadding(safe.left,safe.top,safe.right,safe.bottom);return insets;});
+        activity.getWindow().setStatusBarColor(t.bg);activity.getWindow().setNavigationBarColor(t.bg);
+        WindowInsetsController bars=activity.getWindow().getDecorView().getWindowInsetsController();
+        int lightBars=WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+        if(bars!=null)bars.setSystemBarsAppearance(t.dark?0:lightBars,lightBars);
+        if(tablet)buildSidebar(screenWidthDp>=840?272:228);
+
         LinearLayout main=column();root.addView(main,new LinearLayout.LayoutParams(0,-1,1));
-        LinearLayout bar=new LinearLayout(activity);bar.setGravity(Gravity.CENTER_VERTICAL);bar.setPadding(dp(12),0,dp(12),0);main.addView(bar,new LinearLayout.LayoutParams(-1,dp(60)));
-        TextView back=text(!HOME.equals(page)?"‹ 返回":tablet?"":"设置",16,blue);back.setMinWidth(dp(56));back.setMinHeight(dp(48));clickable(back,()->{if(!HOME.equals(page))back();else show(SETTINGS);});bar.addView(back,new LinearLayout.LayoutParams(dp(68),-1));
-        title=text(HOME.equals(page)?actions.deviceName():page,17,ink);title.setGravity(Gravity.CENTER);title.setTypeface(null,Typeface.BOLD);title.setMaxLines(1);title.setEllipsize(android.text.TextUtils.TruncateAt.END);bar.addView(title,new LinearLayout.LayoutParams(0,-1,1));
-        TextView brand=text("LinkPods",12,muted);brand.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);bar.addView(brand,new LinearLayout.LayoutParams(dp(68),-1));
-        ScrollView scroll=new ScrollView(activity);scroll.setFillViewport(true);scroll.setClipToPadding(false);main.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout bar=horizontal();bar.setPadding(dp(tablet?20:8),0,dp(12),0);main.addView(bar,new LinearLayout.LayoutParams(-1,dp(64)));
+        backButton=text("‹",30,t.accent);backButton.setGravity(Gravity.CENTER);backButton.setPadding(0,0,0,dp(4));backButton.setContentDescription("返回");
+        t.makeClickable(backButton,Color.TRANSPARENT,UiTheme.PILL_RADIUS_DP,this::back);
+        bar.addView(backButton,new LinearLayout.LayoutParams(dp(48),dp(48)));
+        title=heavy("",tablet?26:22,t.ink);title.setMaxLines(1);title.setEllipsize(TextUtils.TruncateAt.END);title.setAccessibilityHeading(true);
+        title.setPadding(dp(8),0,dp(8),0);
+        bar.addView(title,new LinearLayout.LayoutParams(0,-1,1));
+        trailingButton=strong("设置",15,t.accent);trailingButton.setGravity(Gravity.CENTER);trailingButton.setPadding(dp(14),0,dp(14),0);
+        trailingButton.setContentDescription("打开设置与日志");
+        t.makeClickable(trailingButton,t.accentTint,UiTheme.PILL_RADIUS_DP,()->show(SETTINGS));
+        bar.addView(trailingButton,new LinearLayout.LayoutParams(-2,dp(38)));
+
+        scroll=new ScrollView(activity);scroll.setFillViewport(true);scroll.setClipToPadding(false);scroll.setVerticalScrollBarEnabled(false);
+        main.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         FrameLayout frame=new FrameLayout(activity);scroll.addView(frame,new ScrollView.LayoutParams(-1,-2));
-        body=new LinearLayout(activity){@Override protected void onMeasure(int ws,int hs){int available=View.MeasureSpec.getSize(ws);super.onMeasure(View.MeasureSpec.makeMeasureSpec(Math.min(dp(620),available),View.MeasureSpec.EXACTLY),hs);}};
-        body.setOrientation(LinearLayout.VERTICAL);body.setPadding(dp(width<400?16:24),dp(4),dp(width<400?16:24),dp(28));
-        FrameLayout.LayoutParams content=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);frame.addView(body,content);
-        settings.clear();deviceNameValue=null;noise=null;volume=null;volumeValue=null;batteries=null;connection=null;audioCallStatus=null;audioRouteStatus=null;session=null;handoff=null;modeStatus=null;feedback=null;capabilitiesStatus=null;audioDetails=null;artwork=null;genericArtwork=null;modelStatus=null;summaryBadge=null;summaryHeadline=null;summaryDetail=null;summaryAction=null;
-        if(HOME.equals(page))home();
-        else if(AUDIO.equals(page))audioPage();
-        else if(PRESS.equals(page))pressPage();
-        else if(CONNECTION.equals(page))connectionPage();
-        else if(SETTINGS.equals(page))appSettings();
-        else advanced(page);
+        final int maxWidth=dp(tablet?680:620);
+        body=new LinearLayout(activity){@Override protected void onMeasure(int ws,int hs){
+            int available=View.MeasureSpec.getSize(ws);
+            super.onMeasure(View.MeasureSpec.makeMeasureSpec(Math.min(maxWidth,available),View.MeasureSpec.EXACTLY),hs);}};
+        body.setOrientation(LinearLayout.VERTICAL);
+        int side=dp(screenWidthDp<400?14:tablet?28:20);
+        body.setPadding(side,dp(4),side,dp(32));
+        frame.addView(body,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL));
         activity.setContentView(root);root.requestApplyInsets();
+    }
+
+    private void buildSidebar(int widthDp){
+        LinearLayout sidebar=column();sidebar.setPadding(dp(14),dp(24),dp(14),dp(20));
+        ScrollView sideScroll=new ScrollView(activity);sideScroll.setFillViewport(true);sideScroll.setVerticalScrollBarEnabled(false);
+        sideScroll.setBackgroundColor(t.sidebarBg);sideScroll.addView(sidebar);
+        root.addView(sideScroll,new LinearLayout.LayoutParams(dp(widthDp),-1));
+        TextView brand=heavy("LinkPods",28,t.ink);brand.setPadding(dp(12),0,0,dp(4));sidebar.addView(brand);
+        TextView tagline=text("耳机控制与自动交接",13,t.muted);tagline.setPadding(dp(12),0,0,dp(24));sidebar.addView(tagline);
+        sidebarDevice=navItem(sidebar,"◉",HOME,actions.deviceName());
+        navItem(sidebar,"⇄",CONNECTION,"交接操作与音频诊断");
+        navItem(sidebar,"⚙",SETTINGS,"目标耳机、权限与运行记录");
+        View spacer=new View(activity);sidebar.addView(spacer,new LinearLayout.LayoutParams(-1,0,1));
+        TextView version=text(VERSION_LABEL,11,t.muted);version.setPadding(dp(12),dp(20),0,0);sidebar.addView(version);
+    }
+
+    private TextView navItem(LinearLayout sidebar,String glyph,String destination,String subtitle){
+        LinearLayout r=horizontal();r.setPadding(dp(12),dp(10),dp(12),dp(10));r.setMinimumHeight(dp(56));
+        TextView icon=text(glyph,17,t.muted);icon.setGravity(Gravity.CENTER);r.addView(icon,new LinearLayout.LayoutParams(dp(28),-2));
+        LinearLayout labels=column();labels.setPadding(dp(10),0,0,0);
+        TextView name=strong(destination,15,t.ink);labels.addView(name);
+        TextView sub=text(subtitle,12,t.muted);sub.setMaxLines(1);sub.setEllipsize(TextUtils.TruncateAt.END);labels.addView(sub);
+        r.addView(labels,weight());
+        r.setTag(new TextView[]{icon,name,sub});
+        r.setOnClickListener(v->show(destination));r.setClickable(true);r.setFocusable(true);
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(4);sidebar.addView(r,p);
+        navRows.put(destination,name);
+        return sub;
+    }
+
+    private void updateChrome(){
+        boolean home=HOME.equals(page);
+        title.setText(home?(tablet?"设备":"LinkPods"):page);
+        backButton.setVisibility(!home&&!tablet?View.VISIBLE:View.GONE);
+        trailingButton.setVisibility(home&&!tablet?View.VISIBLE:View.GONE);
+        title.setPadding(dp(!home&&!tablet?0:8),0,dp(8),0);
+        for(Map.Entry<String,TextView> e:navRows.entrySet()){
+            View row=(View)e.getValue().getParent().getParent();
+            TextView[] parts=(TextView[])row.getTag();
+            boolean selected=e.getKey().equals(page);
+            row.setSelected(selected);
+            t.makeClickable(row,selected?t.accentTint:Color.TRANSPARENT,18,()->show(e.getKey()));
+            parts[0].setTextColor(selected?t.accent:t.muted);
+            parts[1].setTextColor(selected?t.accent:t.ink);
+        }
+    }
+
+    private void render(){
+        body.removeAllViews();
+        settings.clear();
+        artwork=null;modelPlate=null;plateTitle=null;plateCaption=null;heroName=null;heroModel=null;batteryHint=null;feedback=null;
+        leftPill=null;rightPill=null;casePill=null;
+        summaryDot=null;summaryBadge=null;summaryHeadline=null;summaryDetail=null;summaryAction=null;
+        modeChip=null;modeHint=null;noise=null;volume=null;volumeValue=null;handoffShortcut=null;autoStartValue=null;
+        diagAacp=null;diagHandoff=null;diagA2dp=null;diagHeadset=null;diagRoute=null;diagCapability=null;diagBridge=null;diagMedia=null;
+        permBluetooth=null;permMedia=null;permNotifications=null;
+        if(CONNECTION.equals(page))connectionPage();
+        else if(SETTINGS.equals(page))settingsPage();
+        else homePage();
+        updateChrome();
+        scroll.scrollTo(0,0);
         if(snapshot!=null)bind(snapshot,target,sessionStatus);else updateLocalVolume();
         bindAudio(audioSnapshot);
         bindCapabilities(capabilities,mediaGranted);
+        bindFlagsToViews();
         if(currentSummary!=null)bindSummary(currentSummary);
+        else if(handoffShortcut!=null)handoffShortcut.setText(handoffBrief());
     }
-    private void buildSidebar(int width){
-        sidebar=column();sidebar.setPadding(dp(12),dp(20),dp(12),dp(16));sidebar.setBackgroundColor(side);
-        ScrollView scroll=new ScrollView(activity);scroll.setFillViewport(true);scroll.addView(sidebar);root.addView(scroll,new LinearLayout.LayoutParams(dp(width),-1));
-        TextView heading=text("设置",28,ink);heading.setTypeface(null,Typeface.BOLD);heading.setPadding(dp(12),0,0,dp(22));sidebar.addView(heading);
-        TextView app=text("LinkPods",13,muted);app.setPadding(dp(12),0,0,dp(12));sidebar.addView(app);
-        nav("◉  "+actions.deviceName(),HOME);
-        TextView caption=text("耳机",12,muted);caption.setPadding(dp(12),dp(25),0,dp(8));sidebar.addView(caption);
-        nav("♫  音频与聆听",AUDIO);nav("◎  按压控制",PRESS);nav("⇄  连接",CONNECTION);
-        TextView appCaption=text("应用",12,muted);appCaption.setPadding(dp(12),dp(25),0,dp(8));sidebar.addView(appCaption);nav("⚙  LinkPods 设置",SETTINGS);
-        View divider=new View(activity);divider.setBackgroundColor(line);root.addView(divider,new LinearLayout.LayoutParams(dp(1),-1));
+
+    // ---------------------------------------------------------------- HOME
+
+    private void homePage(){
+        heroCard();
+        summaryCard();
+        noiseCard();
+        volumeCard();
+        section("耳机功能");
+        LinearLayout features=card();
+        switchRow(features,"个性化音量",EarbudCommands.PERSONALIZED_VOLUME);
+        switchRow(features,"对话感知",EarbudCommands.CONVERSATION_AWARENESS);
+        switchRow(features,"自动入耳检测",EarbudCommands.EAR_DETECTION);
+        switchRow(features,"单耳降噪",EarbudCommands.ONE_BUD_ANC);
+        switchRow(features,"音量滑动",EarbudCommands.VOLUME_SWIPE);
+        help("耳机回报当前设置后才可更改；此型号不支持或尚未读取的功能保持不可用。");
+        LinearLayout shortcuts=card();
+        handoffShortcut=navRow(shortcuts,"自动交接与连接","",()->show(CONNECTION));
+        navRow(shortcuts,"设置与日志","",()->show(SETTINGS));
+        feedback=text("",12,t.muted);feedback.setGravity(Gravity.CENTER);feedback.setPadding(dp(14),dp(2),dp(14),dp(8));body.addView(feedback);
     }
-    private void nav(String label,String destination){TextView row=text(label,15,ink);row.setPadding(dp(12),dp(10),dp(8),dp(10));row.setMinHeight(dp(48));row.setMaxLines(2);clickable(row,()->show(destination));
-        if(HOME.equals(destination))sidebarDevice=row;
-        boolean selected=page.equals(destination)||(destination.equals(PRESS)&&(page.contains("长按")||page.equals("按压速度")))||(destination.equals(AUDIO)&&(page.equals("麦克风")||page.equals("辅助功能")));
-        row.setSelected(selected);if(selected){row.setTextColor(Color.WHITE);row.setBackground(shape(blue,13));}
-        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(4);sidebar.addView(row,p);}
-    void show(String destination){if(!page.equals(destination)){history.add(page);page=destination;build();}}
-    boolean back(){if(HOME.equals(page))return false;page=history.isEmpty()?HOME:history.remove(history.size()-1);build();return true;}
-    private void caption(String value){TextView t=text(value,12,muted);t.setPadding(dp(16),dp(12),dp(12),dp(10));body.addView(t);}
-    private void help(String value){TextView t=text(value,12,muted);t.setPadding(dp(16),dp(4),dp(12),dp(16));t.setLineSpacing(dp(3),1);body.addView(t);}
-    private LinearLayout group(){LinearLayout l=column();l.setBackground(shape(group,25));l.setClipToOutline(true);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(16);body.addView(l,p);return l;}
-    private void divider(LinearLayout g){if(g.getChildCount()==0)return;View v=new View(activity);v.setBackgroundColor(line);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(.5f));p.leftMargin=dp(20);g.addView(v,p);}
-    private LinearLayout row(LinearLayout g){divider(g);LinearLayout r=new LinearLayout(activity);r.setOrientation(LinearLayout.HORIZONTAL);r.setGravity(Gravity.CENTER_VERTICAL);r.setPadding(dp(20),dp(7),dp(12),dp(7));r.setMinimumHeight(dp(56));g.addView(r,new LinearLayout.LayoutParams(-1,-2));return r;}
-    private TextView navigation(LinearLayout g,String name,String value,String next){LinearLayout r=row(g);TextView label=text(name,16,ink);r.addView(label,new LinearLayout.LayoutParams(0,-2,1));TextView detail=text(value+"  ›",14,muted);detail.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);detail.setMaxWidth(dp(160));detail.setMaxLines(2);detail.setEllipsize(android.text.TextUtils.TruncateAt.END);r.addView(detail);clickable(r,()->show(next));return detail;}
-    private void info(LinearLayout g,String name,String value){LinearLayout r=row(g);r.addView(text(name,16,ink),new LinearLayout.LayoutParams(0,-2,1));TextView v=text(value,14,muted);v.setMaxWidth(dp(180));v.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);r.addView(v);}
-    private void action(LinearLayout g,String name,Runnable task){LinearLayout r=row(g);TextView t=text(name,16,blue);r.addView(t,new LinearLayout.LayoutParams(-1,-2));clickable(r,task);}
-    private void pageTitle(String name){TextView t=text(name,28,ink);t.setTypeface(null,Typeface.BOLD);t.setPadding(dp(4),dp(14),0,dp(22));body.addView(t);t.setAccessibilityHeading(true);}
-    private void hero(){
-        artwork=new LinearLayout(activity);artwork.setGravity(Gravity.CENTER);artwork.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-        for(String name:new String[]{"lp_earbuds","lp_case"}){ImageView image=new ImageView(activity);image.setScaleType(ImageView.ScaleType.FIT_CENTER);int id=activity.getResources().getIdentifier(name,"drawable",activity.getPackageName());if(id!=0)image.setImageResource(id);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(174),1);p.setMargins(dp(6),0,dp(6),0);artwork.addView(image,p);}
-        LinearLayout.LayoutParams imageParams=new LinearLayout.LayoutParams(-1,dp(190));imageParams.topMargin=dp(12);body.addView(artwork,imageParams);
-        genericArtwork=text("AirPods",26,ink);genericArtwork.setGravity(Gravity.CENTER);genericArtwork.setTypeface(null,Typeface.BOLD);genericArtwork.setPadding(dp(8),dp(30),dp(8),dp(22));body.addView(genericArtwork,new LinearLayout.LayoutParams(-1,dp(110)));
+
+    private void heroCard(){
+        LinearLayout c=card();c.setPadding(dp(20),dp(22),dp(20),dp(20));
+        artwork=horizontal();artwork.setGravity(Gravity.CENTER);
+        artwork.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        for(String name:new String[]{"lp_earbuds","lp_case"}){
+            ImageView image=new ImageView(activity);image.setScaleType(ImageView.ScaleType.FIT_CENTER);image.setAdjustViewBounds(true);
+            int id=activity.getResources().getIdentifier(name,"drawable",activity.getPackageName());
+            if(id!=0)image.setImageResource(id);
+            LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-1,1);p.setMargins(dp(6),0,dp(6),0);
+            artwork.addView(image,p);
+        }
         artwork.setVisibility(View.GONE);
-        batteries=text("左耳 --   ·   右耳 --   ·   充电盒 --",13,muted);batteries.setGravity(Gravity.CENTER);batteries.setPadding(0,dp(6),0,dp(8));body.addView(batteries);
-        modelStatus=text("型号尚未识别",13,muted);modelStatus.setGravity(Gravity.CENTER);modelStatus.setPadding(dp(8),0,dp(8),dp(4));body.addView(modelStatus);
-        connection=text("媒体音频 (A2DP)："+actions.connectionStatus(),12,muted);connection.setGravity(Gravity.CENTER);connection.setPadding(dp(8),dp(2),dp(8),dp(3));body.addView(connection);
-        audioCallStatus=text("通话音频 (HFP/HSP)：未知",12,muted);audioCallStatus.setGravity(Gravity.CENTER);audioCallStatus.setPadding(dp(8),0,dp(8),dp(3));body.addView(audioCallStatus);
-        audioRouteStatus=text("音频输出与路由：未知",12,muted);audioRouteStatus.setGravity(Gravity.CENTER);audioRouteStatus.setPadding(dp(8),0,dp(8),dp(3));body.addView(audioRouteStatus);
-        session=text("耳机控制 (AACP)：未连接",12,muted);session.setGravity(Gravity.CENTER);session.setPadding(dp(8),0,dp(8),dp(3));body.addView(session);
-        handoff=text("自动交接：关闭",12,muted);handoff.setGravity(Gravity.CENTER);handoff.setPadding(dp(8),0,dp(8),dp(18));body.addView(handoff);
-        capabilitiesStatus=text("",12,muted);capabilitiesStatus.setGravity(Gravity.CENTER);capabilitiesStatus.setPadding(dp(8),0,dp(8),dp(14));body.addView(capabilitiesStatus);
+        c.addView(artwork,new LinearLayout.LayoutParams(-1,dp(tablet?190:164)));
+
+        modelPlate=column();modelPlate.setGravity(Gravity.CENTER);modelPlate.setPadding(dp(16),dp(18),dp(16),dp(18));
+        modelPlate.setBackground(t.rounded(t.surfaceSubtle,22));
+        TextView glyph=text("◖ ◗",22,t.muted);glyph.setGravity(Gravity.CENTER);
+        glyph.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);modelPlate.addView(glyph);
+        plateTitle=heavy("型号尚未识别",20,t.ink);plateTitle.setGravity(Gravity.CENTER);plateTitle.setPadding(0,dp(6),0,0);modelPlate.addView(plateTitle);
+        plateCaption=text("等待耳机回报型号信息",12,t.muted);plateCaption.setGravity(Gravity.CENTER);plateCaption.setPadding(0,dp(4),0,0);modelPlate.addView(plateCaption);
+        c.addView(modelPlate,new LinearLayout.LayoutParams(-1,dp(132)));
+
+        heroName=heavy(actions.deviceName(),22,t.ink);heroName.setGravity(Gravity.CENTER);heroName.setPadding(0,dp(16),0,0);
+        heroName.setMaxLines(2);heroName.setEllipsize(TextUtils.TruncateAt.END);c.addView(heroName,new LinearLayout.LayoutParams(-1,-2));
+        heroModel=text("型号尚未识别",13,t.muted);heroModel.setGravity(Gravity.CENTER);heroModel.setPadding(0,dp(4),0,dp(16));
+        c.addView(heroModel,new LinearLayout.LayoutParams(-1,-2));
+
+        LinearLayout pills=horizontal();pills.setGravity(Gravity.TOP);
+        leftPill=new BatteryPill("左耳");rightPill=new BatteryPill("右耳");casePill=new BatteryPill("充电盒");
+        addPill(pills,leftPill,0);addPill(pills,rightPill,dp(8));addPill(pills,casePill,dp(8));
+        c.addView(pills,new LinearLayout.LayoutParams(-1,-2));
+        batteryHint=text("",12,t.muted);batteryHint.setGravity(Gravity.CENTER);batteryHint.setPadding(0,dp(10),0,0);batteryHint.setVisibility(View.GONE);
+        c.addView(batteryHint,new LinearLayout.LayoutParams(-1,-2));
     }
+    private void addPill(LinearLayout row,BatteryPill pill,int leftMargin){
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1);p.leftMargin=leftMargin;row.addView(pill.box,p);
+    }
+
     private void summaryCard(){
-        LinearLayout card=group();card.setPadding(dp(20),dp(14),dp(20),dp(14));
-        LinearLayout header=new LinearLayout(activity);header.setOrientation(LinearLayout.HORIZONTAL);header.setGravity(Gravity.CENTER_VERTICAL);
-        summaryBadge=text("状态",12,ink);summaryBadge.setTypeface(null,Typeface.BOLD);summaryBadge.setPadding(0,0,dp(10),0);header.addView(summaryBadge);
-        summaryHeadline=text("正在检查状态",15,ink);summaryHeadline.setTypeface(null,Typeface.BOLD);header.addView(summaryHeadline,new LinearLayout.LayoutParams(0,-2,1));
-        card.addView(header);
-        summaryDetail=text("",12,muted);summaryDetail.setPadding(0,dp(6),0,0);summaryDetail.setLineSpacing(dp(2),1);card.addView(summaryDetail);
-        summaryAction=text("",14,blue);summaryAction.setTypeface(null,Typeface.BOLD);summaryAction.setPadding(0,dp(10),0,0);summaryAction.setVisibility(View.GONE);
-        clickable(summaryAction,()->{if(currentSummary!=null&&currentSummary.hasPrimaryAction())actions.runPrimaryAction(currentSummary.primaryAction);});
-        card.addView(summaryAction);
+        LinearLayout c=card();c.setPadding(dp(20),dp(18),dp(20),dp(18));
+        LinearLayout header=horizontal();
+        summaryDot=new View(activity);summaryDot.setBackground(oval(t.muted));
+        LinearLayout.LayoutParams dot=new LinearLayout.LayoutParams(dp(10),dp(10));dot.rightMargin=dp(10);header.addView(summaryDot,dot);
+        summaryBadge=badge("状态");header.addView(summaryBadge);
+        c.addView(header);
+        summaryHeadline=heavy("正在检查状态",18,t.ink);summaryHeadline.setPadding(0,dp(12),0,0);summaryHeadline.setLineSpacing(dp(2),1);c.addView(summaryHeadline);
+        summaryDetail=text("",13,t.muted);summaryDetail.setPadding(0,dp(6),0,0);summaryDetail.setLineSpacing(dp(3),1);summaryDetail.setVisibility(View.GONE);c.addView(summaryDetail);
+        summaryAction=strong("",15,Color.WHITE);summaryAction.setGravity(Gravity.CENTER);summaryAction.setVisibility(View.GONE);
+        t.makeClickable(summaryAction,t.accent,UiTheme.PILL_RADIUS_DP,()->{if(currentSummary!=null&&currentSummary.hasPrimaryAction())actions.runPrimaryAction(currentSummary.primaryAction);});
+        LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(-1,dp(46));ap.topMargin=dp(16);c.addView(summaryAction,ap);
     }
+
+    private void noiseCard(){
+        LinearLayout c=card();c.setPadding(dp(20),dp(18),dp(20),dp(16));
+        LinearLayout header=horizontal();
+        header.addView(heavy("噪声控制",17,t.ink),weight());
+        modeChip=badge("尚未读取");header.addView(modeChip);
+        c.addView(header);
+        noise=new PodControls.NoiseSelector(activity,t.dark,value->submit(EarbudCommands.LISTENING_MODE,value));
+        LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(-1,dp(88));np.topMargin=dp(14);c.addView(noise,np);
+        modeHint=text("",12,t.muted);modeHint.setPadding(dp(2),dp(4),dp(2),0);modeHint.setLineSpacing(dp(2),1);modeHint.setVisibility(View.GONE);c.addView(modeHint);
+    }
+
+    private void volumeCard(){
+        LinearLayout c=card();c.setPadding(dp(20),dp(16),dp(20),dp(14));
+        LinearLayout header=horizontal();
+        header.addView(heavy("媒体音量",17,t.ink),weight());
+        volumeValue=strong("",15,t.accent);header.addView(volumeValue);
+        c.addView(header);
+        LinearLayout sliderRow=horizontal();
+        TextView quiet=text("−",20,t.muted);quiet.setGravity(Gravity.CENTER);sliderRow.addView(quiet,new LinearLayout.LayoutParams(dp(24),dp(48)));
+        volume=new PodControls.VolumeSlider(activity,t.dark,value->{
+            if(audio==null)return;
+            try{audio.setStreamVolume(AudioManager.STREAM_MUSIC,value,0);updateLocalVolume();}
+            catch(SecurityException e){message("系统未允许调节媒体音量");}
+        });
+        sliderRow.addView(volume,new LinearLayout.LayoutParams(0,dp(48),1));
+        TextView loud=text("+",20,t.muted);loud.setGravity(Gravity.CENTER);sliderRow.addView(loud,new LinearLayout.LayoutParams(dp(24),dp(48)));
+        LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,-2);sp.topMargin=dp(6);c.addView(sliderRow,sp);
+        TextView local=text("此 Android 设备的媒体音量",12,t.muted);local.setPadding(dp(2),dp(2),0,0);c.addView(local);
+    }
+
+    private void switchRow(LinearLayout c,String label,int id){
+        LinearLayout r=listRow(c);
+        TextView[] parts=titled(r,label,"尚未读取",t.ink);
+        parts[1].setVisibility(View.VISIBLE);
+        PodControls.GlassSwitch toggle=new PodControls.GlassSwitch(activity,t.dark,label,v->submit(id,EarbudCommands.booleanValue(v==1)));
+        toggle.bind(null,false);
+        r.addView(toggle,new LinearLayout.LayoutParams(dp(68),dp(48)));
+        settings.add(new SettingRow(id,toggle,parts[1]));
+    }
+
+    // ---------------------------------------------------------------- CONNECTION
+
+    private void connectionPage(){
+        summaryCard();
+        section("交接操作");
+        LinearLayout ops=card();
+        actionRow(ops,"连接耳机（仅控制）","直接建立耳机控制通道，不接管音频",t.accent,actions::connectEarbuds);
+        actionRow(ops,"启用自动交接","根据本机播放状态协调耳机交接",t.accent,actions::enableHandoff);
+        actionRow(ops,"手动切换到此耳机","立即请求把耳机音频切到本机",t.accent,actions::manualHandoff);
+        actionRow(ops,"关闭自动交接（保留控制）",null,t.accent,actions::disableHandoff);
+        actionRow(ops,"停止连接",null,t.danger,actions::stopConnection);
+        LinearLayout auto=listRow(ops);titled(auto,"蓝牙连接时自动启停","随「启用自动交接」开启；关闭自动交接后关闭，停止连接仅本次暂停",t.ink);
+        autoStartValue=badge("未检查");auto.addView(autoStartValue);
+        help("先直接连接耳机，直连可用就不请求 Root。请先在设置中选择耳机，并允许读取媒体播放状态；实际声音与双向切换仍需在设备上确认。");
+
+        section("连接与音频诊断");
+        LinearLayout diag=card();diag.setPadding(0,dp(4),0,dp(4));
+        diagAacp=keyValue(diag,"耳机控制 (AACP)");
+        diagHandoff=keyValue(diag,"自动交接");
+        diagA2dp=keyValue(diag,"媒体音频 (A2DP)");
+        diagHeadset=keyValue(diag,"通话音频 (HFP/HSP)");
+        diagRoute=keyValue(diag,"系统路由");
+        diagCapability=keyValue(diag,"连接能力");
+        diagBridge=keyValue(diag,"兼容桥接");
+        diagMedia=keyValue(diag,"媒体状态权限");
+
+        section("兼容桥接（进阶）");
+        LinearLayout bridge=card();
+        actionRow(bridge,"检查 Root 与运行环境","只读检查，不会准备桥接",t.accent,actions::checkEnvironment);
+        actionRow(bridge,"准备兼容桥接","仅在明确缺少系统兼容能力时需要",t.accent,actions::prepareBridge);
+        divider(bridge);
+        detach(environmentStatus);
+        environmentStatus.setTextColor(t.muted);
+        environmentStatus.setPadding(dp(14),dp(12),dp(14),dp(12));
+        environmentStatus.setBackground(t.rounded(t.surfaceSubtle,UiTheme.INNER_RADIUS_DP));
+        LinearLayout.LayoutParams ep=new LinearLayout.LayoutParams(-1,-2);ep.setMargins(dp(16),dp(12),dp(16),dp(16));
+        bridge.addView(environmentStatus,ep);
+        help("桥接只使用精确匹配的兼容适配；临时 Root 需要单独确认，且会在应用数据目录写入运行文件。");
+    }
+
+    // ---------------------------------------------------------------- SETTINGS
+
+    private void settingsPage(){
+        section("目标耳机");
+        LinearLayout device=card();
+        FrameLayout pickerBox=new FrameLayout(activity);
+        detach(picker);
+        picker.setContentDescription("选择已配对的耳机");
+        picker.setBackground(t.rounded(t.surfaceSubtle,UiTheme.INNER_RADIUS_DP));
+        picker.setPadding(dp(8),0,dp(40),0);
+        pickerBox.addView(picker,new FrameLayout.LayoutParams(-1,dp(52)));
+        TextView chevron=text("⌄",18,t.muted);chevron.setGravity(Gravity.CENTER);chevron.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        pickerBox.addView(chevron,new FrameLayout.LayoutParams(dp(40),dp(52),Gravity.END|Gravity.CENTER_VERTICAL));
+        LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(-1,-2);pp.setMargins(dp(16),dp(16),dp(16),dp(12));
+        device.addView(pickerBox,pp);
+        actionRow(device,"刷新设备与状态",null,t.accent,actions::refreshDevices);
+        actionRow(device,"系统蓝牙设置","配对、重命名或移除耳机",t.accent,actions::openBluetooth);
+
+        section("权限");
+        LinearLayout perms=card();
+        permBluetooth=permissionRow(perms,"附近设备","读取已配对耳机并建立连接",actions::requestNearby);
+        permMedia=permissionRow(perms,"媒体播放状态","自动交接需要；耳机控制不依赖此项",actions::openMediaAccess);
+        permNotifications=permissionRow(perms,"服务通知","在通知栏显示连接状态与快捷操作",actions::requestNotifications);
+
+        section("运行记录");
+        LinearLayout logs=card();
+        detach(logOutput);
+        logOutput.setTextColor(t.muted);
+        logOutput.setPadding(dp(14),dp(12),dp(14),dp(12));
+        logOutput.setBackground(t.rounded(t.surfaceSubtle,UiTheme.INNER_RADIUS_DP));
+        logOutput.setMinHeight(dp(72));
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(dp(12),dp(12),dp(12),dp(12));
+        logs.addView(logOutput,lp);
+
+        TextView version=strong(VERSION_LABEL,12,t.muted);version.setGravity(Gravity.CENTER);version.setPadding(0,dp(10),0,dp(2));body.addView(version,new LinearLayout.LayoutParams(-1,-2));
+        TextView note=text("耳机控制与交接的设备验收仍在进行。",11,t.muted);note.setGravity(Gravity.CENTER);body.addView(note,new LinearLayout.LayoutParams(-1,-2));
+    }
+
+    private TextView permissionRow(LinearLayout c,String name,String subtitle,Runnable task){
+        LinearLayout r=listRow(c);titled(r,name,subtitle,t.ink);
+        TextView b=badge("未检查");r.addView(b);
+        tap(r,task);
+        return b;
+    }
+
+    // ---------------------------------------------------------------- binding
+
     void bindSummary(StatusSummary summary){
         currentSummary=summary;
+        if(handoffShortcut!=null)handoffShortcut.setText(handoffBrief());
         if(summary==null||summaryBadge==null||summaryHeadline==null)return;
-        int color=summary.level==StatusSummary.Level.NORMAL?(dark?0xFF32D74B:0xFF248A3D)
-            :summary.level==StatusSummary.Level.ATTENTION?(dark?0xFFFFD60A:0xFFB25000)
-            :(dark?0xFFFF453A:0xFFD70015);
-        summaryBadge.setText(summary.levelLabel());summaryBadge.setTextColor(color);
+        int level=summary.level==StatusSummary.Level.NORMAL?0:summary.level==StatusSummary.Level.ATTENTION?1:2;
+        tone(summaryBadge,level,summary.levelLabel());
+        if(summaryDot!=null)summaryDot.setBackground(oval(level==0?t.ok:level==1?t.warn:t.danger));
         summaryHeadline.setText(summary.headline);
         if(summaryDetail!=null){summaryDetail.setText(summary.detail);summaryDetail.setVisibility(summary.detail.isEmpty()?View.GONE:View.VISIBLE);}
         if(summaryAction!=null){
-            if(summary.hasPrimaryAction()){summaryAction.setText(summary.primaryActionLabel());summaryAction.setVisibility(View.VISIBLE);}
+            if(summary.hasPrimaryAction()){summaryAction.setText(summary.primaryActionLabel());summaryAction.setContentDescription(summary.primaryActionLabel());summaryAction.setVisibility(View.VISIBLE);}
             else summaryAction.setVisibility(View.GONE);
         }
     }
-    private void home(){hero();summaryCard();LinearLayout name=group();deviceNameValue=navigation(name,"名称",actions.deviceName(),"名称");noiseGroup();
-        caption("按住 AirPods");LinearLayout press=group();navigation(press,"左耳","暂未接入","左耳长按");navigation(press,"右耳","暂未接入","右耳长按");
-        commonSwitches();volumeGroup();LinearLayout extras=group();navigation(extras,"自动设备切换","前往设置",CONNECTION);navigation(extras,"麦克风","暂未接入","麦克风");navigation(extras,"辅助功能","","辅助功能");
-        LinearLayout app=group();navigation(app,"LinkPods 设置","",SETTINGS);feedback=text("",12,muted);feedback.setPadding(dp(16),0,dp(16),dp(12));body.addView(feedback);
+
+    /** Optional runtime flags supplied by the activity; unknown values are shown as "未检查". */
+    void bindRuntimeFlags(boolean btGranted,boolean mediaAccessGranted,boolean notifGranted,boolean autoStartOptIn,boolean autoStartSuppressed){
+        btFlag=btGranted;mediaFlag=mediaAccessGranted;notifFlag=notifGranted;autoStartFlag=autoStartOptIn;autoStartSuppressedFlag=autoStartSuppressed;
+        bindFlagsToViews();
     }
-    private void noiseGroup(){caption("噪声控制");noise=new PodControls.NoiseSelector(activity,dark,value->submit(EarbudCommands.LISTENING_MODE,value));body.addView(noise,new LinearLayout.LayoutParams(-1,dp(94)));
-        modeStatus=text("尚未读取耳机模式",12,muted);modeStatus.setPadding(dp(16),dp(4),dp(12),dp(12));body.addView(modeStatus);}
-    private void commonSwitches(){LinearLayout g=group();setting(g,"个性化音量",EarbudCommands.PERSONALIZED_VOLUME);setting(g,"对话感知",EarbudCommands.CONVERSATION_AWARENESS);setting(g,"自动入耳检测",EarbudCommands.EAR_DETECTION);
-        help("耳机回报当前设置后才可更改。未读取的功能显示为不可用。");}
-    private void setting(LinearLayout g,String label,int id){LinearLayout r=row(g);LinearLayout labels=column();TextView name=text(label,16,ink);TextView detail=text("尚未读取",11,muted);labels.addView(name);labels.addView(detail);r.addView(labels,new LinearLayout.LayoutParams(0,-2,1));
-        PodControls.GlassSwitch toggle=new PodControls.GlassSwitch(activity,dark,label,v->submit(id,EarbudCommands.booleanValue(v==1)));toggle.bind(null,false);r.addView(toggle,new LinearLayout.LayoutParams(dp(76),dp(48)));settings.add(new SettingRow(id,toggle,detail));}
-    private void volumeGroup(){LinearLayout g=group();g.setPadding(dp(20),dp(12),dp(20),dp(9));LinearLayout label=new LinearLayout(activity);label.setGravity(Gravity.CENTER_VERTICAL);label.addView(text("媒体音量",16,ink),new LinearLayout.LayoutParams(0,dp(32),1));volumeValue=text("",14,muted);label.addView(volumeValue);g.addView(label);
-        LinearLayout sliderRow=new LinearLayout(activity);sliderRow.setGravity(Gravity.CENTER_VERTICAL);TextView quiet=text("−",20,muted);quiet.setGravity(Gravity.CENTER);sliderRow.addView(quiet,new LinearLayout.LayoutParams(dp(22),dp(48)));
-        volume=new PodControls.VolumeSlider(activity,dark,value->{if(audio!=null){try{audio.setStreamVolume(AudioManager.STREAM_MUSIC,value,0);updateLocalVolume();}catch(SecurityException e){message("系统未允许调节媒体音量");}}});sliderRow.addView(volume,new LinearLayout.LayoutParams(0,dp(48),1));TextView loud=text("+",20,muted);loud.setGravity(Gravity.CENTER);sliderRow.addView(loud,new LinearLayout.LayoutParams(dp(22),dp(48)));g.addView(sliderRow);
-        TextView local=text("此 Android 设备的音量",11,muted);local.setPadding(0,0,0,dp(3));g.addView(local);}
-    private void audioPage(){pageTitle(AUDIO);noiseGroup();volumeGroup();commonSwitches();LinearLayout g=group();setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"麦克风","暂未接入","麦克风");}
-    private void pressPage(){pageTitle(PRESS);LinearLayout g=group();navigation(g,"左耳长按","暂未接入","左耳长按");navigation(g,"右耳长按","暂未接入","右耳长按");navigation(g,"按压速度","暂未接入","按压速度");help("按压设置当前暂不可用。");}
-    private void connectionPage(){pageTitle("自动设备切换");summaryCard();help("启用后，LinkPods 根据此设备的播放状态协调耳机交接。请先在应用设置中选择耳机，并允许读取媒体播放状态。");
-        LinearLayout g=group();action(g,"连接耳机（仅控制）",actions::connectEarbuds);action(g,"启用自动交接",actions::enableHandoff);action(g,"手动切换到此耳机",actions::manualHandoff);action(g,"关闭自动交接（保留控制）",actions::disableHandoff);action(g,"停止连接",actions::stopConnection);action(g,"准备兼容桥接",actions::prepareBridge);navigation(g,"设备与权限","",SETTINGS);attachStatus();help("启用时先直接连接耳机，直连可用就不请求 Root。明确缺少系统兼容能力时才尝试已有 Root 桥接；也可手动准备桥接。临时 Root 需要单独确认，实际声音与双向切换仍需确认。");}
-    private void appSettings(){pageTitle(SETTINGS);caption("设备");LinearLayout device=group();detach(picker);picker.setContentDescription("选择已配对的耳机");device.addView(picker,new LinearLayout.LayoutParams(-1,dp(56)));action(device,"连接耳机",actions::connectEarbuds);action(device,"停止连接",actions::stopConnection);action(device,"允许附近设备权限",actions::requestNearby);action(device,"配对或管理耳机",actions::openBluetooth);action(device,"刷新设备与连接状态",actions::refreshDevices);
-        caption("权限");LinearLayout permissions=group();action(permissions,"允许读取媒体播放状态",actions::openMediaAccess);action(permissions,"允许服务通知",actions::requestNotifications);
-        caption("运行环境");LinearLayout runtime=group();action(runtime,"检查 Root 与运行环境",actions::checkEnvironment);action(runtime,"连接耳机",actions::connectEarbuds);action(runtime,"启用自动交接",actions::enableHandoff);action(runtime,"准备兼容桥接",actions::prepareBridge);action(runtime,"停止连接",actions::stopConnection);attachStatus();
-        caption("运行记录");LinearLayout logs=group();detach(logOutput);logOutput.setPadding(dp(16),dp(12),dp(16),dp(12));logs.addView(logOutput,new LinearLayout.LayoutParams(-1,-2));help("LinkPods 1.0 · 耳机控制与交接的设备验收仍在进行。");}
-    private void attachStatus(){LinearLayout g=group();detach(environmentStatus);environmentStatus.setPadding(dp(20),dp(14),dp(20),dp(14));g.addView(environmentStatus,new LinearLayout.LayoutParams(-1,-2));handoff=text("自动交接：关闭",13,muted);handoff.setPadding(dp(20),0,dp(20),dp(14));g.addView(handoff,new LinearLayout.LayoutParams(-1,-2));audioDetails=text("",13,muted);audioDetails.setPadding(dp(20),0,dp(20),dp(14));g.addView(audioDetails,new LinearLayout.LayoutParams(-1,-2));capabilitiesStatus=text("",13,muted);capabilitiesStatus.setPadding(dp(20),0,dp(20),dp(14));g.addView(capabilitiesStatus,new LinearLayout.LayoutParams(-1,-2));}
-    void bindAudio(SamsungAudioSnapshot state) {
-        audioSnapshot = state;
-        if (connection != null) {
-            String a2dpText = state != null ? SamsungAudioPolicy.formatA2dpSummary(state) : actions.connectionStatus();
-            connection.setText("媒体音频 (A2DP)：" + a2dpText);
+
+    private void bindFlagsToViews(){
+        Boolean bt=btFlag!=null?btFlag:audioSnapshot!=null?Boolean.valueOf(audioSnapshot.permissionGranted):null;
+        Boolean media=mediaFlag!=null?mediaFlag:capabilities!=null?Boolean.valueOf(mediaGranted):null;
+        permission(permBluetooth,bt);permission(permMedia,media);permission(permNotifications,notifFlag);
+        if(autoStartValue!=null){
+            if(autoStartFlag==null)tone(autoStartValue,4,"未检查");
+            else if(!autoStartFlag)tone(autoStartValue,4,"未开启");
+            else if(Boolean.TRUE.equals(autoStartSuppressedFlag))tone(autoStartValue,1,"已暂停");
+            else tone(autoStartValue,3,"已开启");
         }
-        if (audioCallStatus != null) {
-            audioCallStatus.setText("通话音频 (HFP/HSP)：" + SamsungAudioPolicy.formatHeadsetSummary(state));
-        }
-        if (audioRouteStatus != null) {
-            audioRouteStatus.setText("音频输出与路由：" + SamsungAudioPolicy.formatRouteSummary(state));
-        }
-        if (audioDetails != null) {
-            if (state == null || !state.permissionGranted) {
-                audioDetails.setText("系统音频快照：等待附近设备权限");
-            } else if (state.targetAddress.isEmpty()) {
-                audioDetails.setText("系统音频快照：请先在设置中选择耳机");
-            } else {
-                audioDetails.setText(
-                        "媒体音频 (A2DP)：" + SamsungAudioPolicy.connectionLabel(state.a2dpState)
-                        + "\n通话音频 (HFP/HSP)：" + SamsungAudioPolicy.formatHeadsetSummary(state)
-                        + "\n" + SamsungAudioPolicy.formatRouteSummary(state)
-                        + (state.routeDetail.isEmpty() ? "" : "\n路由说明：" + state.routeDetail));
-            }
-        }
+        if(diagMedia!=null)diagMedia.setText(media==null?"未检查":media?"已允许":"未授权：耳机控制仍可用，自动交接不可用");
     }
-    void bindCapabilities(ConnectionPolicy.Snapshot state,boolean mediaAllowed) {
+    private void permission(TextView b,Boolean granted){
+        if(b==null)return;
+        if(granted==null)tone(b,4,"未检查");else tone(b,granted?0:1,granted?"已允许":"未授权");
+    }
+
+    void bindAudio(SamsungAudioSnapshot state){
+        audioSnapshot=state;
+        if(diagA2dp!=null)diagA2dp.setText(state!=null?SamsungAudioPolicy.formatA2dpSummary(state):actions.connectionStatus());
+        if(diagHeadset!=null)diagHeadset.setText(SamsungAudioPolicy.formatHeadsetSummary(state));
+        if(diagRoute!=null){
+            String route=SamsungAudioPolicy.formatRouteSummary(state);
+            if(state!=null&&state.permissionGranted&&state.targetAddress.isEmpty())route="请先在设置中选择耳机";
+            else if(state!=null&&!state.routeDetail.isEmpty())route=route+"\n"+state.routeDetail;
+            diagRoute.setText(route);
+        }
+        if(btFlag==null)bindFlagsToViews();
+    }
+
+    void bindCapabilities(ConnectionPolicy.Snapshot state,boolean mediaAllowed){
         capabilities=state;mediaGranted=mediaAllowed;
-        if(capabilitiesStatus!=null)capabilitiesStatus.setText((state==null?"控制会话尚未启动":state.description)
-            +(mediaAllowed?"":"\n缺少媒体状态权限：耳机控制仍可用，自动交接不可用"));
+        if(diagCapability!=null)diagCapability.setText(state==null||state.description==null?"控制会话尚未启动":state.description);
+        if(diagBridge!=null)diagBridge.setText(state==null?"尚未评估":state.compatibilityRequired?"需要兼容桥接":"当前无需兼容桥接");
+        if(mediaFlag==null)bindFlagsToViews();
     }
-    private void advanced(String name){pageTitle(name);LinearLayout g=group();if(name.equals("名称")){info(g,"蓝牙设备名称",actions.deviceName());action(g,"在系统蓝牙设置中管理",actions::openBluetooth);help("名称由系统蓝牙设备信息读取。");}
-        else if(name.equals("辅助功能")){setting(g,"单耳降噪",EarbudCommands.ONE_BUD_ANC);setting(g,"音量滑动",EarbudCommands.VOLUME_SWIPE);navigation(g,"按压速度","暂未接入","按压速度");help("仅可更改已由耳机回报且当前可用的选项。");}
-        else{info(g,"当前设置","暂未接入");help("此选项尚未接入耳机设置协议，当前无法修改。");}}
-    private void submit(int id,int value){boolean accepted=actions.setSetting(id,value);message(accepted?"已提交，等待耳机确认":"当前无法更改，请检查耳机控制通道");}
-    private void message(String value){if(feedback!=null)feedback.setText(value);Toast.makeText(activity,value,Toast.LENGTH_SHORT).show();}
+
     void bind(EarbudSnapshot state,String address){
         bind(state,address,sessionStatus);
     }
+
     void bind(EarbudSnapshot state,String address,SessionStatus status){
-        if(!target.equals(address==null?"":address)){target=address==null?"":address;lastLeft=null;lastRight=null;lastCase=null;if(noise!=null)noise.resetCapabilities();}
+        String nextTarget=address==null?"":address;
+        if(!target.equals(nextTarget)){target=nextTarget;lastLeft=null;lastRight=null;lastCase=null;if(noise!=null)noise.resetCapabilities();}
+        if(state==null)state=EarbudSnapshot.empty(target,null);
         snapshot=state;sessionStatus=status;
-        if(title!=null&&HOME.equals(page))title.setText(actions.deviceName());
-        if(deviceNameValue!=null)deviceNameValue.setText(actions.deviceName()+"  ›");
-        if(sidebarDevice!=null)sidebarDevice.setText("◉  "+actions.deviceName());
-        if(connection!=null)connection.setText("媒体音频 (A2DP)："+(audioSnapshot!=null?SamsungAudioPolicy.formatA2dpSummary(audioSnapshot):actions.connectionStatus()));
-        if(session!=null){
-            String ctrl=status!=null&&status.serviceRunning?status.controlDescription:(state.status==null?(state.ready?"通道就绪":"未连接"):state.status);
-            if(state.status!=null&&state.status.contains("未确认")) ctrl=ctrl+"（"+state.status+"）";
-            session.setText("耳机控制 (AACP)："+ctrl);
-        }
-        if(handoff!=null){
-            handoff.setText("自动交接："+(status!=null?status.handoffDescription:"关闭"));
-        }
-        if(modelStatus!=null){modelStatus.setText(state.modelIdentityLabel());modelStatus.setContentDescription("耳机型号："+state.modelIdentityLabel());}
-        if(artwork!=null&&genericArtwork!=null){
+        String name=actions.deviceName();
+        if(sidebarDevice!=null)sidebarDevice.setText(name);
+        if(heroName!=null)heroName.setText(name);
+        if(heroModel!=null){heroModel.setText(state.modelIdentityLabel());heroModel.setContentDescription("耳机型号："+state.modelIdentityLabel());}
+        if(artwork!=null&&modelPlate!=null){
             boolean pro3=state.isPro3();
             artwork.setVisibility(pro3?View.VISIBLE:View.GONE);
-            genericArtwork.setVisibility(pro3?View.GONE:View.VISIBLE);
-            genericArtwork.setText(state.modelKnown()?state.model.name:"AirPods");
+            modelPlate.setVisibility(pro3?View.GONE:View.VISIBLE);
+            plateTitle.setText(state.modelKnown()?state.model.name:"型号尚未识别");
+            plateCaption.setText(state.modelKnown()?"此型号暂无产品图":state.modelNumber.isEmpty()?"等待耳机回报型号信息":"型号编号 "+state.modelNumber+" 未收录");
         }
+        if(diagAacp!=null){
+            String ctrl=status!=null&&status.serviceRunning?status.controlDescription:(state.status==null?(state.ready?"通道就绪":"未连接"):state.status);
+            if(state.status!=null&&state.status.contains("未确认")&&!ctrl.contains(state.status))ctrl=ctrl+"（"+state.status+"）";
+            diagAacp.setText(ctrl);
+        }
+        if(diagHandoff!=null){
+            String h=status!=null?status.handoffDescription:"关闭";
+            if(status!=null&&!status.handoffNotice.isEmpty())h=h+"\n"+status.handoffNotice;
+            diagHandoff.setText(h);
+        }
+        if(handoffShortcut!=null)handoffShortcut.setText(handoffBrief());
+
         if(state.ready||state.leftBattery!=null)lastLeft=state.leftBattery;
         if(state.ready||state.rightBattery!=null)lastRight=state.rightBattery;
         if(state.ready||state.caseBattery!=null)lastCase=state.caseBattery;
-        if(batteries!=null){batteries.setText("左耳 "+battery(lastLeft)+"   ·   右耳 "+battery(lastRight)+"   ·   充电盒 "+battery(lastCase)+(state.ready?"":"  · 未更新"));batteries.setContentDescription("左耳电量"+batterySpoken(lastLeft)+"，右耳电量"+batterySpoken(lastRight)+"，充电盒电量"+batterySpoken(lastCase)+(state.ready?"":"，当前未更新"));}
-        if(noise!=null){boolean listeningSupported=state.supportsSetting(EarbudCommands.LISTENING_MODE);Integer mode=state.value(EarbudCommands.LISTENING_MODE);boolean pending=state.pending.contains(EarbudCommands.LISTENING_MODE);
-            noise.setVisibility(listeningSupported?View.VISIBLE:View.GONE);
-            noise.bind(mode,EarbudUiPolicy.canWrite(state.ready,mode,pending),pending,state.supportsListeningMode(EarbudCommands.MODE_ADAPTIVE),state.supportsListeningMode(EarbudCommands.MODE_OFF));
-            modeStatus.setText(!listeningSupported?"此型号不支持噪声控制":pending?"已发送，等待耳机确认；当前仍显示已读取模式":mode==null?"尚未读取耳机模式":state.status!=null&&state.status.contains("未确认")?state.status:"自适应与关闭仅在耳机曾回报该模式后显示");}
-        for(SettingRow r:settings){Boolean value=state.enabled(r.id);boolean pending=state.pending.contains(r.id);boolean supported=state.supportsSetting(r.id);r.toggle.bind(value,supported&&value!=null&&EarbudUiPolicy.canWrite(state.ready,state.value(r.id),pending));r.detail.setText(!supported?"此型号不支持":pending?"等待耳机确认":value==null?"尚未读取":!state.ready?"控制通道未就绪":value?"已开启":"已关闭");}
+        if(leftPill!=null){
+            leftPill.bind(lastLeft,state.ready);rightPill.bind(lastRight,state.ready);casePill.bind(lastCase,state.ready);
+            boolean any=lastLeft!=null||lastRight!=null||lastCase!=null;
+            batteryHint.setVisibility(state.ready?View.GONE:View.VISIBLE);
+            batteryHint.setText(any?"电量未更新 · 显示最近一次读数":"连接耳机后显示电量");
+        }
+
+        boolean unconfirmed=state.status!=null&&state.status.contains("未确认");
+        if(noise!=null){
+            boolean supported=state.supportsSetting(EarbudCommands.LISTENING_MODE);
+            Integer mode=state.value(EarbudCommands.LISTENING_MODE);
+            boolean pending=state.pending.contains(EarbudCommands.LISTENING_MODE);
+            noise.setVisibility(supported?View.VISIBLE:View.GONE);
+            noise.bind(mode,EarbudUiPolicy.canWrite(state.ready,mode,pending),pending,
+                state.supportsListeningMode(EarbudCommands.MODE_ADAPTIVE),state.supportsListeningMode(EarbudCommands.MODE_OFF));
+            if(!supported)tone(modeChip,4,"此型号不支持");
+            else if(pending)tone(modeChip,1,"等待耳机确认");
+            else if(mode==null)tone(modeChip,4,"尚未读取");
+            else tone(modeChip,state.ready?3:4,modeLabel(mode));
+            String hint=!supported?"此型号不支持噪声控制。"
+                :pending?"已发送，等待耳机确认；当前仍显示已读取的模式。"
+                :unconfirmed?state.status+"；当前仍显示最近回报值。"
+                :mode==null?"连接耳机并读取当前模式后可切换。"
+                :!state.ready?"控制通道未就绪，显示最近一次读取的模式。"
+                :"自适应与关闭仅在耳机曾回报该模式后显示。";
+            modeHint.setText(hint);modeHint.setTextColor(unconfirmed?t.warn:t.muted);modeHint.setVisibility(View.VISIBLE);
+        }
+        for(SettingRow r:settings){
+            Boolean value=state.enabled(r.id);boolean pending=state.pending.contains(r.id);boolean supported=state.supportsSetting(r.id);
+            r.toggle.bind(value,supported&&value!=null&&EarbudUiPolicy.canWrite(state.ready,state.value(r.id),pending));
+            r.detail.setText(!supported?"此型号不支持":pending?"等待耳机确认":value==null?"尚未读取":!state.ready?"控制通道未就绪":value?"已开启":"已关闭");
+            r.detail.setTextColor(pending?t.warn:t.muted);
+        }
+        if(feedback!=null){
+            if(unconfirmed){feedback.setText(state.status+"；当前仍显示最近回报值");feedback.setTextColor(t.warn);}
+            else if(!state.pending.isEmpty()){feedback.setText("已提交，等待耳机确认");feedback.setTextColor(t.muted);}
+            else if(feedback.getText()!=null){
+                String text=feedback.getText().toString();
+                if(text.contains("未确认")||"已提交，等待耳机确认".equals(text)){feedback.setText("");feedback.setTextColor(t.muted);}
+            }
+        }
         updateLocalVolume();
     }
-    private String battery(Integer value){return value==null?"--":value+"%";}
-    private String batterySpoken(Integer value){return value==null?"未知":value+"%";}
-    void updateLocalVolume(){if(volume==null||audio==null)return;try{int max=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),current=audio.getStreamVolume(AudioManager.STREAM_MUSIC);volume.bind(current,max,!audio.isVolumeFixed());volumeValue.setText(Math.round(100f*current/Math.max(1,max))+"%");}catch(RuntimeException e){volume.setEnabled(false);volumeValue.setText("不可用");}}
-    private static final class SettingRow {final int id;final PodControls.GlassSwitch toggle;final TextView detail;SettingRow(int id,PodControls.GlassSwitch toggle,TextView detail){this.id=id;this.toggle=toggle;this.detail=detail;}}
+
+    private String handoffBrief(){
+        if(sessionStatus==null||!sessionStatus.serviceRunning)return "未运行";
+        String h=sessionStatus.handoffDescription;
+        return h.isEmpty()?"已连接":h;
+    }
+
+    private static String modeLabel(int mode){
+        if(mode==EarbudCommands.MODE_ANC)return "降噪";
+        if(mode==EarbudCommands.MODE_TRANSPARENCY)return "通透";
+        if(mode==EarbudCommands.MODE_ADAPTIVE)return "自适应";
+        if(mode==EarbudCommands.MODE_OFF)return "关闭";
+        return "未知模式";
+    }
+
+    private void submit(int id,int value){
+        boolean accepted=actions.setSetting(id,value);
+        message(accepted?"已提交，等待耳机确认":"当前无法更改，请检查耳机控制通道");
+    }
+    private void message(String value){
+        if(feedback!=null){feedback.setText(value);feedback.setTextColor(t.muted);}
+        Toast.makeText(activity,value,Toast.LENGTH_SHORT).show();
+    }
+
+    void updateLocalVolume(){
+        if(volume==null||audio==null)return;
+        try{
+            int max=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),current=audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+            volume.bind(current,max,!audio.isVolumeFixed());
+            volumeValue.setText(Math.round(100f*current/Math.max(1,max))+"%");
+        }catch(RuntimeException e){volume.setEnabled(false);volumeValue.setText("不可用");}
+    }
+
+    /** Optional themed adapter for the device picker so labels stay legible in both themes. */
+    ArrayAdapter<String> deviceAdapter(List<String> labels){
+        ArrayAdapter<String> adapter=new ArrayAdapter<String>(activity,android.R.layout.simple_spinner_item,labels){
+            @Override public View getView(int position,View convertView,ViewGroup parent){return style(super.getView(position,convertView,parent),false);}
+            @Override public View getDropDownView(int position,View convertView,ViewGroup parent){return style(super.getDropDownView(position,convertView,parent),true);}
+            private View style(View v,boolean dropDown){
+                if(v instanceof TextView){TextView tv=(TextView)v;tv.setTextColor(t.ink);tv.setTextSize(15);if(dropDown){tv.setBackgroundColor(t.surface);tv.setPadding(dp(16),dp(12),dp(16),dp(12));}}
+                return v;
+            }
+        };
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        return adapter;
+    }
+
+    // ---------------------------------------------------------------- small components
+
+    private final class BatteryPill {
+        final LinearLayout box;
+        final TextView value;
+        final LevelBar bar;
+        final String label;
+        BatteryPill(String label){
+            this.label=label;
+            box=column();box.setPadding(dp(14),dp(12),dp(14),dp(14));
+            box.setBackground(t.rounded(t.surfaceSubtle,20));
+            box.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+            TextView name=text(label,12,t.muted);name.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);box.addView(name);
+            value=heavy("--",20,t.muted);value.setPadding(0,dp(2),0,dp(8));value.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);box.addView(value);
+            bar=new LevelBar(activity,t.dark?0x1FFFFFFF:0x14000000);
+            box.addView(bar,new LinearLayout.LayoutParams(-1,dp(5)));
+            bind(null,false);
+        }
+        void bind(Integer level,boolean fresh){
+            boolean low=level!=null&&level<=20;
+            value.setText(level==null?"--":level+"%");
+            value.setTextColor(level==null?t.muted:!fresh?t.muted:low?t.danger:t.ink);
+            bar.bind(level,!fresh?t.muted:low?t.danger:t.ok);
+            box.setContentDescription(label+"电量"+(level==null?"未知":level+"%")+(fresh?"":"，当前未更新"));
+        }
+    }
+
+    private static final class LevelBar extends View {
+        private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect=new RectF();
+        private final int track;
+        private int fill;
+        private float level=-1f;
+        LevelBar(Context context,int track){super(context);this.track=track;setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);}
+        void bind(Integer value,int color){level=value==null?-1f:Math.max(0,Math.min(100,value))/100f;fill=color;invalidate();}
+        @Override protected void onDraw(Canvas c){
+            float w=getWidth(),h=getHeight(),r=h/2f;
+            paint.setColor(track);rect.set(0,0,w,h);c.drawRoundRect(rect,r,r,paint);
+            if(level>0f){paint.setColor(fill);rect.set(0,0,Math.max(h,w*level),h);c.drawRoundRect(rect,r,r,paint);}
+        }
+    }
+
+    private static final class SettingRow {
+        final int id;final PodControls.GlassSwitch toggle;final TextView detail;
+        SettingRow(int id,PodControls.GlassSwitch toggle,TextView detail){this.id=id;this.toggle=toggle;this.detail=detail;}
+    }
 }

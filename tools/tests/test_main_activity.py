@@ -14,7 +14,7 @@ public class Manifest { public static class permission {
  public static final String BLUETOOTH_CONNECT="android.permission.BLUETOOTH_CONNECT";
  public static final String POST_NOTIFICATIONS="android.permission.POST_NOTIFICATIONS";
 }}''',
-    'android/content/pm/PackageManager.java': 'package android.content.pm; public class PackageManager {public static final int PERMISSION_GRANTED=0;}',
+    'android/content/pm/PackageManager.java': 'package android.content.pm; public class PackageManager {public static final int PERMISSION_GRANTED=0,PERMISSION_DENIED=-1;}',
     'android/content/pm/ApplicationInfo.java': 'package android.content.pm; public class ApplicationInfo {public int targetSdkVersion=36;}',
     'android/content/res/Configuration.java': 'package android.content.res; public class Configuration {public static final int UI_MODE_NIGHT_MASK=48,UI_MODE_NIGHT_YES=32;public int uiMode=0;}',
     'android/content/res/Resources.java': 'package android.content.res; public class Resources {private final Configuration c=new Configuration();public Configuration getConfiguration(){return c;}}',
@@ -28,7 +28,7 @@ public class Bundle {
     'android/os/Build.java': '''package android.os;
 public class Build {
  public static final String MODEL="SM-X810";
- public static class VERSION {public static final int SDK_INT=36;public static final String RELEASE="16";}
+ public static class VERSION {public static int SDK_INT=36;public static final String RELEASE="16";}
 }''',
     'android/os/Looper.java': 'package android.os; public class Looper {public static Looper getMainLooper(){return new Looper();}}',
     'android/os/SystemClock.java': 'package android.os; public class SystemClock {public static long elapsedRealtime(){return 0;}}',
@@ -42,7 +42,7 @@ public class Handler {
  public void removeCallbacksAndMessages(Object t){}
 }''',
     'android/util/Log.java': 'package android.util; public class Log {public static int i(String t,String m){return 0;}public static int e(String t,String m,Throwable e){return 0;}}',
-    'android/provider/Settings.java': 'package android.provider; public class Settings {public static final String ACTION_BLUETOOTH_SETTINGS="bt",ACTION_NOTIFICATION_LISTENER_SETTINGS="nls";}',
+    'android/provider/Settings.java': 'package android.provider; public class Settings {public static final String ACTION_BLUETOOTH_SETTINGS="bt",ACTION_NOTIFICATION_LISTENER_SETTINGS="nls",ACTION_APP_NOTIFICATION_SETTINGS="android.settings.APP_NOTIFICATION_SETTINGS",EXTRA_APP_PACKAGE="android.provider.extra.APP_PACKAGE";}',
     'android/view/View.java': 'package android.view; public class View {}',
     'android/widget/TextView.java': '''package android.widget;
 public class TextView extends android.view.View {
@@ -72,7 +72,7 @@ public class Spinner extends android.view.View {
  public int getSelectedItemPosition(){return selected;}
  public void setOnItemSelectedListener(AdapterView.OnItemSelectedListener l){}
 }''',
-    'android/widget/Toast.java': 'package android.widget; public class Toast {public static final int LENGTH_SHORT=0;public static Toast makeText(android.content.Context c,CharSequence s,int d){return new Toast();}public void show(){}}',
+    'android/widget/Toast.java': 'package android.widget; public class Toast {public static final int LENGTH_SHORT=0;public static String lastText;public static Toast makeText(android.content.Context c,CharSequence s,int d){lastText=s==null?null:s.toString();return new Toast();}public void show(){}}',
     'android/window/OnBackInvokedCallback.java': 'package android.window; public interface OnBackInvokedCallback {void onBackInvoked();}',
     'android/window/OnBackInvokedDispatcher.java': 'package android.window; public interface OnBackInvokedDispatcher {int PRIORITY_DEFAULT=0;void registerOnBackInvokedCallback(int p,OnBackInvokedCallback c);void unregisterOnBackInvokedCallback(OnBackInvokedCallback c);}',
     'android/content/DialogInterface.java': 'package android.content; public interface DialogInterface {interface OnClickListener{void onClick(DialogInterface d,int w);}}',
@@ -94,14 +94,17 @@ import java.io.*;import java.util.*;
 public class Context {
  public static final int MODE_PRIVATE=0,MODE_APPEND=32768,RECEIVER_EXPORTED=2;
  public final Map<Class<?>,Object> services=new HashMap<>();
+ public final Map<String,Integer> permissions=new HashMap<>();
  public final List<Intent> startedServices=new ArrayList<>();
+ public final List<Intent> startedActivities=new ArrayList<>();
  public java.util.function.Consumer<Intent> serviceStarter;
  public <T>T getSystemService(Class<T> type){return type.cast(services.get(type));}
  public Context getApplicationContext(){return this;}
+ public String getPackageName(){return "lp.pods";}
  public java.util.concurrent.Executor getMainExecutor(){return Runnable::run;}
  public android.content.res.Resources getResources(){return new android.content.res.Resources();}
  public android.content.pm.ApplicationInfo getApplicationInfo(){return new android.content.pm.ApplicationInfo();}
- public int checkSelfPermission(String p){return android.content.pm.PackageManager.PERMISSION_GRANTED;}
+ public int checkSelfPermission(String p){return permissions.getOrDefault(p,android.content.pm.PackageManager.PERMISSION_GRANTED);}
  public void registerReceiver(BroadcastReceiver r,IntentFilter f){}
  public void registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){}
  public void unregisterReceiver(BroadcastReceiver r){}
@@ -110,7 +113,7 @@ public class Context {
  public ComponentName startForegroundService(Intent i){startedServices.add(i);if(serviceStarter!=null)serviceStarter.accept(i);return null;}
  public ComponentName startService(Intent i){return null;}
  public boolean stopService(Intent i){return true;}
- public void startActivity(Intent i){}
+ public void startActivity(Intent i){startedActivities.add(i);}
 }''',
     'android/content/SharedPreferences.java': '''package android.content;
 public class SharedPreferences {
@@ -148,6 +151,7 @@ public class Intent {
     'android/service/notification/NotificationListenerService.java': 'package android.service.notification; public class NotificationListenerService {public void onListenerConnected(){}public void onListenerDisconnected(){}}',
     'android/app/Activity.java': '''package android.app;
 public class Activity extends android.content.Context {
+ public final java.util.List<String[]> requestedPermissions=new java.util.ArrayList<>();
  public void setTheme(int r){}
  public void onCreate(android.os.Bundle b){}
  protected void onNewIntent(android.content.Intent i){}
@@ -163,7 +167,7 @@ public class Activity extends android.content.Context {
  public void onRequestPermissionsResult(int r,String[] p,int[] res){}
  public void onDestroy(){}
  public void finish(){}
- public void requestPermissions(String[] p,int r){}
+ public void requestPermissions(String[] p,int r){requestedPermissions.add(p);}
  public android.window.OnBackInvokedDispatcher getOnBackInvokedDispatcher(){return new android.window.OnBackInvokedDispatcher(){public void registerOnBackInvokedCallback(int p,android.window.OnBackInvokedCallback c){}public void unregisterOnBackInvokedCallback(android.window.OnBackInvokedCallback c){}};}
 }''',
     'android/app/ForegroundServiceStartNotAllowedException.java': 'package android.app; public class ForegroundServiceStartNotAllowedException extends IllegalStateException {}',
@@ -206,8 +210,10 @@ public class Notification {
     'android/app/NotificationManager.java': '''package android.app;
 public class NotificationManager {
  public static final int IMPORTANCE_LOW=2;
+ public boolean notificationsEnabled=true;
  public void createNotificationChannel(NotificationChannel c){}
  public void notify(int i,Notification n){}
+ public boolean areNotificationsEnabled(){return notificationsEnabled;}
  public boolean isNotificationListenerAccessGranted(android.content.ComponentName c){return true;}
 }''',
     'android/R.java': '''package android;
@@ -297,7 +303,7 @@ public class AudioDeviceInfo {
     PACKAGE + 'LinkPodsUi.java': '''package local.airpods.handoffprobe;
 import android.app.Activity;import android.widget.*;
 final class LinkPodsUi {
- static final String HOME="设备",AUDIO="音频与聆听",PRESS="按压控制",CONNECTION="连接",SETTINGS="LinkPods 设置";
+ static final String HOME="设备",CONNECTION="连接与诊断",SETTINGS="设置与日志";
  interface Actions {
   void openBluetooth();void requestNearby();void openMediaAccess();void requestNotifications();
   void refreshDevices();void connectEarbuds();void enableHandoff();void disableHandoff();void manualHandoff();
@@ -307,16 +313,19 @@ final class LinkPodsUi {
  }
  final TextView environmentStatus,logOutput;
  final Actions actions;
+ boolean lastNotifGranted;
  LinkPodsUi(Activity a,Spinner p,Actions actions,String page){
   this.actions=actions;this.environmentStatus=new TextView(a);this.logOutput=new TextView(a);
  }
  String page(){return "设备";}
  void show(String page){}
  boolean back(){return false;}
+ ArrayAdapter<String> deviceAdapter(java.util.List<String> labels){return new ArrayAdapter<>(null,0,labels);}
  void bind(EarbudSnapshot s,String a,SessionStatus st){}
  void bindAudio(SamsungAudioSnapshot s){}
  void bindCapabilities(ConnectionPolicy.Snapshot c,boolean m){}
  void bindSummary(StatusSummary s){}
+ void bindRuntimeFlags(boolean bt,boolean media,boolean notif,boolean autoStart,boolean autoStartSuppressed){this.lastNotifGranted=notif;}
 }''',
     PACKAGE + 'RootEnvironment.java': '''package local.airpods.handoffprobe;
 class RootEnvironment {
@@ -356,7 +365,7 @@ class AapProbe {
  void requestState(){}void start(){}void stop(){}
 }''',
     PACKAGE + 'MainActivityTest.java': '''package local.airpods.handoffprobe;
-import android.app.*;import android.bluetooth.*;import android.content.*;import android.media.*;import android.media.session.*;import android.os.*;import java.lang.reflect.*;
+import android.Manifest;import android.app.*;import android.bluetooth.*;import android.content.*;import android.content.pm.*;import android.media.*;import android.media.session.*;import android.os.*;import android.provider.Settings;import android.widget.Toast;import java.lang.reflect.*;
 public class MainActivityTest {
  static final String TARGET="AA:BB:CC:DD:EE:01",OTHER="AA:BB:CC:DD:EE:09",SELF="AA:BB:CC:DD:EE:02",PEER="AA:BB:CC:DD:EE:03";
  static void expect(boolean ok,String why){if(!ok)throw new AssertionError(why);}
@@ -366,9 +375,9 @@ public class MainActivityTest {
   return createActivity(new MainActivity(),state);
  }
  static MainActivity createActivity(MainActivity a,Bundle state)throws Exception{
-  a.services.put(BluetoothManager.class,new BluetoothManager());
-  a.services.put(NotificationManager.class,new NotificationManager());
-  a.services.put(AudioManager.class,new AudioManager());
+  a.services.putIfAbsent(BluetoothManager.class,new BluetoothManager());
+  a.services.putIfAbsent(NotificationManager.class,new NotificationManager());
+  a.services.putIfAbsent(AudioManager.class,new AudioManager());
   a.serviceStarter=i->{if(HandoffService.current!=null)HandoffService.current.onStartCommand(i,0,1);};
   a.onCreate(state);
   return a;
@@ -465,11 +474,24 @@ public class MainActivityTest {
   MainActivity launcher=createActivity(null);
   launcher.onNewIntent(new Intent().putExtra(HandoffService.EXTRA_PENDING_ACTION,"ENABLE_HANDOFF"));
   expect(launcher.startedServices.isEmpty(),"exported launcher ignores notification commands");
+  ((LinkPodsUi)get(launcher,"ui")).actions.runPrimaryAction(StatusSummary.PrimaryAction.MANUAL_HANDOFF);
+  expect(((LinkPodsUi)get(launcher,"ui")).logOutput.getText().contains("控制服务未运行"),
+   "MANUAL_HANDOFF primary action uses unified validation and feedback");
   ((LinkPodsUi)get(launcher,"ui")).actions.runPrimaryAction(StatusSummary.PrimaryAction.START_CONTROL);
   expect(launcher.startedServices.size()==1&&"CONTROL_ONLY".equals(
    launcher.startedServices.get(0).getStringExtra(HandoffService.EXTRA_SESSION_MODE)),
    "connect-earbuds summary action starts CONTROL_ONLY");
   launcher.onDestroy();
+
+  HandoffService yieldedSvc=runningService(TARGET,SessionMode.AUTO_HANDOFF);
+  Method watchMethod=HandoffService.class.getDeclaredMethod("watch");
+  watchMethod.setAccessible(true);
+  ((PlaybackWatch)watchMethod.invoke(yieldedSvc)).start();
+  ((AudioLinkPolicy)get(yieldedSvc,"audioLink")).want(false,BluetoothProfile.STATE_DISCONNECTED);
+  SessionStatus yieldedStatus=HandoffService.sessionStatus(TARGET);
+  expect(yieldedStatus.audioYielded,"sessionStatus exposes audioYielded in AUTO_HANDOFF");
+  expect(yieldedStatus.handoffDescription.contains("已让出"),"yielded handoffDescription mentions yielded state");
+  HandoffService.current=null;
 
   MainActivity notification=createActivity(new MainActivity.NotificationEntry(),null);
   notification.onNewIntent(new Intent().putExtra(HandoffService.EXTRA_PENDING_ACTION,"ENABLE_HANDOFF"));
@@ -484,6 +506,70 @@ public class MainActivityTest {
   restored.onStart();
   expect(restored.startedServices.isEmpty(),"restoring the notification activity does not rerun its action");
   restored.onDestroy();
+
+  int savedSdk=Build.VERSION.SDK_INT;
+  try {
+   // API 32 (SDK_INT < 33) with system notifications disabled: reports false and opens app notification settings.
+   Build.VERSION.SDK_INT=32;
+   NotificationManager api32Nm=new NotificationManager();
+   api32Nm.notificationsEnabled=false;
+   MainActivity api32Disabled=new MainActivity();
+   api32Disabled.services.put(NotificationManager.class,api32Nm);
+   createActivity(api32Disabled,null);
+   LinkPodsUi api32Ui=(LinkPodsUi)get(api32Disabled,"ui");
+   expect(!api32Ui.lastNotifGranted,"API 32 must report notifications ungranted when areNotificationsEnabled is false");
+   Toast.lastText=null;
+   api32Ui.actions.requestNotifications();
+   expect(api32Disabled.requestedPermissions.isEmpty(),"API 32 does not request POST_NOTIFICATIONS");
+   expect(api32Disabled.startedActivities.size()==1
+    && Settings.ACTION_APP_NOTIFICATION_SETTINGS.equals(api32Disabled.startedActivities.get(0).getAction())
+    && "lp.pods".equals(api32Disabled.startedActivities.get(0).getStringExtra(Settings.EXTRA_APP_PACKAGE)),
+    "API 32 with disabled notifications opens app notification settings");
+   expect(Toast.lastText==null,"API 32 with disabled notifications does not toast allowed");
+   api32Nm.notificationsEnabled=true;
+   api32Disabled.onStart();
+   expect(api32Ui.lastNotifGranted,"API 32 reports notifications granted once areNotificationsEnabled is true");
+   api32Ui.actions.requestNotifications();
+   expect("服务通知权限已允许".equals(Toast.lastText)&&api32Disabled.startedActivities.size()==1,
+    "API 32 with enabled notifications shows allowed toast without relaunching settings");
+   api32Disabled.onDestroy();
+
+   // API 33+ with POST_NOTIFICATIONS granted yet system notifications disabled: reports false and opens settings.
+   Build.VERSION.SDK_INT=36;
+   NotificationManager api36Nm=new NotificationManager();
+   api36Nm.notificationsEnabled=false;
+   MainActivity api36SysDisabled=new MainActivity();
+   api36SysDisabled.services.put(NotificationManager.class,api36Nm);
+   createActivity(api36SysDisabled,null);
+   LinkPodsUi api36Ui=(LinkPodsUi)get(api36SysDisabled,"ui");
+   expect(!api36Ui.lastNotifGranted,"API 33+ must report ungranted when areNotificationsEnabled is false");
+   Toast.lastText=null;
+   api36Ui.actions.requestNotifications();
+   expect(api36SysDisabled.requestedPermissions.isEmpty(),"API 33+ skips runtime prompt when POST_NOTIFICATIONS is already granted");
+   expect(api36SysDisabled.startedActivities.size()==1
+    && Settings.ACTION_APP_NOTIFICATION_SETTINGS.equals(api36SysDisabled.startedActivities.get(0).getAction())
+    && "lp.pods".equals(api36SysDisabled.startedActivities.get(0).getStringExtra(Settings.EXTRA_APP_PACKAGE)),
+    "API 33+ with system-disabled notifications opens app notification settings");
+   expect(Toast.lastText==null,"API 33+ with system-disabled notifications does not toast allowed");
+   api36SysDisabled.onDestroy();
+
+   // API 33+ with POST_NOTIFICATIONS ungranted still requests runtime permission first.
+   MainActivity api36RuntimeDenied=new MainActivity();
+   api36RuntimeDenied.permissions.put(Manifest.permission.POST_NOTIFICATIONS,PackageManager.PERMISSION_DENIED);
+   createActivity(api36RuntimeDenied,null);
+   LinkPodsUi api36DeniedUi=(LinkPodsUi)get(api36RuntimeDenied,"ui");
+   expect(!api36DeniedUi.lastNotifGranted,"API 33+ reports ungranted when POST_NOTIFICATIONS is denied");
+   Toast.lastText=null;
+   api36DeniedUi.actions.requestNotifications();
+   expect(api36RuntimeDenied.requestedPermissions.size()==1
+    && Manifest.permission.POST_NOTIFICATIONS.equals(api36RuntimeDenied.requestedPermissions.get(0)[0]),
+    "API 33+ requests POST_NOTIFICATIONS when runtime permission is ungranted");
+   expect(api36RuntimeDenied.startedActivities.isEmpty()&&Toast.lastText==null,
+    "API 33+ runtime request does not fall back to settings or allowed toast");
+   api36RuntimeDenied.onDestroy();
+  } finally {
+   Build.VERSION.SDK_INT=savedSdk;
+  }
 
   System.out.println("PASS: main activity bridge preparation and session lifecycle recovery");
  }

@@ -68,6 +68,20 @@ public final class StatusSummaryPolicy {
                         "当前未能由系统确认目标输出，可使用手动切换到此耳机。",
                         StatusSummary.PrimaryAction.MANUAL_HANDOFF);
             }
+            if (session.audioYielded && (audio == null || audio.a2dpState == SamsungAudioSnapshot.ConnectionState.DISCONNECTED)) {
+                return new StatusSummary(
+                        StatusSummary.Level.NORMAL,
+                        "音频已让出给其他设备",
+                        "控制会话保持就绪；本机播放将自动切回，也可点击手动切换。如需本机外放请切为纯控制模式。",
+                        StatusSummary.PrimaryAction.MANUAL_HANDOFF);
+            }
+            if (session.audioYieldPending || session.audioYielded) {
+                return new StatusSummary(
+                        StatusSummary.Level.ATTENTION,
+                        "正在让出音频（等待系统断开）",
+                        "系统音频尚未断开，若仍由本机出声可点击手动切换或稍候。",
+                        StatusSummary.PrimaryAction.MANUAL_HANDOFF);
+            }
             if (audio != null && !SamsungAudioPolicy.isTargetOutputConfirmed(audio)) {
                 return new StatusSummary(
                         StatusSummary.Level.ATTENTION,
